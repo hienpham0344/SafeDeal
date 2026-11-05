@@ -1,0 +1,21 @@
+# Production profile (Railway). SSL is required for Railway public proxy connections.
+# Use DATABASE_JDBC_URL (jdbc:postgresql://host:port/db?sslmode=require) or DB_* variables.
+spring:
+  datasource:
+    url: ${DATABASE_JDBC_URL:jdbc:postgresql://${DB_HOST}:${DB_PORT:5432}/${DB_NAME}?sslmode=${DB_SSLMODE:require}}
+    username: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
+    hikari:
+      maximum-pool-size: ${DB_POOL_SIZE:5}
+  jpa:
+    show-sql: false
+
+management:
+  endpoint:
+    health:
+      show-details: never
+
+logging:
+  level:
+    root: INFO
+    com.safedeal: INFO
