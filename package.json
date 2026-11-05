@@ -1,0 +1,23 @@
+{
+  "name": "safedeal",
+  "version": "0.1.0",
+  "private": true,
+  "description": "SafeDeal — AI-assisted escrow platform on Avalanche (monorepo)",
+  "workspaces": [
+    "apps/web",
+    "packages/contracts"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev:web": "npm run dev --workspace @safedeal/web",
+    "build:web": "npm run build --workspace @safedeal/web",
+    "lint:web": "npm run lint --workspace @safedeal/web",
+    "test:web": "npm run test --workspace @safedeal/web",
+    "contracts:compile": "npm run compile --workspace @safedeal/contracts",
+    "contracts:test": "npm run test --workspace @safedeal/contracts",
+    "contracts:abi": "npm run abi:export --workspace @safedeal/contracts",
+    "verify": "bash scripts/verify.sh"
+  }
+}
