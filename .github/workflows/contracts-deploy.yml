@@ -1,0 +1,54 @@
+name: Deploy Contracts (Manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      network:
+        description: "Blockchain network"
+        required: true
+        default: fuji
+        type: choice
+        options:
+          - fuji
+          - hardhat-local
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: cd packages/contracts && npm ci
+
+      - name: Compile contracts
+        run: cd packages/contracts && npm run compile
+
+      - name: Deploy contracts
+        env:
+          AVALANCHE_RPC_URL: ${{ secrets.AVALANCHE_RPC_URL || 'https://api.avax-test.network/ext/bc/C/rpc' }}
+          DEPLOYER_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
+        run: cd packages/contracts && npm run ignition:deploy:${{ github.event.inputs.network }}
+
+      - name: Export ABIs
+        run: cd packages/contracts && npm run abi:export
+
+      - name: Upload ABIs as artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: contract-abis
+          path: packages/contracts/abi/
+
+      - name: Create deployment summary
+        run: |
+          echo "## Contract Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "Network: ${{ github.event.inputs.network }}" >> $GITHUB_STEP_SUMMARY
+          echo "Timestamp: $(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> $GITHUB_STEP_SUMMARY
+          echo "**Action:** Copy contract addresses from the artifacts and update production environment variables." >> $GITHUB_STEP_SUMMARY
