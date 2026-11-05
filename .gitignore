@@ -14,6 +14,9 @@ Thumbs.db
 # Logs
 *.log
 
+# Build output
+apps/api/target/
+
 # Env
 .env
 .env.local

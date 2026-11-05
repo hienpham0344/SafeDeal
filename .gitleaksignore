@@ -1,0 +1,3 @@
+# Generated Spring Security passwords in committed Maven test reports.
+24e353e8331830d6eb5bcc6273c37171b1fe650d:apps/api/target/surefire-reports/TEST-com.safedeal.ControllerSecurityTests.xml:generic-api-key:117
+24e353e8331830d6eb5bcc6273c37171b1fe650d:apps/api/target/surefire-reports/TEST-com.safedeal.SafeDealApplicationTests.xml:generic-api-key:119
