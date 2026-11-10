@@ -1,0 +1,16 @@
+safedeal:
+  auth:
+    cookie-secure: ${COOKIE_SECURE:true}
+    cookie-same-site: ${COOKIE_SAME_SITE:None}
+
+springdoc:
+  swagger-ui:
+    enabled: ${SWAGGER_UI_ENABLED:false}
+  api-docs:
+    enabled: ${API_DOCS_ENABLED:false}
+
+logging:
+  level:
+    com.safedeal: INFO
+    org.springframework: WARN
+    org.hibernate.SQL: WARN
