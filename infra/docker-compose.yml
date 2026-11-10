@@ -1,0 +1,89 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-safedeal}
+      POSTGRES_USER: ${DB_USERNAME:-safedeal}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-safedeal}
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME:-safedeal} -d ${DB_NAME:-safedeal}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  anvil:
+    image: ghcr.io/foundry-rs/foundry:latest
+    restart: unless-stopped
+    entrypoint: ["anvil"]
+    command: ["--host", "0.0.0.0", "--port", "8545", "--chain-id", "31337"]
+    ports:
+      - "8545:8545"
+    healthcheck:
+      test: ["CMD-SHELL", "cast block-number --rpc-url http://127.0.0.1:8545 >/dev/null 2>&1 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      anvil:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-local}
+      SERVER_PORT: 8080
+      DB_URL: jdbc:postgresql://postgres:5432/${DB_NAME:-safedeal}
+      DB_USERNAME: ${DB_USERNAME:-safedeal}
+      DB_PASSWORD: ${DB_PASSWORD:-safedeal}
+      JWT_SECRET: ${JWT_SECRET:-}
+      SIWE_DOMAIN: ${SIWE_DOMAIN:-localhost:5173}
+      SIWE_URI: ${SIWE_URI:-http://localhost:5173}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      COOKIE_SAME_SITE: ${COOKIE_SAME_SITE:-Lax}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:5173}
+      BLOCKCHAIN_SYNC_ENABLED: ${BLOCKCHAIN_SYNC_ENABLED:-false}
+      CHAIN_ID: ${CHAIN_ID:-31337}
+      CHAIN_NAME: ${CHAIN_NAME:-Anvil Local}
+      AVALANCHE_RPC_URL: ${AVALANCHE_DOCKER_RPC_URL:-http://anvil:8545}
+      ESCROW_CONTRACT_ADDRESS: ${ESCROW_CONTRACT_ADDRESS:-}
+      ESCROW_DEPLOYMENT_BLOCK: ${ESCROW_DEPLOYMENT_BLOCK:-0}
+      BLOCKCHAIN_CONFIRMATIONS_REQUIRED: ${BLOCKCHAIN_CONFIRMATIONS_REQUIRED:-1}
+      EVIDENCE_STORAGE_DIR: /app/storage/evidence
+    ports:
+      - "${BACKEND_PORT:-8080}:8080"
+    volumes:
+      - evidence_data:/app/storage/evidence
+
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_APP_NAME: ${VITE_APP_NAME:-SafeDeal}
+        VITE_APP_ENV: ${VITE_APP_ENV:-docker}
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8080}
+        VITE_CHAIN_ID: ${VITE_CHAIN_ID:-31337}
+        VITE_CHAIN_NAME: ${VITE_CHAIN_NAME:-Anvil Local}
+        VITE_RPC_URL: ${VITE_RPC_URL:-http://127.0.0.1:8545}
+        VITE_EXPLORER_BASE_URL: ${VITE_EXPLORER_BASE_URL:-}
+        VITE_ESCROW_CONTRACT_ADDRESS: ${VITE_ESCROW_CONTRACT_ADDRESS:-}
+        VITE_DEFAULT_ARBITER_ADDRESS: ${VITE_DEFAULT_ARBITER_ADDRESS:-}
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "${FRONTEND_PORT:-5173}:80"
+
+volumes:
+  postgres_data:
+  evidence_data:
