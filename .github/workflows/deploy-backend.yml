@@ -4,18 +4,9 @@ on:
   push:
     branches: [main]
     paths:
-      - "apps/api/**"
+      - "backend/**"
       - ".github/workflows/deploy-backend.yml"
   workflow_dispatch:
-    inputs:
-      environment:
-        description: "Deployment environment"
-        required: true
-        default: production
-        type: choice
-        options:
-          - production
-          - staging
 
 permissions:
   contents: read
@@ -24,45 +15,49 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-java@v6
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "21"
-          cache: maven
-      - name: Run tests
-        run: cd apps/api && ./mvnw -B clean test
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Run backend test suite & package JAR
+        run: |
+          chmod +x backend/gradlew
+          ./backend/gradlew -p backend test bootJar
 
   deploy:
     needs: test
     runs-on: ubuntu-latest
     environment: production
     steps:
-      - uses: actions/checkout@v7
-
-      - name: Deploy to Railway
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Deploy backend to Railway
+        working-directory: backend
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
         run: |
           npm install -g @railway/cli
-          cd apps/api
-          railway up --force
+          railway up --detach
 
-      - name: Verify deployment
+      - name: Verify live healthcheck if configured
+        env:
+          BACKEND_HEALTH_URL: ${{ vars.BACKEND_HEALTH_URL }}
         run: |
-          set +e
-          for i in {1..30}; do
-            health=$(curl -s -o /dev/null -w "%{http_code}" https://safedeal-production.up.railway.app/api/v1/health)
-            if [ "$health" = "200" ]; then
-              echo "✓ Backend health check passed"
+          if [ -z "$BACKEND_HEALTH_URL" ]; then
+            echo "BACKEND_HEALTH_URL repository variable not set; skipping remote probe."
+            exit 0
+          fi
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" "$BACKEND_HEALTH_URL")
+            if [ "$code" = "200" ]; then
+              echo "Backend health check passed ($BACKEND_HEALTH_URL)"
               exit 0
             fi
-            echo "Attempt $i/30 - Status: $health, waiting..."
             sleep 10
           done
-          echo "✗ Health check failed"
+          echo "Backend health check failed after retries" >&2
           exit 1
-
-      - name: Notify on failure
-        if: failure()
-        run: echo "Deployment failed. Check Railway logs."

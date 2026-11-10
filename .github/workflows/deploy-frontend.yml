@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
     paths:
-      - "apps/web/**"
+      - "frontend/**"
       - ".github/workflows/deploy-frontend.yml"
   workflow_dispatch:
 
@@ -15,55 +15,48 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: "22"
           cache: npm
-      - name: Install dependencies
-        run: npm ci
-      - name: Typecheck
-        run: npm run typecheck:web
-      - name: Lint
-        run: npm run lint:web
-      - name: Build
-        run: npm run build:web
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install, check, and build
+        working-directory: frontend
         env:
-          NEXT_PUBLIC_API_BASE_URL: https://safedeal-production.up.railway.app
-          NEXT_PUBLIC_CHAIN_ID: 43113
-          NEXT_PUBLIC_AVALANCHE_RPC_URL: https://api.avax-test.network/ext/bc/C/rpc
+          VITE_APP_NAME: ${{ vars.VITE_APP_NAME || 'SafeDeal' }}
+          VITE_APP_ENV: ${{ vars.VITE_APP_ENV || 'production' }}
+          VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
+          VITE_CHAIN_ID: ${{ vars.VITE_CHAIN_ID || '43113' }}
+          VITE_CHAIN_NAME: ${{ vars.VITE_CHAIN_NAME || 'Avalanche Fuji C-Chain' }}
+          VITE_RPC_URL: ${{ vars.VITE_RPC_URL || 'https://api.avax-test.network/ext/bc/C/rpc' }}
+          VITE_EXPLORER_BASE_URL: ${{ vars.VITE_EXPLORER_BASE_URL || 'https://testnet.snowtrace.io' }}
+          VITE_ESCROW_CONTRACT_ADDRESS: ${{ vars.VITE_ESCROW_CONTRACT_ADDRESS }}
+          VITE_DEFAULT_ARBITER_ADDRESS: ${{ vars.VITE_DEFAULT_ARBITER_ADDRESS }}
+        run: |
+          npm ci
+          npm run typecheck
+          npm run lint
+          npm test
+          npm run build
 
   deploy:
     needs: build
     runs-on: ubuntu-latest
     environment: production
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: npm
-
-      - name: Deploy to Vercel
+      - name: Deploy frontend to Vercel
+        working-directory: frontend
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
         run: |
           npm install -g vercel
-          cd apps/web
-          vercel deploy --prod --token "$VERCEL_TOKEN"
-
-      - name: Verify deployment
-        run: |
-          for i in {1..10}; do
-            health=$(curl -s -o /dev/null -w "%{http_code}" https://safedeal.vercel.app/api/health)
-            if [ "$health" = "200" ]; then
-              echo "✓ Frontend health check passed"
-              exit 0
-            fi
-            echo "Attempt $i/10 - waiting..."
-            sleep 5
-          done
-          echo "⚠ Frontend health check timeout (expected for pre-render)"
-          exit 0
+          vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+          vercel build --prod --token="$VERCEL_TOKEN"
+          vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN"

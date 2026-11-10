@@ -4,13 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       network:
-        description: "Blockchain network"
+        description: "Target network"
         required: true
         default: fuji
         type: choice
         options:
           - fuji
-          - hardhat-local
 
 permissions:
   contents: read
@@ -18,37 +17,46 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    environment: testnet
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@v4
         with:
-          node-version: "22"
-          cache: npm
+          submodules: recursive
 
-      - name: Install dependencies
-        run: cd packages/contracts && npm ci
-
-      - name: Compile contracts
-        run: cd packages/contracts && npm run compile
-
-      - name: Deploy contracts
-        env:
-          AVALANCHE_RPC_URL: ${{ secrets.AVALANCHE_RPC_URL || 'https://api.avax-test.network/ext/bc/C/rpc' }}
-          DEPLOYER_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
-        run: cd packages/contracts && npm run ignition:deploy:${{ github.event.inputs.network }}
-
-      - name: Export ABIs
-        run: cd packages/contracts && npm run abi:export
-
-      - name: Upload ABIs as artifact
-        uses: actions/upload-artifact@v3
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
         with:
-          name: contract-abis
-          path: packages/contracts/abi/
+          version: v1.9.0
 
-      - name: Create deployment summary
+      - name: Install Solidity dependencies if missing
+        working-directory: blockchain
         run: |
-          echo "## Contract Deployment Summary" >> $GITHUB_STEP_SUMMARY
-          echo "Network: ${{ github.event.inputs.network }}" >> $GITHUB_STEP_SUMMARY
-          echo "Timestamp: $(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> $GITHUB_STEP_SUMMARY
-          echo "**Action:** Copy contract addresses from the artifacts and update production environment variables." >> $GITHUB_STEP_SUMMARY
+          if [ ! -d lib/forge-std ] || [ ! -d lib/openzeppelin-contracts ]; then
+            forge install foundry-rs/forge-std OpenZeppelin/openzeppelin-contracts --no-git
+          fi
+
+      - name: Verify contracts before deploy
+        run: forge test --root blockchain -vvv
+
+      - name: Deploy SafeDealEscrow via Foundry
+        working-directory: blockchain
+        env:
+          FUJI_RPC_URL: ${{ vars.FUJI_RPC_URL || 'https://api.avax-test.network/ext/bc/C/rpc' }}
+          DEPLOYER_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
+          SNOWTRACE_API_KEY: ${{ secrets.SNOWTRACE_API_KEY }}
+        run: |
+          if [ -z "$DEPLOYER_PRIVATE_KEY" ]; then
+            echo "DEPLOYER_PRIVATE_KEY secret is required" >&2
+            exit 1
+          fi
+          VERIFY_FLAG=""
+          if [ -n "$SNOWTRACE_API_KEY" ]; then
+            VERIFY_FLAG="--verify --etherscan-api-key $SNOWTRACE_API_KEY"
+          fi
+          forge script script/Deploy.s.sol:Deploy --rpc-url "$FUJI_RPC_URL" --broadcast $VERIFY_FLAG
+
+      - name: Upload broadcast receipts
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuji-broadcast
+          path: blockchain/broadcast/
