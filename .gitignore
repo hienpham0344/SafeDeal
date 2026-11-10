@@ -14,9 +14,34 @@ Thumbs.db
 # Logs
 *.log
 
-# Build output
-apps/api/target/
-
-# Env
+# Environment files (never commit secrets)
 .env
-.env.local
+.env.*
+!.env.example
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/coverage/
+frontend/playwright-report/
+frontend/test-results/
+node_modules/
+
+# Backend
+backend/.gradle/
+backend/build/
+backend/out/
+backend/bin/
+backend/storage/
+
+# Blockchain (Foundry)
+blockchain/out/
+blockchain/cache/
+blockchain/broadcast/
+blockchain/lib/
+blockchain/deployments/local-*.json
+
+# Agents-kit local symlinks & backups
+.agents/skills/
+.agents/backups/
