@@ -36,14 +36,19 @@ test.describe("Foldcraft Landing Preservation & Responsive Layout", () => {
     await expect(cta).toBeVisible();
     await expect(cta).toHaveAttribute("href", "/create");
 
-    // Verify Geist font family + video computed geometry/positioning + hero fadeSlideUp delays
-    const video = page.locator("video");
-    await expect(video).toHaveCount(1);
-    await expect(video).toHaveAttribute("src", EXPECTED_VIDEO_URL);
+    // Verify Geist font family + single-decoder seamless hero video & canvas overlay geometry + hero fadeSlideUp delays
+    const videos = page.locator("video");
+    await expect(videos).toHaveCount(1);
+    const primaryVideo = page.locator('video[data-hero-video="primary"]');
+    const blendCanvas = page.locator('canvas[data-hero-canvas="blend"]');
+    await expect(primaryVideo).toHaveAttribute("data-hero-src", EXPECTED_VIDEO_URL);
+    await expect(blendCanvas).toHaveCount(1);
     const visualAudit = await page.evaluate(() => {
       const bodyFont = getComputedStyle(document.body).fontFamily;
-      const vid = document.querySelector("video") as HTMLVideoElement;
-      const vidStyle = getComputedStyle(vid);
+      const vidPrimary = document.querySelector('video[data-hero-video="primary"]') as HTMLVideoElement;
+      const canvasBlend = document.querySelector('canvas[data-hero-canvas="blend"]') as HTMLCanvasElement;
+      const primaryStyle = getComputedStyle(vidPrimary);
+      const canvasStyle = getComputedStyle(canvasBlend);
       const badge = document.querySelector("main > div:first-child > p") as HTMLElement;
       const h1 = document.querySelector("main h1") as HTMLElement;
       const desc = document.querySelector("main > div:nth-child(2) > p") as HTMLElement;
@@ -51,14 +56,19 @@ test.describe("Foldcraft Landing Preservation & Responsive Layout", () => {
 
       return {
         bodyFont,
-        video: {
-          autoplay: vid.autoplay,
-          muted: vid.muted,
-          loop: vid.loop,
-          playsInline: vid.playsInline,
-          className: vid.className,
-          objectFit: vidStyle.objectFit,
-          objectPosition: vidStyle.objectPosition,
+        primaryVideo: {
+          autoplay: vidPrimary.autoplay,
+          muted: vidPrimary.muted,
+          playsInline: vidPrimary.playsInline,
+          className: vidPrimary.className,
+          objectFit: primaryStyle.objectFit,
+          objectPosition: primaryStyle.objectPosition,
+          opacity: Number(primaryStyle.opacity),
+        },
+        blendCanvas: {
+          ariaHidden: canvasBlend.getAttribute("aria-hidden"),
+          pointerEvents: canvasStyle.pointerEvents,
+          opacity: Number(canvasStyle.opacity),
         },
         animations: [badge, h1, desc, ctaLink].map((el) => {
           const s = getComputedStyle(el);
@@ -72,13 +82,17 @@ test.describe("Foldcraft Landing Preservation & Responsive Layout", () => {
     });
 
     expect(visualAudit.bodyFont.toLowerCase()).toContain("geist");
-    expect(visualAudit.video.autoplay).toBe(true);
-    expect(visualAudit.video.muted).toBe(true);
-    expect(visualAudit.video.loop).toBe(true);
-    expect(visualAudit.video.playsInline).toBe(true);
-    expect(visualAudit.video.className).toContain("object-cover");
-    expect(visualAudit.video.objectFit).toBe("cover");
-    expect(visualAudit.video.objectPosition).toBe("70% 50%");
+    expect(visualAudit.primaryVideo.autoplay).toBe(true);
+    expect(visualAudit.primaryVideo.muted).toBe(true);
+    expect(visualAudit.primaryVideo.playsInline).toBe(true);
+    expect(visualAudit.primaryVideo.className).toContain("object-cover");
+    expect(visualAudit.primaryVideo.objectFit).toBe("cover");
+    expect(visualAudit.primaryVideo.objectPosition).toBe("70% 50%");
+    expect(visualAudit.primaryVideo.opacity).toBeGreaterThanOrEqual(0.95);
+
+    expect(visualAudit.blendCanvas.ariaHidden).toBe("true");
+    expect(visualAudit.blendCanvas.pointerEvents).toBe("none");
+    expect(visualAudit.blendCanvas.opacity).toBeLessThanOrEqual(0.05);
 
     expect(visualAudit.animations.map((a) => a.name)).toEqual([
       "fadeSlideUp",

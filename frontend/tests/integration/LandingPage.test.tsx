@@ -24,14 +24,21 @@ describe("LandingPage (Foldcraft Hero Preservation)", () => {
       </MemoryRouter>
     );
 
-    const video = container.querySelector("video");
-    expect(video).not.toBeNull();
-    expect(video?.getAttribute("src")).toBe(brandConfig.heroVideoUrl);
-    expect(video?.className).toContain("object-cover");
-    expect(video?.className).toContain("object-[70%_center]");
-    expect(video?.hasAttribute("autoplay")).toBe(true);
-    expect(video?.muted).toBe(true);
-    expect(video?.hasAttribute("loop")).toBe(true);
+    const videos = Array.from(container.querySelectorAll("video"));
+    expect(videos).toHaveLength(1);
+    const primary = container.querySelector('video[data-hero-video="primary"]') as HTMLVideoElement | null;
+    const blendCanvas = container.querySelector('canvas[data-hero-canvas="blend"]') as HTMLCanvasElement | null;
+    expect(primary).not.toBeNull();
+    expect(blendCanvas).not.toBeNull();
+    expect(primary?.getAttribute("data-hero-src")).toBe(brandConfig.heroVideoUrl);
+    expect(primary?.getAttribute("src")).toBe(brandConfig.heroVideoUrl);
+    expect(primary?.hasAttribute("autoplay")).toBe(true);
+    expect(primary?.className).toContain("object-cover");
+    expect(primary?.className).toContain("object-[70%_center]");
+    expect(primary?.muted).toBe(true);
+    expect(primary?.playsInline).toBe(true);
+    expect(blendCanvas?.getAttribute("aria-hidden")).toBe("true");
+    expect(blendCanvas?.style.opacity).toBe("0");
 
     expect(screen.getByText("SafeDeal")).toBeInTheDocument();
     expect(screen.getByText("Secure P2P Transactions")).toBeInTheDocument();
