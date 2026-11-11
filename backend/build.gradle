@@ -42,7 +42,16 @@ dependencies {
 
 tasks.named('test') {
     useJUnitPlatform()
-    ['liveAnvilE2e', 'liveAnvilRpcUrl', 'liveAnvilContract', 'updateOpenApiSpec'].each { propName ->
+    [
+        'liveAnvilE2e',
+        'liveAnvilRpcUrl',
+        'liveAnvilContract',
+        'liveAnvilDbUrl',
+        'liveAnvilDbUser',
+        'liveAnvilDbPassword',
+        'liveAnvilDbDriver',
+        'updateOpenApiSpec'
+    ].each { propName ->
         def propValue = System.getProperty(propName)
         if (propValue != null) {
             systemProperty propName, propValue

@@ -77,8 +77,20 @@ class LiveAnvilFullStackE2ETest {
     static void bindLiveAnvilProperties(DynamicPropertyRegistry registry) {
         String rpcUrl = System.getProperty("liveAnvilRpcUrl", "http://127.0.0.1:8545");
         String contract = System.getProperty("liveAnvilContract", "");
-        registry.add("spring.datasource.url", () ->
-            "jdbc:h2:mem:safedeal_live_e2e;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_DELAY=-1");
+        String dbUrl = System.getProperty(
+            "liveAnvilDbUrl",
+            "jdbc:h2:mem:safedeal_live_e2e;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_DELAY=-1"
+        );
+        String dbUser = System.getProperty("liveAnvilDbUser", dbUrl.startsWith("jdbc:postgresql:") ? "safedeal" : "sa");
+        String dbPass = System.getProperty("liveAnvilDbPassword", dbUrl.startsWith("jdbc:postgresql:") ? "safedeal" : "");
+        String dbDriver = System.getProperty(
+            "liveAnvilDbDriver",
+            dbUrl.startsWith("jdbc:postgresql:") ? "org.postgresql.Driver" : "org.h2.Driver"
+        );
+        registry.add("spring.datasource.url", () -> dbUrl);
+        registry.add("spring.datasource.username", () -> dbUser);
+        registry.add("spring.datasource.password", () -> dbPass);
+        registry.add("spring.datasource.driver-class-name", () -> dbDriver);
         registry.add("safedeal.blockchain.enabled", () -> "true");
         registry.add("safedeal.blockchain.rpc-url", () -> rpcUrl);
         registry.add("safedeal.blockchain.escrow-contract-address", () -> contract);
