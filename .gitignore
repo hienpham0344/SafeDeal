@@ -45,3 +45,6 @@ blockchain/deployments/local-*.json
 # Agents-kit local symlinks & backups
 .agents/skills/
 .agents/backups/
+
+# Firebase CLI local cache
+.firebase/
