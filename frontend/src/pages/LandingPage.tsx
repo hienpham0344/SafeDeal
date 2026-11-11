@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { ArrowRight, Menu, X } from "lucide-react";
+import { SeamlessHeroVideo } from "@/components/landing/SeamlessHeroVideo";
 import { brandConfig } from "@/config/brand.config";
 import { ROUTES } from "@/config/routes";
 import { useAuthSession } from "@/features/authentication/hooks/useAuthSession";
@@ -18,15 +19,7 @@ export function LandingPage() {
 
   return (
     <div className="relative h-screen w-full overflow-hidden bg-black font-geist">
-      <video
-        autoPlay
-        muted
-        loop
-        playsInline
-        src={brandConfig.heroVideoUrl}
-        className="absolute inset-0 h-full w-full object-cover object-[70%_center]"
-        aria-hidden="true"
-      />
+      <SeamlessHeroVideo src={brandConfig.heroVideoUrl} />
 
       <header className="relative z-30 flex items-center justify-between px-6 py-5 md:px-12 lg:px-16">
         <div className="flex items-center gap-10">
