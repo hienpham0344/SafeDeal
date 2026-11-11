@@ -74,6 +74,8 @@ cleanup() {
   if [ -n "$DIST_BACKUP_DIR" ] && [ -d "$DIST_BACKUP_DIR/dist" ]; then
     rm -rf "$ROOT_DIR/frontend/dist"
     mv "$DIST_BACKUP_DIR/dist" "$ROOT_DIR/frontend/dist"
+  elif [ "${CLEAN_EPHEMERAL_DIST:-0}" = "1" ]; then
+    rm -rf "$ROOT_DIR/frontend/dist"
   fi
   if [ "$exit_code" -ne 0 ]; then
     echo "=== E2E Live Run Failed — Last Logs ===" >&2
@@ -126,13 +128,29 @@ echo "=== [4/6] Starting packaged safedeal-api.jar on ${API_URL} ==="
 mkdir -p "$TMP_DIR/evidence"
 EPHEMERAL_JWT_SECRET="$(node -e 'console.log(require("node:crypto").randomBytes(32).toString("hex"))')"
 DEFAULT_E2E_DB_URL="jdbc:h2:mem:safedeal_e2e_live;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_DELAY=-1"
+EFFECTIVE_DB_URL="${DB_URL:-$DEFAULT_E2E_DB_URL}"
+if [ -n "${DB_DRIVER_CLASS_NAME:-}" ]; then
+  EFFECTIVE_DB_DRIVER="$DB_DRIVER_CLASS_NAME"
+elif [[ "$EFFECTIVE_DB_URL" == jdbc:postgresql:* ]]; then
+  EFFECTIVE_DB_DRIVER="org.postgresql.Driver"
+else
+  EFFECTIVE_DB_DRIVER="org.h2.Driver"
+fi
+
+if [[ "$EFFECTIVE_DB_URL" == jdbc:postgresql:* ]]; then
+  EFFECTIVE_DB_USERNAME="${DB_USERNAME:-safedeal}"
+  EFFECTIVE_DB_PASSWORD="${DB_PASSWORD:-safedeal}"
+else
+  EFFECTIVE_DB_USERNAME="${DB_USERNAME:-sa}"
+  EFFECTIVE_DB_PASSWORD="${DB_PASSWORD-}"
+fi
 
 SPRING_PROFILES_ACTIVE=local \
 SERVER_PORT="$API_PORT" \
-DB_URL="${DB_URL:-$DEFAULT_E2E_DB_URL}" \
-DB_USERNAME="${DB_USERNAME:-sa}" \
-DB_PASSWORD="${DB_PASSWORD-}" \
-DB_DRIVER_CLASS_NAME="${DB_DRIVER_CLASS_NAME:-org.h2.Driver}" \
+DB_URL="$EFFECTIVE_DB_URL" \
+DB_USERNAME="$EFFECTIVE_DB_USERNAME" \
+DB_PASSWORD="$EFFECTIVE_DB_PASSWORD" \
+DB_DRIVER_CLASS_NAME="$EFFECTIVE_DB_DRIVER" \
 JWT_SECRET="$EPHEMERAL_JWT_SECRET" \
 SIWE_DOMAIN="127.0.0.1:${WEB_PORT}" \
 SIWE_URI="$WEB_URL" \
@@ -168,10 +186,13 @@ done
 curl -fsS "${API_URL}/api/v1/health/ready" | grep -q '"status":"READY"'
 
 echo "=== [5/6] Building & starting real Vite frontend on ${WEB_URL} ==="
+CLEAN_EPHEMERAL_DIST=0
 if [ -d "$ROOT_DIR/frontend/dist" ]; then
   DIST_BACKUP_DIR="$TMP_DIR/dist-backup"
   mkdir -p "$DIST_BACKUP_DIR"
   mv "$ROOT_DIR/frontend/dist" "$DIST_BACKUP_DIR/dist"
+else
+  CLEAN_EPHEMERAL_DIST=1
 fi
 
 VITE_APP_NAME="SafeDeal" \
@@ -180,7 +201,9 @@ VITE_API_BASE_URL="$API_URL" \
 VITE_CHAIN_ID=31337 \
 VITE_CHAIN_NAME="Anvil Local" \
 VITE_RPC_URL="$RPC_URL" \
+VITE_EXPLORER_BASE_URL="" \
 VITE_ESCROW_CONTRACT_ADDRESS="$ESCROW_CONTRACT_ADDRESS" \
+VITE_DEFAULT_ARBITER_ADDRESS="" \
 VITE_TX_POLL_INTERVAL_MS=500 \
   npm --prefix "$ROOT_DIR/frontend" run build
 
