@@ -27,6 +27,18 @@ const requestAuthNonceMock = vi.fn();
 const verifyWalletSignatureMock = vi.fn();
 const logoutSessionMock = vi.fn().mockResolvedValue(undefined);
 
+vi.mock("@/config/env", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/config/env")>();
+  return {
+    ...actual,
+    env: {
+      ...actual.env,
+      chainId: 31337,
+      chainName: "Anvil Local",
+    },
+  };
+});
+
 vi.mock("wagmi", () => ({
   useAccount: () => mockWagmiAccount,
   useChainId: () => mockWagmiAccount.chainId,
