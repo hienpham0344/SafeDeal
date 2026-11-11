@@ -18,6 +18,8 @@ public interface SpringDataDealRepository
     @Query("select d from JpaDealEntity d where d.tradeId = :tradeId")
     Optional<JpaDealEntity> findByTradeIdForUpdate(@Param("tradeId") String tradeId);
 
+    Optional<JpaDealEntity> findByCreateTxHashIgnoreCase(String createTxHash);
+
     boolean existsByCreateTxHashIgnoreCase(String createTxHash);
 
     List<JpaDealEntity> findByOnChainBoundTrueAndSettledFalse();

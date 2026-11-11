@@ -324,7 +324,7 @@ class DealSyncAndArbitrationEdgeCasesTest {
         long fundingDeadline = Instant.now().plusSeconds(3600).getEpochSecond();
         long deliveryDeadline = Instant.now().plusSeconds(7200).getEpochSecond();
 
-        for (int attempt = 0; attempt < 5; attempt++) {
+        for (int attempt = 0; attempt < 15; attempt++) {
             Deal draft = createDraft.execute(new CreateDealDraftUseCase.Command(
                 seller,
                 buyer,
@@ -338,7 +338,7 @@ class DealSyncAndArbitrationEdgeCasesTest {
                 "Standard escrow agreement terms applied."
             ));
 
-            String createTx = "0xca0" + attempt + "0".repeat(60);
+            String createTx = String.format("0xca%02d%s", attempt, "0".repeat(60));
             long blockNum = 100L + attempt;
             VerifiedChainEvent createdEv = new VerifiedChainEvent(
                 createTx, 0, blockNum, Instant.now().getEpochSecond(), CONTRACT,
