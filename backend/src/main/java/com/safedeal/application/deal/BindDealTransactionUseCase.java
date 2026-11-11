@@ -68,9 +68,9 @@ public class BindDealTransactionUseCase {
             throw new ExternalServiceException("Blockchain verification is currently disabled on this server.");
         }
 
-        // Phase 1: DB pre-check (short read transaction)
+        // Phase 1: DB pre-check (short read/lock transaction)
         Deal deal = txTemplate.execute(status -> {
-            Deal found = dealRepository.findByTradeId(tradeId)
+            Deal found = dealRepository.findByTradeIdForUpdate(tradeId)
                 .orElseThrow(() -> new NotFoundException("Deal not found: " + tradeId));
             if (!found.seller().equalsIgnoreCase(caller)) {
                 throw new ForbiddenException("Only the deal seller can bind the initial createTrade transaction.");
@@ -81,9 +81,11 @@ public class BindDealTransactionUseCase {
             if (found.onChainBound()) {
                 throw new ConflictException("Deal is already bound on-chain.");
             }
-            if (dealRepository.existsByCreateTxHash(txHash)) {
-                throw new ConflictException("Transaction hash is already bound to another deal.");
-            }
+            dealRepository.findByCreateTxHash(txHash)
+                .filter(existing -> !existing.tradeId().equalsIgnoreCase(tradeId))
+                .ifPresent(existing -> {
+                    throw new ConflictException("Transaction hash is already bound to another deal.");
+                });
             return found;
         });
 
@@ -148,9 +150,11 @@ public class BindDealTransactionUseCase {
                 ));
                 return current;
             }
-            if (dealRepository.existsByCreateTxHash(txHash)) {
-                throw new ConflictException("Transaction hash is already bound to another deal.");
-            }
+            dealRepository.findByCreateTxHash(txHash)
+                .filter(existing -> !existing.tradeId().equalsIgnoreCase(tradeId))
+                .ifPresent(existing -> {
+                    throw new ConflictException("Transaction hash is already bound to another deal.");
+                });
 
             DealStatus reconciledStatus = snapshot.toDealStatus();
             String resolvedBuyer = snapshot.buyer() != null && !EthFormatValidator.ZERO_ADDRESS.equalsIgnoreCase(snapshot.buyer())

@@ -16,6 +16,8 @@ public interface DealRepository {
 
     Optional<Deal> findByTradeIdForUpdate(String tradeId);
 
+    Optional<Deal> findByCreateTxHash(String createTxHash);
+
     boolean existsByCreateTxHash(String createTxHash);
 
     PageSlice findUserDeals(String walletAddress, String role, DealStatus statusFilter, int page, int size);

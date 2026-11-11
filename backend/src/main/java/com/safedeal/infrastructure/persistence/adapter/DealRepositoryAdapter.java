@@ -89,6 +89,15 @@ public class DealRepositoryAdapter implements DealRepository {
     }
 
     @Override
+    public Optional<Deal> findByCreateTxHash(String createTxHash) {
+        if (createTxHash == null || createTxHash.isBlank()) {
+            return Optional.empty();
+        }
+        return dealJpa.findByCreateTxHashIgnoreCase(createTxHash.trim())
+            .map(e -> toDomain(e, termsJpa.findByDealId(e.getId()).orElse(null)));
+    }
+
+    @Override
     public boolean existsByCreateTxHash(String createTxHash) {
         return dealJpa.existsByCreateTxHashIgnoreCase(createTxHash);
     }
