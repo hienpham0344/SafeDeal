@@ -6,6 +6,7 @@ import { env } from "@/config/env";
 export const wagmiConfig = createConfig({
   chains: [activeChain],
   connectors: [injected()],
+  pollingInterval: env.txPollIntervalMs,
   transports: {
     [activeChain.id]: http(env.rpcUrl),
   },
