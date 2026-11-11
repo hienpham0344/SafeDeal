@@ -5,22 +5,23 @@
 | Environment | Blockchain | Backend Runtime | Database & Storage | Frontend Hosting |
 |---|---|---|---|---|
 | **Local Development** | Anvil (`http://127.0.0.1:8545`, chain `31337`) | Gradle `bootRun` / Docker container (`:8080`) | Docker PostgreSQL 16 + `./storage/evidence` | Vite dev/preview (`:5173` / `:4173`) |
-| **Local Live 3-Tier E2E** | Isolated Anvil (`127.0.0.1:18545`) | Packaged `safedeal-api.jar` (`PropertiesLauncher`, `:18080`) | H2 PostgreSQL-mode or `DB_URL` override + temp evidence dir | Built Vite SPA (`127.0.0.1:14173`) |
-| **Full Docker Compose** | `anvil` service (`infra/docker-compose.yml`) | Multi-stage `backend/Dockerfile` (Eclipse Temurin JRE 21) | Named volumes `postgres_data` + `evidence_data` | `frontend/Dockerfile` (`nginx:1.27-alpine`) |
-| **Cloud Testnet / Production** | Avalanche Fuji C-Chain (`43113`) | Railway (`backend/railway.json` healthcheck `/api/v1/health`) | Managed PostgreSQL addon + mounted persistent volume `/app/storage/evidence` | Vercel (`frontend/vercel.json` SPA rewrites & security headers) |
+| **Local Live 3-Tier E2E** | Isolated Anvil (`127.0.0.1:18545`) | Packaged `safedeal-api.jar` (`PropertiesLauncher`, `:18080`) | H2 PostgreSQL-mode or `DB_URL` (PostgreSQL 16) + temp evidence dir | Built Vite SPA (`127.0.0.1:14173`) |
+| **Full Docker Compose** | `anvil` service (`infra/docker-compose.yml`, `${ANVIL_PORT:-8545}`) | Multi-stage `backend/Dockerfile` (`${BACKEND_PORT:-8080}`) | Named volumes `postgres_data` (`${DB_PORT:-5432}`) + `evidence_data` | `frontend/Dockerfile` (`nginx:1.27-alpine`, `${FRONTEND_PORT:-5173}`) |
+| **Cloud Testnet / Production** | Avalanche Fuji C-Chain (`43113`) | Railway (`backend/railway.json` healthcheck `/api/v1/health`) | Managed PostgreSQL addon + mounted persistent volume `/app/storage/evidence` | Vercel (`frontend/vercel.json`) or Firebase Hosting (`firebase.json`, `avalanche-9b099.web.app`) |
 
 ## 2. Container & Web Security Configuration
 
 - **`backend/Dockerfile`**: Two-stage build producing non-root user `safedeal`, JRE 21 runtime, container memory limits (`-XX:MaxRAMPercentage=75.0`), and Docker `HEALTHCHECK` against `http://127.0.0.1:8080/api/v1/health`.
 - **`frontend/Dockerfile` & `frontend/nginx.conf`**: Copies `public/` (favicon, static assets), runs `npm run build`, and serves via `nginx:1.27-alpine` with `server_tokens off`, `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy`, `Permissions-Policy`, immutable asset caching, and SPA fallback (`try_files $uri $uri/ /index.html`).
-- **`frontend/vercel.json`**: Configures matching security headers and SPA fallback rewrite on Vercel Edge.
+- **`frontend/vercel.json` & `firebase.json` (`.firebaserc` -> `avalanche-9b099`)**: Configure matching security headers (`no-cache` for SPA shell, `immutable` for `/assets/**`) and SPA fallback rewrites on Vercel Edge or Firebase Hosting (`https://avalanche-9b099.web.app`). Note: when Firebase Hosting serves the SPA cross-origin against a Railway backend, configure the backend with `COOKIE_SECURE=true`, `COOKIE_SAME_SITE=None`, `SIWE_DOMAIN=avalanche-9b099.web.app`, `SIWE_URI=https://avalanche-9b099.web.app`, and `CORS_ALLOWED_ORIGINS=https://avalanche-9b099.web.app,https://avalanche-9b099.firebaseapp.com` (do not proxy cookies through a Firebase Hosting rewrite, because Firebase strips non-`__session` cookies).
 
 ## 3. GitHub Actions CI/CD Workflows (`.github/workflows/`)
 
 1. **`ci.yml`** (on `push` to `main` and every `pull_request`):
    - `blockchain`: Foundry `forge test --root blockchain -vvv`.
-   - `backend`: JDK 21 + Gradle `./backend/gradlew -p backend test bootJar` (executes unit, ArchUnit, security, controller, indexer, and OpenAPI sync verification tests).
+   - `backend`: JDK 21 + Gradle `./backend/gradlew -p backend test bootJar` (executes unit, ArchUnit, Flyway/PostgreSQL Testcontainers & H2 contract verification, security, controller, indexer, and OpenAPI sync tests).
    - `frontend`: Node 22 `npm ci`, `typecheck`, `lint`, `test` (Vitest), `build`, and `npm run test:e2e` (Playwright across Desktop, Tablet, Mobile).
+   - `docker-postgres-e2e`: Boots `infra/docker-compose.yml` (`postgres:16-alpine`, `anvil`, `backend/Dockerfile`, `frontend/Dockerfile`) on isolated ports, verifies `smoke-test.sh` & `psql flyway_schema_history`, and executes the full unmocked `scripts/e2e-live.sh` suite directly against PostgreSQL 16.
 2. **`secrets-scan.yml`** (on `push`, `pull_request`, and weekly cron):
    - Executes Gitleaks secret scanning across commit history.
 3. **`contracts-deploy.yml`** (manual `workflow_dispatch`):
