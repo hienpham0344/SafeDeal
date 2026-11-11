@@ -77,3 +77,102 @@ jobs:
         env:
           PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH: ""
         run: npm run test:e2e
+
+  docker-postgres-e2e:
+    name: Docker Compose & PostgreSQL 16 E2E
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.9.0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: gradle/actions/setup-gradle@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install Solidity dependencies if missing
+        working-directory: blockchain
+        run: |
+          if [ ! -d lib/forge-std ] || [ ! -d lib/openzeppelin-contracts ]; then
+            forge install foundry-rs/forge-std OpenZeppelin/openzeppelin-contracts --no-git
+          fi
+      - name: Install frontend dependencies & Playwright Chromium
+        working-directory: frontend
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: Run Docker Compose smoke test, psql verification & live PostgreSQL 16 E2E
+        env:
+          DB_PORT: "15432"
+          ANVIL_PORT: "18545"
+          BACKEND_PORT: "18080"
+          FRONTEND_PORT: "14173"
+        run: |
+          set -euo pipefail
+          export JWT_SECRET="$(openssl rand -hex 32)"
+          docker compose -f infra/docker-compose.yml config -q
+          docker compose -f infra/docker-compose.yml up -d postgres anvil
+          for i in $(seq 1 30); do
+            if docker compose -f infra/docker-compose.yml exec -T postgres pg_isready -U safedeal -d safedeal >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+          docker compose -f infra/docker-compose.yml exec -T postgres pg_isready -U safedeal -d safedeal
+          for i in $(seq 1 30); do
+            if cast block-number --rpc-url "http://127.0.0.1:${ANVIL_PORT}" >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+          cast block-number --rpc-url "http://127.0.0.1:${ANVIL_PORT}" >/dev/null
+          DEPLOYER_KEY="0x$(openssl rand -hex 32)"
+          DEPLOYER_ADDR="$(cast wallet address --private-key "$DEPLOYER_KEY")"
+          cast rpc anvil_setBalance "$DEPLOYER_ADDR" "0x3635c9adc5dea00000" --rpc-url "http://127.0.0.1:${ANVIL_PORT}" >/dev/null
+          DEPLOY_OUT=$(cd blockchain && DEPLOYER_PRIVATE_KEY="$DEPLOYER_KEY" forge script script/Deploy.s.sol:Deploy --rpc-url "http://127.0.0.1:${ANVIL_PORT}" --broadcast 2>&1)
+          export ESCROW_CONTRACT_ADDRESS="$(echo "$DEPLOY_OUT" | grep -oE 'SafeDealEscrow deployed at: 0x[0-9a-fA-F]{40}' | awk '{print $NF}' | tail -n 1 || true)"
+          if [ -z "$ESCROW_CONTRACT_ADDRESS" ]; then
+            echo "Failed to extract ESCROW_CONTRACT_ADDRESS from deploy output:"
+            echo "$DEPLOY_OUT"
+            exit 1
+          fi
+          export VITE_ESCROW_CONTRACT_ADDRESS="$ESCROW_CONTRACT_ADDRESS"
+          export BLOCKCHAIN_SYNC_ENABLED="true"
+          docker compose -f infra/docker-compose.yml up -d --build backend frontend
+          for i in $(seq 1 60); do
+            if curl -fsS "http://localhost:${BACKEND_PORT}/api/v1/health/ready" | grep -q '"status":"READY"' \
+              && curl -fsS "http://localhost:${FRONTEND_PORT}/" >/dev/null 2>&1; then
+              break
+            fi
+            sleep 2
+          done
+          if ! curl -fsS "http://localhost:${BACKEND_PORT}/api/v1/health/ready" | grep -q '"status":"READY"'; then
+            docker compose -f infra/docker-compose.yml logs backend frontend || true
+            exit 1
+          fi
+          API_BASE_URL="http://localhost:${BACKEND_PORT}" FRONTEND_BASE_URL="http://localhost:${FRONTEND_PORT}" bash scripts/smoke-test.sh
+          docker compose -f infra/docker-compose.yml exec -T postgres psql -U safedeal -d safedeal -c "SELECT version, description, success FROM flyway_schema_history ORDER BY installed_rank;"
+          docker compose -f infra/docker-compose.yml stop backend frontend anvil
+          docker compose -f infra/docker-compose.yml exec -T postgres psql -U safedeal -d safedeal -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
+          PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH="" \
+          ANVIL_PORT=28545 \
+          API_PORT=28080 \
+          WEB_PORT=24173 \
+          DB_URL="jdbc:postgresql://127.0.0.1:${DB_PORT}/safedeal" \
+          DB_USERNAME=safedeal \
+          DB_PASSWORD=safedeal \
+          DB_DRIVER_CLASS_NAME=org.postgresql.Driver \
+            bash scripts/e2e-live.sh
+          docker compose -f infra/docker-compose.yml exec -T postgres psql -U safedeal -d safedeal -c "SELECT 'users' AS table_name, COUNT(*) FROM users UNION ALL SELECT 'auth_nonces', COUNT(*) FROM auth_nonces UNION ALL SELECT 'deals', COUNT(*) FROM deals UNION ALL SELECT 'deal_terms', COUNT(*) FROM deal_terms UNION ALL SELECT 'deal_events', COUNT(*) FROM deal_events UNION ALL SELECT 'chain_events', COUNT(*) FROM chain_events UNION ALL SELECT 'disputes', COUNT(*) FROM disputes UNION ALL SELECT 'dispute_evidence', COUNT(*) FROM dispute_evidence ORDER BY table_name;"
+      - name: Tear down Docker Compose stack
+        if: always()
+        run: docker compose -f infra/docker-compose.yml down -v || true
