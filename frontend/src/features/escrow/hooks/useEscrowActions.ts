@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useState } from "react";
 import { usePublicClient, useReadContract, useWriteContract } from "wagmi";
+import { appConfig } from "@/config/app.config";
 import { contractsConfig } from "@/config/contracts";
 import { env } from "@/config/env";
 import { useAuthSession } from "@/features/authentication/hooks/useAuthSession";
@@ -78,6 +79,7 @@ export function useEscrowContractExecutor() {
       const { client } = ensureReady();
       const receipt = await client.waitForTransactionReceipt({
         hash: txHash,
+        pollingInterval: appConfig.transactions.pollIntervalMs,
         timeout: 120_000,
       });
       if (receipt.status !== "success") {

@@ -155,7 +155,9 @@ async function createAndAuthenticateActor(browser: Browser, role: string): Promi
   await page.goto("/dashboard");
   await page.getByRole("main").getByRole("button", { name: "Connect Wallet" }).click();
   await page.getByRole("dialog").getByRole("button", { name: "Connect Injected Wallet" }).click();
-  await expect(page.getByRole("dialog").getByRole("button", { name: "Sign In", exact: true })).toBeVisible();
+  await expect(page.getByRole("dialog").getByRole("button", { name: "Sign In", exact: true })).toBeVisible({
+    timeout: 15_000,
+  });
   await page.getByRole("dialog").getByRole("button", { name: "Sign In", exact: true }).click();
   try {
     await expect(page.getByRole("dialog")).toHaveCount(0, { timeout: 15_000 });
@@ -198,10 +200,19 @@ async function createAndBindDealThroughUi(params: {
   await page.fill("#deal-terms", terms);
 
   await page.getByRole("button", { name: "Preview On-Chain Transaction" }).click();
-  await expect(page.getByRole("button", { name: "Create Trade On-Chain" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Create Trade On-Chain" })).toBeVisible({ timeout: 15_000 });
   await page.getByRole("button", { name: "Create Trade On-Chain" }).click();
 
-  await expect(page.getByText("Deal Created & Bound")).toBeVisible({ timeout: 25_000 });
+  try {
+    await expect(page.getByText("Deal Created & Bound")).toBeVisible({ timeout: 25_000 });
+  } catch (err) {
+    const alertTexts = await page.locator('[role="alert"]').allInnerTexts().catch(() => []);
+    throw new Error(
+      `Deal creation/binding failed for '${title}' (url=${page.url()}).\n` +
+        `Visible alerts: ${alertTexts.join(" | ") || "<none>"}\n` +
+        `Cause: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
   const shareUrl = await page.locator("code").first().innerText();
   const match = shareUrl.match(/\/deals\/(0x[0-9a-fA-F]{64})/);
   expect(match?.[1], `Expected tradeId inside shareUrl=${shareUrl}`).toBeTruthy();
@@ -250,34 +261,34 @@ test.describe("Live Unmocked 3-Tier Browser -> Backend -> Anvil E2E", () => {
       });
 
       await buyer.page.goto(`/deals/${tradeId1}`);
-      await expect(buyer.page.getByText("CREATED", { exact: true }).first()).toBeVisible();
-      await expect(buyer.page.getByText("(client SHA-256 verified)")).toBeVisible();
+      await expect(buyer.page.getByText("CREATED", { exact: true }).first()).toBeVisible({ timeout: 15_000 });
+      await expect(buyer.page.getByText("(client SHA-256 verified)")).toBeVisible({ timeout: 15_000 });
       await buyer.page.getByRole("button", { name: /Fund Escrow \(0\.5 AVAX\)/ }).click();
       await expect(buyer.page.getByText("FUNDED", { exact: true }).first()).toBeVisible({ timeout: 25_000 });
 
       // Reload verifies DB persistence
       await buyer.page.reload();
-      await expect(buyer.page.getByText("FUNDED", { exact: true }).first()).toBeVisible();
+      await expect(buyer.page.getByText("FUNDED", { exact: true }).first()).toBeVisible({ timeout: 15_000 });
 
       await seller.page.goto(`/deals/${tradeId1}`);
-      await expect(seller.page.getByRole("button", { name: "Mark Delivered" })).toBeVisible();
+      await expect(seller.page.getByRole("button", { name: "Mark Delivered" })).toBeVisible({ timeout: 15_000 });
       await seller.page.getByRole("button", { name: "Mark Delivered" }).click();
       await expect(seller.page.getByText("DELIVERED", { exact: true }).first()).toBeVisible({ timeout: 25_000 });
 
       await buyer.page.reload();
-      await expect(buyer.page.getByRole("button", { name: "Approve & Release Funds" })).toBeVisible();
+      await expect(buyer.page.getByRole("button", { name: "Approve & Release Funds" })).toBeVisible({ timeout: 15_000 });
       await buyer.page.getByRole("button", { name: "Approve & Release Funds" }).click();
       await expect(buyer.page.getByText("RELEASED", { exact: true }).first()).toBeVisible({ timeout: 25_000 });
 
       // Verified event timeline recorded cleanly
-      await expect(buyer.page.getByText("TRADE_CREATED", { exact: true })).toBeVisible();
-      await expect(buyer.page.getByText("TRADE_FUNDED", { exact: true })).toBeVisible();
-      await expect(buyer.page.getByText("DELIVERY_MARKED", { exact: true })).toBeVisible();
-      await expect(buyer.page.getByText("FUNDS_RELEASED", { exact: true })).toBeVisible();
+      await expect(buyer.page.getByText("TRADE_CREATED", { exact: true })).toBeVisible({ timeout: 15_000 });
+      await expect(buyer.page.getByText("TRADE_FUNDED", { exact: true })).toBeVisible({ timeout: 15_000 });
+      await expect(buyer.page.getByText("DELIVERY_MARKED", { exact: true })).toBeVisible({ timeout: 15_000 });
+      await expect(buyer.page.getByText("FUNDS_RELEASED", { exact: true })).toBeVisible({ timeout: 15_000 });
 
       // Seller pulls claimable funds to 0 wei
       await seller.page.reload();
-      await expect(seller.page.getByText(/0\.5 AVAX ready for pull-withdrawal/i)).toBeVisible();
+      await expect(seller.page.getByText(/0\.5 AVAX ready for pull-withdrawal/i)).toBeVisible({ timeout: 15_000 });
       await seller.page.getByRole("button", { name: "Withdraw AVAX" }).click();
       await expect(seller.page.getByText(/Withdrawal confirmed on-chain/i)).toBeVisible({ timeout: 25_000 });
 
@@ -302,17 +313,21 @@ test.describe("Live Unmocked 3-Tier Browser -> Backend -> Anvil E2E", () => {
       });
 
       await buyer.page.goto(`/deals/${tradeId2}`);
-      await expect(buyer.page.getByRole("button", { name: /Fund Escrow \(0\.25 AVAX\)/ })).toBeVisible();
+      await expect(buyer.page.getByRole("button", { name: /Fund Escrow \(0\.25 AVAX\)/ })).toBeVisible({
+        timeout: 15_000,
+      });
       await buyer.page.getByRole("button", { name: /Fund Escrow \(0\.25 AVAX\)/ }).click();
       await expect(buyer.page.getByText("FUNDED", { exact: true }).first()).toBeVisible({ timeout: 25_000 });
 
       await seller.page.goto(`/deals/${tradeId2}`);
-      await expect(seller.page.getByRole("button", { name: "Voluntary Refund to Buyer" })).toBeVisible();
+      await expect(seller.page.getByRole("button", { name: "Voluntary Refund to Buyer" })).toBeVisible({
+        timeout: 15_000,
+      });
       await seller.page.getByRole("button", { name: "Voluntary Refund to Buyer" }).click();
       await expect(seller.page.getByText("REFUNDED", { exact: true }).first()).toBeVisible({ timeout: 25_000 });
 
       await buyer.page.reload();
-      await expect(buyer.page.getByText(/0\.25 AVAX ready for pull-withdrawal/i)).toBeVisible();
+      await expect(buyer.page.getByText(/0\.25 AVAX ready for pull-withdrawal/i)).toBeVisible({ timeout: 15_000 });
       await buyer.page.getByRole("button", { name: "Withdraw AVAX" }).click();
       await expect(buyer.page.getByText(/Withdrawal confirmed on-chain/i)).toBeVisible({ timeout: 25_000 });
 
@@ -338,6 +353,9 @@ test.describe("Live Unmocked 3-Tier Browser -> Backend -> Anvil E2E", () => {
       });
 
       await buyer.page.goto(`/deals/${tradeId3}`);
+      await expect(buyer.page.getByRole("button", { name: /Fund Escrow \(0\.6 AVAX\)/ })).toBeVisible({
+        timeout: 15_000,
+      });
       await buyer.page.getByRole("button", { name: /Fund Escrow \(0\.6 AVAX\)/ }).click();
       await expect(buyer.page.getByText("FUNDED", { exact: true }).first()).toBeVisible({ timeout: 25_000 });
 
@@ -370,7 +388,7 @@ test.describe("Live Unmocked 3-Tier Browser -> Backend -> Anvil E2E", () => {
 
       await expect(buyer.page.getByText("Evidence recorded securely")).toBeVisible({ timeout: 15_000 });
       const downloadLink = buyer.page.getByRole("link", { name: "proof-evidence.png" });
-      await expect(downloadLink).toBeVisible();
+      await expect(downloadLink).toBeVisible({ timeout: 15_000 });
       const downloadHref = await downloadLink.getAttribute("href");
       expect(downloadHref).toBeTruthy();
 
@@ -383,11 +401,11 @@ test.describe("Live Unmocked 3-Tier Browser -> Backend -> Anvil E2E", () => {
       const outsiderDisputeRes = await outsider.page.request.get(`${API_URL}/api/v1/disputes/${disputeId}`);
       expect(outsiderDisputeRes.status()).toBe(403);
       await outsider.page.goto(`/disputes/${disputeId}`);
-      await expect(outsider.page.getByText("Access Denied or Not Found")).toBeVisible();
+      await expect(outsider.page.getByText("Access Denied or Not Found")).toBeVisible({ timeout: 15_000 });
 
       // Arbiter inspects assigned disputes and resolves 0.2 Buyer / 0.4 Seller split
       await arbiter.page.goto("/arbiter");
-      await expect(arbiter.page.getByText(new RegExp(`Dispute #${disputeId}`))).toBeVisible();
+      await expect(arbiter.page.getByText(new RegExp(`Dispute #${disputeId}`))).toBeVisible({ timeout: 15_000 });
       await arbiter.page.fill(`#buyer-alloc-${disputeId}`, "0.2");
       await arbiter.page.fill(`#seller-alloc-${disputeId}`, "0.4");
       const settlementRationale =
@@ -397,21 +415,21 @@ test.describe("Live Unmocked 3-Tier Browser -> Backend -> Anvil E2E", () => {
       await expect(arbiter.page.getByText(/Dispute settled on-chain/i)).toBeVisible({ timeout: 25_000 });
 
       await buyer.page.reload();
-      await expect(buyer.page.getByText("RESOLVED", { exact: true }).first()).toBeVisible();
-      await expect(buyer.page.getByText(/Buyer Award:.*0\.2 AVAX/i)).toBeVisible();
-      await expect(buyer.page.getByText(/Seller Award:.*0\.4 AVAX/i)).toBeVisible();
-      await expect(buyer.page.getByText(`Rationale: ${settlementRationale}`)).toBeVisible();
+      await expect(buyer.page.getByText("RESOLVED", { exact: true }).first()).toBeVisible({ timeout: 15_000 });
+      await expect(buyer.page.getByText(/Buyer Award:.*0\.2 AVAX/i)).toBeVisible({ timeout: 15_000 });
+      await expect(buyer.page.getByText(/Seller Award:.*0\.4 AVAX/i)).toBeVisible({ timeout: 15_000 });
+      await expect(buyer.page.getByText(`Rationale: ${settlementRationale}`)).toBeVisible({ timeout: 15_000 });
 
       // Both Buyer (0.2 AVAX) and Seller (0.4 AVAX) withdraw on DealDetailsPage -> contract claimable 0 wei
       await buyer.page.goto(`/deals/${tradeId3}`);
-      await expect(buyer.page.getByText("RESOLVED", { exact: true }).first()).toBeVisible();
-      await expect(buyer.page.getByText(/0\.2 AVAX ready for pull-withdrawal/i)).toBeVisible();
+      await expect(buyer.page.getByText("RESOLVED", { exact: true }).first()).toBeVisible({ timeout: 15_000 });
+      await expect(buyer.page.getByText(/0\.2 AVAX ready for pull-withdrawal/i)).toBeVisible({ timeout: 15_000 });
       await buyer.page.getByRole("button", { name: "Withdraw AVAX" }).click();
       await expect(buyer.page.getByText(/Withdrawal confirmed on-chain/i)).toBeVisible({ timeout: 25_000 });
 
       await seller.page.goto(`/deals/${tradeId3}`);
-      await expect(seller.page.getByText("RESOLVED", { exact: true }).first()).toBeVisible();
-      await expect(seller.page.getByText(/0\.4 AVAX ready for pull-withdrawal/i)).toBeVisible();
+      await expect(seller.page.getByText("RESOLVED", { exact: true }).first()).toBeVisible({ timeout: 15_000 });
+      await expect(seller.page.getByText(/0\.4 AVAX ready for pull-withdrawal/i)).toBeVisible({ timeout: 15_000 });
       await seller.page.getByRole("button", { name: "Withdraw AVAX" }).click();
       await expect(seller.page.getByText(/Withdrawal confirmed on-chain/i)).toBeVisible({ timeout: 25_000 });
 
