@@ -7,6 +7,8 @@ plugins {
 group = 'com.safedeal'
 version = '0.1.0'
 
+ext['testcontainers.version'] = '1.21.4'
+
 java {
     toolchain {
         languageVersion = JavaLanguageVersion.of(21)

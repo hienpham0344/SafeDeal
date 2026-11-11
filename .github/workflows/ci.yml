@@ -43,6 +43,14 @@ jobs:
         run: |
           chmod +x backend/gradlew
           ./backend/gradlew -p backend test bootJar
+      - name: Verify Testcontainers PostgreSQL 16 test ran cleanly (not skipped)
+        run: |
+          REPORT="backend/build/test-results/test/TEST-com.safedeal.PostgresFlywayAndPersistenceIntegrationTest.xml"
+          cat "$REPORT"
+          grep -qE 'tests="1"' "$REPORT"
+          grep -qE 'skipped="0"' "$REPORT"
+          grep -qE 'failures="0"' "$REPORT"
+          grep -qE 'errors="0"' "$REPORT"
 
   frontend:
     name: Frontend (React + Vite)
