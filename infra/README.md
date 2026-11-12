@@ -3,7 +3,7 @@
 This directory contains container orchestration and cloud deployment descriptors for SafeDeal:
 
 - `docker-compose.yml` — local full-stack orchestration (`postgres`, `anvil`, `backend`, `frontend`).
-- `railway/README.md` — Spring Boot + PostgreSQL deployment guide on Railway (`backend/railway.json`).
+- `railway/README.md` — Rust `safedeal-api` + PostgreSQL deployment guide on Railway (`backend/railway.json`).
 - `vercel/README.md` — React + Vite SPA deployment guide on Vercel (`frontend/vercel.json`).
 
 ## Local Docker Compose Usage
