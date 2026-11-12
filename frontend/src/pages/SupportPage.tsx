@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { ExternalLink } from "lucide-react";
 import { AppShell } from "@/components/layout/AppShell";
-import { Panel, StatusBadge } from "@/components/ui/Primitives";
+import { Panel } from "@/components/ui/Primitives";
 import { env } from "@/config/env";
 import { getExplorerAddressUrl } from "@/config/network.config";
 import { apiRequest } from "@/services/http/api-client";
@@ -23,22 +23,28 @@ export function SupportPage() {
       title="Support & Network Verification"
       subtitle="Runtime environment diagnostics, contract references, and operator guidance."
     >
-      <div className="grid gap-6 md:grid-cols-2">
-        <Panel className="space-y-4">
-          <h2 className="text-base font-medium text-white">Runtime Configuration</h2>
-          <dl className="space-y-3 text-sm">
-            <div className="flex justify-between gap-4 border-b border-white/10 pb-2">
-              <dt className="text-white/55">Environment</dt>
-              <dd className="font-mono text-white">{env.appEnv}</dd>
+      <div className="grid gap-6 lg:grid-cols-12">
+        <Panel variant="elevated" className="lg:col-span-5 h-fit space-y-4">
+          <div className="flex items-center justify-between border-b border-sd-line pb-3">
+            <h2 className="text-base font-medium text-white">Runtime Diagnostics</h2>
+            <span className="font-mono text-[11px] uppercase tracking-wider text-sd-inkSubtle">
+              Live Telemetry
+            </span>
+          </div>
+
+          <dl className="divide-y divide-sd-line text-sm">
+            <div className="flex items-center justify-between gap-4 py-3 first:pt-0">
+              <dt className="text-sd-inkMuted">Environment</dt>
+              <dd className="font-mono text-xs text-white">{env.appEnv}</dd>
             </div>
-            <div className="flex justify-between gap-4 border-b border-white/10 pb-2">
-              <dt className="text-white/55">Network</dt>
-              <dd className="text-white">
+            <div className="flex items-center justify-between gap-4 py-3">
+              <dt className="text-sd-inkMuted">Network</dt>
+              <dd className="font-mono text-xs text-white tabular-nums text-right">
                 {env.chainName} ({env.chainId})
               </dd>
             </div>
-            <div className="flex justify-between gap-4 border-b border-white/10 pb-2">
-              <dt className="text-white/55">Escrow Contract</dt>
+            <div className="flex items-start justify-between gap-4 py-3">
+              <dt className="shrink-0 text-sd-inkMuted">Escrow Contract</dt>
               <dd className="font-mono text-xs text-white break-all text-right">
                 {env.escrowContractAddress ? (
                   contractExplorerUrl ? (
@@ -46,54 +52,64 @@ export function SupportPage() {
                       href={contractExplorerUrl}
                       target="_blank"
                       rel="noreferrer"
-                      className="inline-flex items-center gap-1 underline hover:text-white/80"
+                      className="inline-flex items-center gap-1 underline decoration-sd-lineStrong underline-offset-4 transition-colors hover:text-sd-accent"
                     >
                       <span>{env.escrowContractAddress}</span>
-                      <ExternalLink size={12} />
+                      <ExternalLink size={12} className="shrink-0" aria-hidden="true" />
                     </a>
                   ) : (
                     env.escrowContractAddress
                   )
                 ) : (
-                  "Not configured"
+                  <span className="text-sd-inkSubtle">Not configured</span>
                 )}
               </dd>
             </div>
-            <div className="flex justify-between gap-4">
-              <dt className="text-white/55">Backend API</dt>
+            <div className="flex items-center justify-between gap-4 pt-3">
+              <dt className="text-sd-inkMuted">Backend API</dt>
               <dd>
                 {healthQuery.isLoading ? (
-                  <span className="text-white/50">Checking...</span>
+                  <span className="font-mono text-xs text-sd-inkSubtle">Checking...</span>
                 ) : healthQuery.isError ? (
-                  <span className="text-red-300">Unavailable</span>
+                  <span className="font-mono text-xs text-red-300">Unavailable</span>
                 ) : (
-                  <StatusBadge status="CREATED" />
+                  <span className="inline-flex items-center gap-1.5 rounded-md border border-emerald-400/30 bg-emerald-500/10 px-2.5 py-0.5 font-mono text-xs text-emerald-200">
+                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" aria-hidden="true" />
+                    Operational
+                  </span>
                 )}
               </dd>
             </div>
           </dl>
         </Panel>
 
-        <Panel className="space-y-4">
-          <h2 className="text-base font-medium text-white">Common Questions</h2>
-          <div className="space-y-3 text-sm text-white/70">
-            <div>
-              <p className="font-medium text-white">Why do I have to sign in after connecting my wallet?</p>
-              <p className="mt-1">
+        <Panel className="lg:col-span-7 space-y-4">
+          <div className="flex items-center justify-between border-b border-sd-line pb-3">
+            <h2 className="text-base font-medium text-white">Operator Reference & FAQ</h2>
+            <span className="font-mono text-[11px] uppercase tracking-wider text-sd-inkSubtle">
+              Protocol Notes
+            </span>
+          </div>
+
+          <div className="divide-y divide-sd-line text-sm text-sd-inkMuted">
+            <div className="pb-4">
+              <h3 className="font-medium text-white">Why do I have to sign in after connecting my wallet?</h3>
+              <p className="mt-1.5 leading-relaxed">
                 SafeDeal uses EIP-4361 (SIWE) wallet signatures so off-chain deal drafts and private dispute
                 evidence are accessible only to verified wallet participants.
               </p>
             </div>
-            <div>
-              <p className="font-medium text-white">Where do settled funds go?</p>
-              <p className="mt-1">
+            <div className="py-4">
+              <h3 className="font-medium text-white">Where do settled funds go?</h3>
+              <p className="mt-1.5 leading-relaxed">
                 Settled AVAX is credited to your on-chain claimable balance. Visit My Deals or any settled
-                deal page to withdraw via <code className="text-white">withdraw()</code>.
+                deal page to withdraw via{" "}
+                <code className="rounded bg-sd-inset px-1.5 py-0.5 font-mono text-xs text-white">withdraw()</code>.
               </p>
             </div>
-            <div>
-              <p className="font-medium text-white">What if my browser refreshes during a transaction?</p>
-              <p className="mt-1">
+            <div className="pt-4">
+              <h3 className="font-medium text-white">What if my browser refreshes during a transaction?</h3>
+              <p className="mt-1.5 leading-relaxed">
                 Pending transaction hashes are persisted per session and reconciled via the backend event
                 indexer. You can also click Sync On-Chain State on any deal page.
               </p>

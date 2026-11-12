@@ -5,8 +5,10 @@ import { zeroAddress } from "viem";
 import { AppShell } from "@/components/layout/AppShell";
 import { AlertBanner, EmptyState, LoadingState, Panel, StatusBadge } from "@/components/ui/Primitives";
 import { Button } from "@/components/ui/Button";
+import { CopyableHash } from "@/components/ui/CopyableHash";
+import { DealLifecycleStepper } from "@/components/ui/DealLifecycleStepper";
 import { getExplorerAddressUrl, getExplorerTxUrl } from "@/config/network.config";
-import { disputePath } from "@/config/routes";
+import { disputePath, ROUTES } from "@/config/routes";
 import { useAuthSession } from "@/features/authentication/hooks/useAuthSession";
 import {
   useBindDealTxMutation,
@@ -364,6 +366,7 @@ export function DealDetailsPage() {
     <AppShell
       title={deal ? deal.title : "Deal Details"}
       subtitle={tradeId ? `Trade ID: ${tradeId}` : undefined}
+      breadcrumb={{ label: "My Deals", to: ROUTES.dashboard }}
     >
       {!isConnected ? (
         <EmptyState
@@ -416,11 +419,13 @@ export function DealDetailsPage() {
             />
           )}
 
+          <DealLifecycleStepper status={effectiveStatus ?? deal.status} />
+
           <div className="grid gap-6 lg:grid-cols-3">
             <Panel className="lg:col-span-2 space-y-6">
-              <div className="flex flex-wrap items-start justify-between gap-4 border-b border-white/10 pb-4">
-                <div>
-                  <div className="flex flex-wrap items-center gap-2">
+              <div className="flex flex-wrap items-start justify-between gap-4 border-b border-sd-line pb-4">
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2.5">
                     <StatusBadge status={deal.status} />
                     {onChainStatus && onChainStatus !== deal.status && (
                       <span className="text-xs text-amber-300">
@@ -428,7 +433,11 @@ export function DealDetailsPage() {
                       </span>
                     )}
                   </div>
-                  <p className="mt-3 text-sm leading-relaxed text-white/80">{deal.description}</p>
+                  <div className="mt-2.5 flex flex-wrap items-center gap-2 text-xs text-sd-inkSubtle">
+                    <span>Trade ID:</span>
+                    <CopyableHash value={deal.tradeId} label="Trade ID" className="text-xs" />
+                  </div>
+                  <p className="mt-3 text-sm leading-relaxed text-sd-inkMuted">{deal.description}</p>
                 </div>
 
                 <Button
@@ -437,28 +446,28 @@ export function DealDetailsPage() {
                   disabled={syncMutation.isPending}
                   onClick={() => void handleManualSync()}
                 >
-                  <RefreshCw size={14} />
+                  <RefreshCw size={14} className={syncMutation.isPending ? "animate-spin" : ""} aria-hidden="true" />
                   <span>{syncMutation.isPending ? "Syncing..." : "Sync On-Chain"}</span>
                 </Button>
               </div>
 
               <div>
-                <h2 className="text-sm font-medium text-white">Agreed Terms & Acceptance Criteria</h2>
-                <pre className="mt-2 whitespace-pre-wrap rounded-xl border border-white/10 bg-black p-4 font-geist text-sm text-white/80">
+                <h2 className="text-sm font-medium text-white">Agreed Terms &amp; Acceptance Criteria</h2>
+                <pre className="mt-2 whitespace-pre-wrap rounded-xl border border-sd-line bg-sd-inset p-4 font-geist text-sm leading-relaxed text-sd-ink">
                   {deal.terms}
                 </pre>
-                <p className="mt-2 text-xs text-white/50">
-                  Canonical Terms Hash:{" "}
-                  <code className="font-mono text-white/80">{deal.termsHash}</code>{" "}
+                <div className="mt-2.5 flex flex-wrap items-center gap-2 text-xs text-sd-inkMuted">
+                  <span>Canonical Terms Hash:</span>
+                  <CopyableHash value={deal.termsHash} label="Terms Hash" className="text-xs" />
                   {termsHashVerified ? (
                     <span className="text-emerald-300">(client SHA-256 verified)</span>
                   ) : (
                     <span className="text-amber-300">(verifying...)</span>
                   )}
-                </p>
+                </div>
               </div>
 
-              <div className="space-y-3 border-t border-white/10 pt-5">
+              <div className="space-y-3 border-t border-sd-line pt-5">
                 <h2 className="text-sm font-medium text-white">Available Actions</h2>
 
                 <div className="flex flex-wrap gap-3">
@@ -562,7 +571,7 @@ export function DealDetailsPage() {
                         )
                       }
                     >
-                      Approve & Release Funds
+                      Approve &amp; Release Funds
                     </Button>
                   )}
 
@@ -582,7 +591,7 @@ export function DealDetailsPage() {
                   {deal.disputeId && (
                     <Link
                       to={disputePath(String(deal.disputeId))}
-                      className="inline-flex items-center rounded-lg border border-white/25 px-4 py-2 text-sm font-medium text-white hover:bg-white/10"
+                      className="inline-flex min-h-[40px] items-center rounded-lg border border-sd-lineStrong px-4 py-2 text-sm font-medium text-white transition-colors hover:border-white/30 hover:bg-white/10"
                     >
                       Open Dispute Center
                     </Link>
@@ -610,14 +619,14 @@ export function DealDetailsPage() {
                       value={disputeReason}
                       onChange={(e) => setDisputeReason(e.target.value)}
                       placeholder="Short reason (e.g. Deliverable incomplete)"
-                      className="w-full rounded-lg border border-white/20 bg-black px-3 py-2 text-sm text-white"
+                      className="w-full rounded-lg border border-sd-lineStrong bg-sd-inset px-3 py-2 text-sm text-white placeholder:text-sd-inkSubtle focus:border-sd-accent focus:outline-none focus:ring-1 focus:ring-sd-accent/40"
                     />
                     <textarea
                       rows={3}
                       value={disputeSummary}
                       onChange={(e) => setDisputeSummary(e.target.value)}
                       placeholder="Explain the dispute facts for the arbiter"
-                      className="w-full rounded-lg border border-white/20 bg-black px-3 py-2 text-sm text-white"
+                      className="w-full rounded-lg border border-sd-lineStrong bg-sd-inset px-3 py-2 text-sm text-white placeholder:text-sd-inkSubtle focus:border-sd-accent focus:outline-none focus:ring-1 focus:ring-sd-accent/40"
                     />
                     <div className="flex gap-2">
                       <Button
@@ -641,99 +650,118 @@ export function DealDetailsPage() {
               </div>
             </Panel>
 
-            <Panel className="space-y-4">
+            <Panel variant="inset" className="space-y-4">
               <h2 className="text-base font-medium text-white">Escrow Parameters</h2>
               <dl className="space-y-3 text-xs">
-                <div className="border-b border-white/10 pb-2">
-                  <dt className="text-white/45">Escrow Value</dt>
-                  <dd className="mt-1 font-mono text-base font-medium text-white">{formatAvax(deal.amountWei)}</dd>
+                <div className="border-b border-sd-line pb-2.5">
+                  <dt className="text-sd-inkSubtle">Escrow Value</dt>
+                  <dd className="mt-1 font-mono text-base font-semibold tabular-nums text-white">
+                    {formatAvax(deal.amountWei)}
+                  </dd>
                 </div>
-                <div className="border-b border-white/10 pb-2">
-                  <dt className="text-white/45">Seller</dt>
-                  <dd className="mt-1 font-mono break-all text-white/90">{deal.seller}</dd>
+                <div className="border-b border-sd-line pb-2.5">
+                  <dt className="text-sd-inkSubtle">Seller</dt>
+                  <dd className="mt-1 font-mono break-all text-sd-ink">{deal.seller}</dd>
                 </div>
-                <div className="border-b border-white/10 pb-2">
-                  <dt className="text-white/45">Buyer</dt>
-                  <dd className="mt-1 font-mono break-all text-white/90">
+                <div className="border-b border-sd-line pb-2.5">
+                  <dt className="text-sd-inkSubtle">Buyer</dt>
+                  <dd className="mt-1 font-mono break-all text-sd-ink">
                     {deal.buyer ?? "Open (any eligible buyer)"}
                   </dd>
                 </div>
-                <div className="border-b border-white/10 pb-2">
-                  <dt className="text-white/45">Human Arbiter</dt>
-                  <dd className="mt-1 font-mono break-all text-white/90">{deal.arbiter}</dd>
+                <div className="border-b border-sd-line pb-2.5">
+                  <dt className="text-sd-inkSubtle">Human Arbiter</dt>
+                  <dd className="mt-1 font-mono break-all text-sd-ink">{deal.arbiter}</dd>
                 </div>
-                <div className="border-b border-white/10 pb-2">
-                  <dt className="text-white/45">Funding Deadline</dt>
-                  <dd className="mt-1 text-white/85">{formatTimestamp(deal.fundingDeadline)}</dd>
+                <div className="border-b border-sd-line pb-2.5">
+                  <dt className="text-sd-inkSubtle">Funding Deadline</dt>
+                  <dd className="mt-1 tabular-nums text-sd-ink">{formatTimestamp(deal.fundingDeadline)}</dd>
                 </div>
-                <div className="border-b border-white/10 pb-2">
-                  <dt className="text-white/45">Delivery Deadline</dt>
-                  <dd className="mt-1 text-white/85">{formatTimestamp(deal.deliveryDeadline)}</dd>
+                <div className="border-b border-sd-line pb-2.5">
+                  <dt className="text-sd-inkSubtle">Delivery Deadline</dt>
+                  <dd className="mt-1 tabular-nums text-sd-ink">{formatTimestamp(deal.deliveryDeadline)}</dd>
                 </div>
                 <div>
-                  <dt className="text-white/45">Inspection Window</dt>
-                  <dd className="mt-1 text-white/85">{formatDurationSeconds(deal.inspectionWindowSeconds)}</dd>
+                  <dt className="text-sd-inkSubtle">Inspection Window</dt>
+                  <dd className="mt-1 tabular-nums text-sd-ink">
+                    {formatDurationSeconds(deal.inspectionWindowSeconds)}
+                  </dd>
                 </div>
               </dl>
 
               {deal.contractAddress && (
-                <div className="border-t border-white/10 pt-3 text-xs">
-                  <p className="text-white/45">Contract Address</p>
-                  {getExplorerAddressUrl(deal.contractAddress) ? (
-                    <a
-                      href={getExplorerAddressUrl(deal.contractAddress)!}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="mt-1 inline-flex items-center gap-1 font-mono text-white underline break-all"
-                    >
-                      <span>{deal.contractAddress}</span>
-                      <ExternalLink size={11} />
-                    </a>
-                  ) : (
-                    <p className="mt-1 font-mono break-all text-white/75">{deal.contractAddress}</p>
-                  )}
+                <div className="border-t border-sd-line pt-3 text-xs">
+                  <p className="text-sd-inkSubtle">Contract Address</p>
+                  <div className="mt-1 flex flex-wrap items-center gap-2">
+                    <CopyableHash
+                      value={deal.contractAddress}
+                      label="Contract Address"
+                      className="max-w-full text-xs"
+                    />
+                    {getExplorerAddressUrl(deal.contractAddress) && (
+                      <a
+                        href={getExplorerAddressUrl(deal.contractAddress)!}
+                        target="_blank"
+                        rel="noreferrer"
+                        aria-label="View contract on block explorer"
+                        className="inline-flex items-center gap-1 text-sd-inkMuted underline hover:text-white"
+                      >
+                        <span>Explorer</span>
+                        <ExternalLink size={11} aria-hidden="true" />
+                      </a>
+                    )}
+                  </div>
                 </div>
               )}
             </Panel>
           </div>
 
           <Panel className="space-y-4">
-            <h2 className="text-base font-medium text-white">Verified Timeline & Transactions</h2>
+            <h2 className="text-base font-medium text-white">Verified Timeline &amp; Transactions</h2>
             {historyQuery.isLoading ? (
-              <p className="text-sm text-white/50">Loading timeline...</p>
+              <p className="text-sm text-sd-inkMuted">Loading timeline...</p>
             ) : !historyQuery.data || historyQuery.data.events.length === 0 ? (
-              <p className="text-sm text-white/50">No verified events recorded yet.</p>
+              <p className="text-sm text-sd-inkMuted">No verified events recorded yet.</p>
             ) : (
-              <div className="space-y-3">
+              <ol className="relative ml-2 border-l border-sd-lineStrong pl-5 space-y-4">
                 {historyQuery.data.events.map((event) => {
                   const txUrl = event.txHash ? getExplorerTxUrl(event.txHash) : null;
                   return (
-                    <div
-                      key={event.id}
-                      className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-white/10 bg-black p-3.5 text-xs"
-                    >
-                      <div>
-                        <p className="font-medium text-white">{event.eventType}</p>
-                        <p className="mt-0.5 text-white/60">{event.details}</p>
+                    <li key={event.id} className="relative">
+                      <span
+                        className="absolute -left-[25px] top-4 h-2.5 w-2.5 rounded-full border border-emerald-400/70 bg-sd-canvas ring-4 ring-sd-surface"
+                        aria-hidden="true"
+                      />
+                      <div className="flex flex-wrap items-start justify-between gap-3 rounded-lg border border-sd-line bg-sd-inset p-3.5 text-xs">
+                        <div className="space-y-1">
+                          <p className="font-mono font-medium text-white">{event.eventType}</p>
+                          <p className="text-sd-inkMuted">{event.details}</p>
+                        </div>
+                        <div className="text-left sm:text-right text-sd-inkMuted">
+                          <p className="tabular-nums">{formatTimestamp(event.createdAt)}</p>
+                          {event.txHash && (
+                            <p className="mt-1 font-mono tabular-nums">
+                              {txUrl ? (
+                                <a
+                                  href={txUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="inline-flex items-center gap-1 underline hover:text-white"
+                                >
+                                  <span>{event.txHash.slice(0, 12)}...</span>
+                                  <ExternalLink size={10} aria-hidden="true" />
+                                </a>
+                              ) : (
+                                `${event.txHash.slice(0, 14)}...`
+                              )}
+                            </p>
+                          )}
+                        </div>
                       </div>
-                      <div className="text-right text-white/50">
-                        <p>{formatTimestamp(event.createdAt)}</p>
-                        {event.txHash && (
-                          <p className="mt-0.5 font-mono">
-                            {txUrl ? (
-                              <a href={txUrl} target="_blank" rel="noreferrer" className="underline hover:text-white">
-                                {event.txHash.slice(0, 12)}...
-                              </a>
-                            ) : (
-                              `${event.txHash.slice(0, 14)}...`
-                            )}
-                          </p>
-                        )}
-                      </div>
-                    </div>
+                    </li>
                   );
                 })}
-              </div>
+              </ol>
             )}
           </Panel>
         </div>
