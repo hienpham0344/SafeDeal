@@ -3,6 +3,15 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
+if [ -d "$HOME/.cargo/bin" ]; then
+  export PATH="$HOME/.cargo/bin:$PATH"
+fi
+
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "Error: cargo binary not found on PATH or ~/.cargo/bin." >&2
+  exit 1
+fi
+
 if [ -f "$ROOT_DIR/backend/.env" ]; then
   set -a
   # shellcheck disable=SC1091
@@ -10,18 +19,10 @@ if [ -f "$ROOT_DIR/backend/.env" ]; then
   set +a
 fi
 
-if [ -z "${JAVA_HOME:-}" ] && ! command -v java >/dev/null 2>&1; then
-  for jdk_dir in "$HOME"/.jdks/jdk-21*; do
-    if [ -d "$jdk_dir/bin" ]; then
-      export JAVA_HOME="$jdk_dir"
-      export PATH="$JAVA_HOME/bin:$PATH"
-      break
-    fi
-  done
-fi
+PROFILE="${APP_ENV:-${SPRING_PROFILES_ACTIVE:-local}}"
 
 if [ -z "${JWT_SECRET:-}" ]; then
-  if [ "${SPRING_PROFILES_ACTIVE:-local}" = "local" ] && command -v openssl >/dev/null 2>&1; then
+  if [ "$PROFILE" = "local" ] && command -v openssl >/dev/null 2>&1; then
     export JWT_SECRET="$(openssl rand -hex 32)"
     echo "Generated ephemeral JWT_SECRET for this local session."
   else
@@ -30,5 +31,5 @@ if [ -z "${JWT_SECRET:-}" ]; then
   fi
 fi
 
-echo "Starting SafeDeal Spring Boot API (profile=${SPRING_PROFILES_ACTIVE:-local})..."
-exec "$ROOT_DIR/backend/gradlew" -p "$ROOT_DIR/backend" bootRun
+echo "Starting SafeDeal Rust API (env=${PROFILE})..."
+exec cargo run --manifest-path "$ROOT_DIR/backend/Cargo.toml" --bin safedeal-api

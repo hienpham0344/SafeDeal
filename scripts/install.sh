@@ -4,31 +4,26 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
+if [ -d "$HOME/.cargo/bin" ]; then
+  export PATH="$HOME/.cargo/bin:$PATH"
+fi
+
 echo "=== Checking required toolchains ==="
 node -v
 npm -v
-java -version || {
-  for jdk_dir in "$HOME"/.jdks/jdk-21*; do
-    if [ -d "$jdk_dir/bin" ]; then
-      export JAVA_HOME="$jdk_dir"
-      export PATH="$JAVA_HOME/bin:$PATH"
-      break
-    fi
-  done
-  if command -v java >/dev/null 2>&1; then
-    java -version
-  else
-    echo "Error: Java 21 is required." >&2
-    exit 1
-  fi
-}
+
+if ! command -v rustc >/dev/null 2>&1 || ! command -v cargo >/dev/null 2>&1; then
+  echo "Error: Rust toolchain (rustc/cargo >= 1.91) is required. Install via https://rustup.rs" >&2
+  exit 1
+fi
+rustc --version
+cargo --version
 
 echo "=== Installing frontend dependencies ==="
 npm --prefix "$ROOT_DIR/frontend" ci
 
-echo "=== Verifying Gradle wrapper for backend ==="
-chmod +x "$ROOT_DIR/backend/gradlew"
-"$ROOT_DIR/backend/gradlew" -p "$ROOT_DIR/backend" --version
+echo "=== Fetching Cargo workspace dependencies for backend ==="
+cargo fetch --manifest-path "$ROOT_DIR/backend/Cargo.toml" --locked
 
 if command -v forge >/dev/null 2>&1; then
   FORGE_BIN="forge"

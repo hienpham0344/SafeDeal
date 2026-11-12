@@ -4,14 +4,13 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
-if [ -z "${JAVA_HOME:-}" ] && ! command -v java >/dev/null 2>&1; then
-  for jdk_dir in "$HOME"/.jdks/jdk-21*; do
-    if [ -d "$jdk_dir/bin" ]; then
-      export JAVA_HOME="$jdk_dir"
-      export PATH="$JAVA_HOME/bin:$PATH"
-      break
-    fi
-  done
+if [ -d "$HOME/.cargo/bin" ]; then
+  export PATH="$HOME/.cargo/bin:$PATH"
+fi
+
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "Error: cargo binary not found on PATH or ~/.cargo/bin." >&2
+  exit 1
 fi
 
 FORGE_BIN="$(command -v forge || true)"
@@ -29,8 +28,11 @@ fi
 echo "=== [1/3] Blockchain: Foundry tests ==="
 "$FORGE_BIN" test --root "$ROOT_DIR/blockchain" -vvv
 
-echo "=== [2/3] Backend: Gradle test + bootJar ==="
-"$ROOT_DIR/backend/gradlew" -p "$ROOT_DIR/backend" test bootJar
+echo "=== [2/3] Backend: Rust fmt + clippy + workspace tests + release binary ==="
+cargo fmt --manifest-path "$ROOT_DIR/backend/Cargo.toml" --check
+cargo clippy --manifest-path "$ROOT_DIR/backend/Cargo.toml" --workspace --all-targets -- -D warnings
+cargo test --manifest-path "$ROOT_DIR/backend/Cargo.toml" --workspace -- --test-threads=1
+cargo build --release --manifest-path "$ROOT_DIR/backend/Cargo.toml" --bin safedeal-api
 
 echo "=== [3/3] Frontend: Typecheck, Lint, Unit/Integration Tests & Build ==="
 npm --prefix "$ROOT_DIR/frontend" run typecheck

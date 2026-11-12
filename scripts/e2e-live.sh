@@ -4,19 +4,12 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
-if [ -z "${JAVA_HOME:-}" ] && ! command -v java >/dev/null 2>&1; then
-  for jdk_dir in "$HOME"/.jdks/jdk-21*; do
-    if [ -d "$jdk_dir/bin" ]; then
-      export JAVA_HOME="$jdk_dir"
-      export PATH="$JAVA_HOME/bin:$PATH"
-      break
-    fi
-  done
+if [ -d "$HOME/.cargo/bin" ]; then
+  export PATH="$HOME/.cargo/bin:$PATH"
 fi
 
-JAVA_BIN="$(command -v java || true)"
-if [ -z "$JAVA_BIN" ] || ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
-  echo "Error: java, node, and npm must be installed and available." >&2
+if ! command -v cargo >/dev/null 2>&1 || ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
+  echo "Error: cargo, node, and npm must be installed and available." >&2
   exit 1
 fi
 
@@ -91,8 +84,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "=== [1/6] Ensuring packaged backend JAR & H2 runtime driver ==="
-"$ROOT_DIR/backend/gradlew" -p "$ROOT_DIR/backend" bootJar copyTestH2
+echo "=== [1/6] Building release safedeal-api binary ==="
+cargo build --release --manifest-path "$ROOT_DIR/backend/Cargo.toml" --bin safedeal-api
+BACKEND_BIN="$ROOT_DIR/backend/target/release/safedeal-api"
 
 echo "=== [2/6] Starting live Anvil node on ${RPC_URL} ==="
 "$ANVIL_BIN" --host 127.0.0.1 --port "$ANVIL_PORT" --chain-id 31337 --silent >"$TMP_DIR/anvil.log" 2>&1 &
@@ -124,33 +118,16 @@ if [ -z "$ESCROW_CONTRACT_ADDRESS" ]; then
 fi
 echo "Deployed SafeDealEscrow at: $ESCROW_CONTRACT_ADDRESS"
 
-echo "=== [4/6] Starting packaged safedeal-api.jar on ${API_URL} ==="
+echo "=== [4/6] Starting safedeal-api release binary on ${API_URL} ==="
 mkdir -p "$TMP_DIR/evidence"
 EPHEMERAL_JWT_SECRET="$(node -e 'console.log(require("node:crypto").randomBytes(32).toString("hex"))')"
-DEFAULT_E2E_DB_URL="jdbc:h2:mem:safedeal_e2e_live;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_DELAY=-1"
-EFFECTIVE_DB_URL="${DB_URL:-$DEFAULT_E2E_DB_URL}"
-if [ -n "${DB_DRIVER_CLASS_NAME:-}" ]; then
-  EFFECTIVE_DB_DRIVER="$DB_DRIVER_CLASS_NAME"
-elif [[ "$EFFECTIVE_DB_URL" == jdbc:postgresql:* ]]; then
-  EFFECTIVE_DB_DRIVER="org.postgresql.Driver"
-else
-  EFFECTIVE_DB_DRIVER="org.h2.Driver"
-fi
+EFFECTIVE_DB_URL="${DB_URL:-${DATABASE_URL:-postgres://safedeal:safedeal@127.0.0.1:${DB_PORT:-5432}/safedeal}}"
 
-if [[ "$EFFECTIVE_DB_URL" == jdbc:postgresql:* ]]; then
-  EFFECTIVE_DB_USERNAME="${DB_USERNAME:-safedeal}"
-  EFFECTIVE_DB_PASSWORD="${DB_PASSWORD:-safedeal}"
-else
-  EFFECTIVE_DB_USERNAME="${DB_USERNAME:-sa}"
-  EFFECTIVE_DB_PASSWORD="${DB_PASSWORD-}"
-fi
-
-SPRING_PROFILES_ACTIVE=local \
+APP_ENV=local \
 SERVER_PORT="$API_PORT" \
-DB_URL="$EFFECTIVE_DB_URL" \
-DB_USERNAME="$EFFECTIVE_DB_USERNAME" \
-DB_PASSWORD="$EFFECTIVE_DB_PASSWORD" \
-DB_DRIVER_CLASS_NAME="$EFFECTIVE_DB_DRIVER" \
+DATABASE_URL="$EFFECTIVE_DB_URL" \
+DB_USERNAME="${DB_USERNAME:-safedeal}" \
+DB_PASSWORD="${DB_PASSWORD:-safedeal}" \
 JWT_SECRET="$EPHEMERAL_JWT_SECRET" \
 SIWE_DOMAIN="127.0.0.1:${WEB_PORT}" \
 SIWE_URI="$WEB_URL" \
@@ -167,21 +144,19 @@ BLOCKCHAIN_CONFIRMATIONS_REQUIRED=1 \
 BLOCKCHAIN_POLL_INTERVAL_MS=1000 \
 EVIDENCE_STORAGE_DIR="$TMP_DIR/evidence" \
 RATE_LIMIT_ENABLED=false \
-  "$JAVA_BIN" -Dloader.path="$ROOT_DIR/backend/build/e2e-libs" \
-    -cp "$ROOT_DIR/backend/build/libs/safedeal-api.jar" \
-    org.springframework.boot.loader.launch.PropertiesLauncher \
+  "$BACKEND_BIN" \
     >"$TMP_DIR/backend.log" 2>&1 &
 BACKEND_PID=$!
 
 for _ in $(seq 1 240); do
   if ! kill -0 "$BACKEND_PID" >/dev/null 2>&1; then
-    echo "Error: safedeal-api.jar exited prematurely before becoming ready." >&2
+    echo "Error: safedeal-api exited prematurely before becoming ready." >&2
     exit 1
   fi
   if curl -fsS "${API_URL}/api/v1/health/ready" >/dev/null 2>&1; then
     break
   fi
-  sleep 0.5
+  sleep 0.25
 done
 curl -fsS "${API_URL}/api/v1/health/ready" | grep -q '"status":"READY"'
 
