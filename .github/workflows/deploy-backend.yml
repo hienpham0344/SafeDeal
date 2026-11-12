@@ -13,18 +13,50 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: safedeal_test
+          POSTGRES_USER: safedeal
+          POSTGRES_PASSWORD: safedeal
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U safedeal -d safedeal_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
         with:
-          distribution: temurin
-          java-version: "21"
-      - uses: gradle/actions/setup-gradle@v4
-      - name: Run backend test suite & package JAR
+          submodules: recursive
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.9.0
+      - name: Install Solidity dependencies if missing
+        working-directory: blockchain
         run: |
-          chmod +x backend/gradlew
-          ./backend/gradlew -p backend test bootJar
+          if [ ! -d lib/forge-std ] || [ ! -d lib/openzeppelin-contracts ]; then
+            forge install foundry-rs/forge-std OpenZeppelin/openzeppelin-contracts --no-git
+          fi
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+      - name: Ensure cmake is installed
+        run: command -v cmake >/dev/null 2>&1 || (sudo apt-get update && sudo apt-get install -y cmake)
+      - name: Run Rust backend tests & build release binary
+        env:
+          SAFEDEAL_TEST_DB_URL: postgres://safedeal:safedeal@127.0.0.1:5432/safedeal_test
+        run: |
+          cargo fmt --manifest-path backend/Cargo.toml --check
+          cargo clippy --manifest-path backend/Cargo.toml --workspace --all-targets -- -D warnings
+          cargo test --manifest-path backend/Cargo.toml --workspace -- --test-threads=1
+          cargo build --release --manifest-path backend/Cargo.toml --bin safedeal-api
 
   deploy:
     needs: test

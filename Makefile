@@ -8,10 +8,10 @@ help:
 	@echo "  make dev-anvil       - Start local Anvil node (chainId 31337)"
 	@echo "  make deploy-local    - Deploy SafeDealEscrow to local Anvil"
 	@echo "  make deploy-fuji     - Deploy SafeDealEscrow to Avalanche Fuji testnet"
-	@echo "  make dev-backend     - Start Spring Boot backend"
+	@echo "  make dev-backend     - Start Rust Axum backend"
 	@echo "  make dev-frontend    - Start Vite React development server"
 	@echo "  make test-contracts  - Run Foundry contract tests"
-	@echo "  make test-backend    - Run Gradle tests & build Spring Boot JAR"
+	@echo "  make test-backend    - Run Rust fmt, clippy, workspace tests, and release build"
 	@echo "  make test-frontend   - Run frontend typecheck, lint, Vitest tests, and Vite build"
 	@echo "  make e2e-frontend    - Run Playwright browser suite against built frontend"
 	@echo "  make smoke-test      - Probe running backend health and frontend availability"
@@ -45,7 +45,7 @@ test-contracts:
 	forge test --root blockchain -vvv
 
 test-backend:
-	./backend/gradlew -p backend test bootJar
+	cargo fmt --manifest-path backend/Cargo.toml --check && cargo clippy --manifest-path backend/Cargo.toml --workspace --all-targets -- -D warnings && cargo test --manifest-path backend/Cargo.toml --workspace -- --test-threads=1 && cargo build --release --manifest-path backend/Cargo.toml --bin safedeal-api
 
 test-frontend:
 	npm --prefix frontend run typecheck && npm --prefix frontend run lint && npm --prefix frontend test && npm --prefix frontend run build

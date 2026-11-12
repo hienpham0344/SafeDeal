@@ -1,17 +1,16 @@
 # Railway Deployment (SafeDeal Backend + PostgreSQL)
 
-Use Railway for the Spring Boot API (`backend/`) and managed PostgreSQL database.
+Use Railway for the Rust `safedeal-api` service (`backend/`) and managed PostgreSQL database.
 
 ## Setup Steps
 
 1. Create a Railway project and attach a **PostgreSQL** plugin.
 2. Add a service from GitHub with **Root Directory** set to `backend`.
    - `backend/railway.json` configures the multi-stage `backend/Dockerfile` builder and `/api/v1/health` healthcheck.
+   - The server automatically binds `0.0.0.0` on `SERVER_PORT` (falling back to Railway's injected `PORT`).
 3. Configure service environment variables in Railway:
-   - `SPRING_PROFILES_ACTIVE=prod`
-   - `DB_URL=jdbc:postgresql://<PGHOST>:<PGPORT>/<PGDATABASE>?sslmode=require`
-   - `DB_USERNAME=<PGUSER>`
-   - `DB_PASSWORD=<PGPASSWORD>`
+   - `APP_ENV=prod`
+   - `DATABASE_URL=postgres://<PGUSER>:<PGPASSWORD>@<PGHOST>:<PGPORT>/<PGDATABASE>?sslmode=require` (or `DB_URL` + `DB_USERNAME` + `DB_PASSWORD`)
    - `JWT_SECRET=<cryptographically-random-32+-chars>`
    - `CORS_ALLOWED_ORIGINS=https://<your-vercel-domain>`
    - `SIWE_DOMAIN=<your-vercel-domain>`
@@ -29,5 +28,5 @@ Use Railway for the Spring Boot API (`backend/`) and managed PostgreSQL database
 
 ## Security Notes
 
-- Production profile (`application-prod.yml`) fails startup if `JWT_SECRET` contains placeholder strings, is shorter than 32 characters, or if `COOKIE_SECURE` is `false`.
+- Staging and production profiles (`backend/crates/infrastructure/src/config.rs`) fail startup if `JWT_SECRET` contains placeholder strings or is shorter than 32 characters, if `COOKIE_SECURE` is `false`, if `SIWE_URI`/`CORS_ALLOWED_ORIGINS` do not use `https://`, if loopback hosts are configured, or if DB credentials are missing/empty.
 - Never commit `JWT_SECRET`, `DB_PASSWORD`, or deployer private keys to git.

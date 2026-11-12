@@ -1,0 +1,123 @@
+[workspace]
+resolver = "2"
+members = [
+    ".",
+    "crates/shared",
+    "crates/domain",
+    "crates/application",
+    "crates/infrastructure",
+    "crates/presentation",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.91"
+license = "MIT"
+
+[workspace.dependencies]
+safedeal-shared = { path = "crates/shared" }
+safedeal-domain = { path = "crates/domain" }
+safedeal-application = { path = "crates/application" }
+safedeal-infrastructure = { path = "crates/infrastructure" }
+safedeal-presentation = { path = "crates/presentation" }
+
+# Async & HTTP
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["io", "rt"] }
+axum = { version = "0.8", features = ["multipart", "macros"] }
+axum-extra = { version = "0.12", features = ["cookie"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["cors", "limit", "trace", "set-header", "request-id"] }
+http = "1"
+bytes = "1"
+futures = "0.3"
+async-trait = "0.1"
+
+# Database
+sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "chrono", "migrate"] }
+
+# EVM & Crypto
+alloy = { version = "1.7", default-features = false, features = ["providers", "transports", "transport-http", "reqwest-rustls-tls", "sol-types", "rpc-types", "network", "eips"] }
+alloy-primitives = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+k256 = { version = "0.13", features = ["ecdsa"] }
+sha3 = "0.10"
+sha2 = "0.10"
+hmac = "0.12"
+hex = "0.4"
+base64 = "0.22"
+subtle = "2.6"
+rand = "0.8"
+
+# OpenAPI
+utoipa = { version = "5", features = ["axum_extras", "chrono"] }
+utoipa-swagger-ui = { version = "9", features = ["axum"] }
+
+# Serialization & Core Utilities
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "2"
+uuid = { version = "1", features = ["v4"] }
+percent-encoding = "2"
+dotenvy = "0.15"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"] }
+
+# Dev / Test
+tempfile = "3"
+wiremock = "0.6"
+http-body-util = "0.1"
+
+[package]
+name = "safedeal-api"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "safedeal-api"
+path = "src/main.rs"
+
+[dependencies]
+safedeal-shared = { workspace = true }
+safedeal-domain = { workspace = true }
+safedeal-application = { workspace = true }
+safedeal-infrastructure = { workspace = true }
+safedeal-presentation = { workspace = true }
+
+axum = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+sqlx = { workspace = true }
+dotenvy = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+async-trait = { workspace = true }
+futures = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
+tower = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+k256 = { workspace = true }
+sha3 = { workspace = true }
+hex = { workspace = true }
+alloy = { workspace = true }
+alloy-primitives = { workspace = true }
+tokio = { workspace = true }
+tempfile = { workspace = true }
+wiremock = { workspace = true }
+reqwest = { workspace = true }
+uuid = { workspace = true }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true

@@ -1,7 +1,5 @@
-.gradle/
-build/
-out/
-bin/
+target/
 storage/
 .env
 *.log
+.git/

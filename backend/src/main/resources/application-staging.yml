@@ -1,9 +1,0 @@
-safedeal:
-  auth:
-    cookie-secure: ${COOKIE_SECURE:true}
-    cookie-same-site: ${COOKIE_SAME_SITE:None}
-
-logging:
-  level:
-    com.safedeal: INFO
-    org.springframework.security: WARN

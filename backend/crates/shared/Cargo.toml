@@ -1,0 +1,15 @@
+[package]
+name = "safedeal-shared"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+alloy-primitives = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+tokio = { version = "1", features = ["rt"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros"] }

@@ -17,7 +17,7 @@ Thumbs.db
 # Environment files (never commit secrets)
 .env
 .env.*
-!.env.example
+!**/.env.example
 
 # Frontend
 frontend/node_modules/
@@ -29,10 +29,7 @@ frontend/test-results/
 node_modules/
 
 # Backend
-backend/.gradle/
-backend/build/
-backend/out/
-backend/bin/
+backend/target/
 backend/storage/
 
 # Blockchain (Foundry)

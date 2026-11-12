@@ -1,6 +1,6 @@
 # SafeDeal — Decentralized P2P Escrow on Avalanche
 
-Non-custodial peer-to-peer escrow platform for high-trust digital and service transactions on Avalanche C-Chain (Fuji testnet & local Anvil). SafeDeal pairs an immutable Solidity `SafeDealEscrow` contract with a React + TypeScript frontend and a Spring Boot verification, SIWE authentication, dispute, and event-indexing backend.
+Non-custodial peer-to-peer escrow platform for high-trust digital and service transactions on Avalanche C-Chain (Fuji testnet & local Anvil). SafeDeal pairs an immutable Solidity `SafeDealEscrow` contract with a React + TypeScript frontend and a high-performance async Rust (`Axum` + `Tokio` + `SQLx` + `Alloy`) verification, SIWE authentication, dispute, and event-indexing backend.
 
 > **Trust Model**: Funds are locked and released strictly on-chain by buyer/seller/arbiter signatures via pull-payment (`withdraw()`). The off-chain backend and database index events, verify RFC 8785 canonical terms hashes, and host private dispute evidence—never custody user funds. When a trade enters `DISPUTED`, the designated human arbiter is a trusted party.
 
@@ -8,7 +8,7 @@ Non-custodial peer-to-peer escrow platform for high-trust digital and service tr
 
 ```text
 frontend/     React 18 + Vite 6 + TypeScript + Tailwind CSS + wagmi/viem + TanStack Query
-backend/      Java 21 + Spring Boot 3.5.7 + Gradle + PostgreSQL/Flyway + Web3j + ArchUnit + SpringDoc
+backend/      Rust (Axum 0.8 + Tokio + SQLx/PostgreSQL + Alloy EVM + utoipa OpenAPI + DAG tests)
 blockchain/   Solidity 0.8.28 + Foundry + OpenZeppelin (SafeDealEscrow + unit/security/invariant tests)
 infra/        Docker Compose + Nginx SPA config + Railway & Vercel deployment specs
 scripts/      Developer workflow, deployment, smoke-test, offline verification, and live 3-tier E2E scripts
@@ -17,7 +17,7 @@ docs/         Complete 20-document engineering, setup, demo specification, and o
 
 ## Prerequisites
 
-- **Java 21** (Temurin / OpenJDK 21)
+- **Rust `1.91+`** (`rustc`, `cargo`, `rustfmt`, `clippy`) — [rustup.rs](https://rustup.rs)
 - **Node.js 22+** and npm
 - **Foundry** (`forge`, `anvil`, `cast`) — [getfoundry.sh](https://getfoundry.sh)
 - **PostgreSQL 16** (or Docker + Docker Compose)
@@ -48,25 +48,25 @@ docs/         Complete 20-document engineering, setup, demo specification, and o
    ```bash
    bash scripts/smoke-test.sh   # verifies /api/v1/health, /api/v1/health/ready, /actuator/health/readiness
    bash scripts/verify.sh       # contracts + backend + OpenAPI parity + frontend + Playwright E2E
-   bash scripts/e2e-live.sh     # self-contained unmocked Browser -> Vite -> safedeal-api.jar -> Anvil E2E
+   bash scripts/e2e-live.sh     # self-contained unmocked Browser -> Vite -> safedeal-api -> Anvil E2E
    ```
 
 ## Core Commands
 
 | Area | Command | Purpose |
 |------|---------|---------|
-| Monorepo | `make verify` / `bash scripts/verify.sh` | Run Foundry tests, Gradle tests + JAR, Vite check/test/build, Playwright E2E |
-| Live 3-Tier E2E | `bash scripts/e2e-live.sh` | Launch live Anvil, deploy escrow, boot packaged JAR, run unmocked Playwright flows |
+| Monorepo | `make verify` / `bash scripts/verify.sh` | Run Foundry tests, Rust checks/tests/release build, Vite check/test/build, Playwright E2E |
+| Live 3-Tier E2E | `bash scripts/e2e-live.sh` | Launch live Anvil, deploy escrow, boot `safedeal-api`, run unmocked Playwright flows |
 | Smoke Probe | `make smoke-test` / `bash scripts/smoke-test.sh` | Verify `/api/v1/health`, `/api/v1/health/ready` (`READY`), frontend `200`, auth `401` |
 | Contracts | `forge test --root blockchain -vvv` | Unit, security, and stateful invariant smart contract tests |
-| Backend | `./backend/gradlew -p backend test bootJar` | Unit, ArchUnit boundary, security, controller, OpenAPI sync, and indexer tests + fat JAR |
+| Backend | `make test-backend` | Run `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test --workspace`, `cargo build --release` |
 | Frontend | `npm --prefix frontend run typecheck && npm --prefix frontend run lint && npm --prefix frontend test && npm --prefix frontend run build` | TypeScript strict check, ESLint, Vitest unit/integration tests, Vite build |
 | E2E Browser | `npm --prefix frontend run test:e2e` | Playwright browser suite across Desktop, Tablet, and Mobile viewports |
 
 ## Security & Configuration Rules
 
 - Never commit `.env` files, real `JWT_SECRET` values, `DB_PASSWORD` credentials, or `DEPLOYER_PRIVATE_KEY` keys.
-- Production and staging profiles (`application-prod.yml`, `application-staging.yml`) enforce strong `JWT_SECRET` validation, `COOKIE_SECURE=true`, explicit `CORS_ALLOWED_ORIGINS` (wildcards forbidden), and strict SIWE domain/URI checks.
+- Production and staging profiles (`APP_ENV=prod` / `APP_ENV=staging`) enforce strong `JWT_SECRET` validation, `COOKIE_SECURE=true`, explicit `CORS_ALLOWED_ORIGINS` (wildcards forbidden), and strict SIWE domain/URI checks.
 
 ## Documentation & Specifications
 

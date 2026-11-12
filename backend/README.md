@@ -1,24 +1,28 @@
-# SafeDeal Backend (Spring Boot 3.5.7 / Java 21)
+# SafeDeal Backend (Rust / Axum / Tokio / SQLx / Alloy)
 
-Modular, non-custodial escrow coordination API, SIWE session authenticator, and resumable Avalanche event indexer.
+High-performance async non-custodial escrow coordination API, SIWE session authenticator, and resumable Avalanche event indexer.
 
-## Architecture
+## Workspace Architecture (`backend/`)
 
-- `domain/` — pure Java entities, state transition guards, RFC 8785 canonical terms hasher, and port interfaces (verified via ArchUnit).
-- `application/` — transaction-bounded use cases (`siwe`, `deal`, `dispute`, `arbitration`, `synchronization`). External Web3j RPC calls never execute inside DB `@Transactional` locks.
-- `infrastructure/` — JPA persistence + Flyway PostgreSQL schema (`V1__initial_schema.sql`), Web3j contract codec & gateway, JWT/HttpOnly cookie + Double-Submit CSRF security filters, auth rate limiter, local evidence storage adapter.
-- `presentation/` — versioned REST controllers under `/api/v1/**`, DTO mapping, and global error handling.
+Strict Clean Architecture enforced automatically via Cargo crate DAG and `tests/architecture_dag.rs` (plus `#![deny(unsafe_code)]` and `#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]`):
+
+- `crates/shared/` — domain error taxonomy, constant-time/RFC3339 time formatting, correlation IDs, Ethereum hex/wei validators (`alloy_primitives::U256`).
+- `crates/domain/` — pure Rust entities, `DealStatus` state transitions + reconciliation guards, RFC 8785 canonical terms hasher, and repository/gateway port traits (zero DB, HTTP, or RPC dependencies).
+- `crates/application/` — use cases (`siwe`, `deal`, `dispute`, `arbitration`, `indexer`). External Alloy RPC calls always execute outside SQLx DB transactions.
+- `crates/infrastructure/` — `sqlx` PostgreSQL persistence & embedded migrations (`migrations/`), `alloy` RPC gateway & `sol!` ABI codec, HS256 JWT / HttpOnly cookie + Double-Submit CSRF + peer-IP auth rate limiting middleware, local magic-byte evidence storage adapter, fail-fast config loader.
+- `crates/presentation/` — `axum` REST routers under `/api/v1/**` + probe compatibility (`/actuator/health*`), DTO validation, unified `ApiErrorPayload`, and `utoipa` OpenAPI (`/v3/api-docs`, `/swagger-ui`).
+- `src/main.rs` — production entrypoint (`tokio` runtime, structured JSON/compact tracing, background blockchain indexer loop, graceful `SIGINT`/`SIGTERM` shutdown).
 
 ## Verification & Execution
 
 ```bash
-# Run unit, ArchUnit, and integration tests (H2 PostgreSQL compatibility mode)
-./gradlew test
-
-# Build executable JAR
-./gradlew bootJar
+# Format, clippy lint, unit/DAG/OpenAPI/Wiremock/PG16/live-Anvil tests, and release build
+cargo fmt --check
+cargo clippy --workspace --all-targets -- -D warnings
+SAFEDEAL_TEST_DB_URL=postgres://safedeal:safedeal@127.0.0.1:5432/safedeal_test cargo test --workspace -- --test-threads=1
+cargo build --release --bin safedeal-api
 
 # Run locally (requires PostgreSQL + RPC configured via backend/.env)
 set -a && source .env && set +a
-./gradlew bootRun
+cargo run --bin safedeal-api
 ```

@@ -30,27 +30,54 @@ jobs:
         run: forge test --root blockchain -vvv
 
   backend:
-    name: Backend (Spring Boot)
-    runs-on: ubuntu-latest
+    name: Backend (Rust + Axum + SQLx)
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: safedeal_test
+          POSTGRES_USER: safedeal
+          POSTGRES_PASSWORD: safedeal
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U safedeal -d safedeal_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
         with:
-          distribution: temurin
-          java-version: "21"
-      - uses: gradle/actions/setup-gradle@v4
-      - name: Run unit, ArchUnit, and integration tests + build JAR
+          submodules: recursive
+      - name: Install Foundry (for live Anvil backend integration tests)
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.9.0
+      - name: Install Solidity dependencies if missing
+        working-directory: blockchain
         run: |
-          chmod +x backend/gradlew
-          ./backend/gradlew -p backend test bootJar
-      - name: Verify Testcontainers PostgreSQL 16 test ran cleanly (not skipped)
+          if [ ! -d lib/forge-std ] || [ ! -d lib/openzeppelin-contracts ]; then
+            forge install foundry-rs/forge-std OpenZeppelin/openzeppelin-contracts --no-git
+          fi
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+      - name: Ensure cmake is installed
+        run: command -v cmake >/dev/null 2>&1 || (sudo apt-get update && sudo apt-get install -y cmake)
+      - name: Format check & Clippy strict lint
         run: |
-          REPORT="backend/build/test-results/test/TEST-com.safedeal.PostgresFlywayAndPersistenceIntegrationTest.xml"
-          cat "$REPORT"
-          grep -qE 'tests="1"' "$REPORT"
-          grep -qE 'skipped="0"' "$REPORT"
-          grep -qE 'failures="0"' "$REPORT"
-          grep -qE 'errors="0"' "$REPORT"
+          cargo fmt --manifest-path backend/Cargo.toml --check
+          cargo clippy --manifest-path backend/Cargo.toml --workspace --all-targets -- -D warnings
+      - name: Run unit, architecture DAG, OpenAPI, Wiremock, PostgreSQL 16 & live Anvil tests
+        env:
+          SAFEDEAL_TEST_DB_URL: postgres://safedeal:safedeal@127.0.0.1:5432/safedeal_test
+        run: cargo test --manifest-path backend/Cargo.toml --workspace -- --test-threads=1
+      - name: Build release binary
+        run: cargo build --release --manifest-path backend/Cargo.toml --bin safedeal-api
 
   frontend:
     name: Frontend (React + Vite)
@@ -97,11 +124,10 @@ jobs:
         uses: foundry-rs/foundry-toolchain@v1
         with:
           version: v1.9.0
-      - uses: actions/setup-java@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
         with:
-          distribution: temurin
-          java-version: "21"
-      - uses: gradle/actions/setup-gradle@v4
+          workspaces: backend
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -168,17 +194,16 @@ jobs:
             exit 1
           fi
           API_BASE_URL="http://localhost:${BACKEND_PORT}" FRONTEND_BASE_URL="http://localhost:${FRONTEND_PORT}" bash scripts/smoke-test.sh
-          docker compose -f infra/docker-compose.yml exec -T postgres psql -U safedeal -d safedeal -c "SELECT version, description, success FROM flyway_schema_history ORDER BY installed_rank;"
+          docker compose -f infra/docker-compose.yml exec -T postgres psql -U safedeal -d safedeal -c "SELECT version, description, success FROM _sqlx_migrations ORDER BY version;"
           docker compose -f infra/docker-compose.yml stop backend frontend anvil
           docker compose -f infra/docker-compose.yml exec -T postgres psql -U safedeal -d safedeal -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
           PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH="" \
           ANVIL_PORT=28545 \
           API_PORT=28080 \
           WEB_PORT=24173 \
-          DB_URL="jdbc:postgresql://127.0.0.1:${DB_PORT}/safedeal" \
+          DB_URL="postgres://safedeal:safedeal@127.0.0.1:${DB_PORT}/safedeal" \
           DB_USERNAME=safedeal \
           DB_PASSWORD=safedeal \
-          DB_DRIVER_CLASS_NAME=org.postgresql.Driver \
             bash scripts/e2e-live.sh
           docker compose -f infra/docker-compose.yml exec -T postgres psql -U safedeal -d safedeal -c "SELECT 'users' AS table_name, COUNT(*) FROM users UNION ALL SELECT 'auth_nonces', COUNT(*) FROM auth_nonces UNION ALL SELECT 'deals', COUNT(*) FROM deals UNION ALL SELECT 'deal_terms', COUNT(*) FROM deal_terms UNION ALL SELECT 'deal_events', COUNT(*) FROM deal_events UNION ALL SELECT 'chain_events', COUNT(*) FROM chain_events UNION ALL SELECT 'disputes', COUNT(*) FROM disputes UNION ALL SELECT 'dispute_evidence', COUNT(*) FROM dispute_evidence ORDER BY table_name;"
       - name: Tear down Docker Compose stack
