@@ -1018,10 +1018,10 @@ describe("SafeDeal Dashboard, DealDetails & Arbiter Pages", () => {
     expect(await screen.findByRole("button", { name: "Preview On-Chain Transaction" })).toBeInTheDocument();
   });
 
-  it("renders Dashboard Ledger Summary Strip with total deals count and Active Escrow sum", async () => {
+  it("renders Dashboard Ledger Summary Strip with total deals count from totalItems and Active Escrow sum including disputed", async () => {
     listDealsMock.mockResolvedValue({
       items: [
-        sampleDealSummary,
+        sampleDealSummary, // 2 AVAX (FUNDED)
         {
           ...sampleDealSummary,
           tradeId: "0x3333333333333333333333333333333333333333333333333333333333333333",
@@ -1029,11 +1029,12 @@ describe("SafeDeal Dashboard, DealDetails & Arbiter Pages", () => {
           seller: BUYER,
           buyer: SELLER,
           status: "DISPUTED",
+          amountWei: "1000000000000000000", // 1 AVAX (DISPUTED locked escrow)
         },
       ],
       page: 0,
       size: 50,
-      totalItems: 2,
+      totalItems: 12, // More deals across all pages than the 2 in current page
       totalPages: 1,
     });
 
@@ -1041,11 +1042,61 @@ describe("SafeDeal Dashboard, DealDetails & Arbiter Pages", () => {
 
     const ledgerSummary = await screen.findByLabelText("Ledger summary");
     expect(within(ledgerSummary).getByText("Total Deals")).toBeInTheDocument();
-    expect(within(ledgerSummary).getByText("2")).toBeInTheDocument();
+    expect(within(ledgerSummary).getByText("12")).toBeInTheDocument();
     expect(within(ledgerSummary).getByText("Active Escrow")).toBeInTheDocument();
-    expect(within(ledgerSummary).getByText("2 AVAX")).toBeInTheDocument();
+    expect(within(ledgerSummary).getByText("3 AVAX")).toBeInTheDocument();
     expect(within(ledgerSummary).getByText("Attention Required")).toBeInTheDocument();
     expect(within(ledgerSummary).getByText("1")).toBeInTheDocument();
+  });
+
+  it("renders Escrow lifecycle progress stepper with completed Resolved stage for RESOLVED deal", async () => {
+    getDealMock.mockResolvedValue({
+      ...sampleDealDetail,
+      status: "RESOLVED",
+      settled: true,
+      deliveredAt: "2026-12-05T00:00:00Z",
+    });
+    getDealHistoryMock.mockResolvedValue({ events: [], transactions: [] });
+
+    renderWithQuery(
+      <Routes>
+        <Route path="/deals/:id" element={<DealDetailsPage />} />
+      </Routes>,
+      `/deals/${TRADE_ID}`
+    );
+
+    const stepper = await screen.findByRole("list", { name: "Escrow lifecycle progress" });
+    expect(stepper).toBeInTheDocument();
+    expect(within(stepper).getByText("Created")).toBeInTheDocument();
+    expect(within(stepper).getByText("Funded")).toBeInTheDocument();
+    expect(within(stepper).getByText("Delivered")).toBeInTheDocument();
+    expect(within(stepper).getByText("Resolved")).toBeInTheDocument();
+    expect(screen.getByText(/Arbitration Resolved/i)).toBeInTheDocument();
+  });
+
+  it("does not falsely report copied when navigator.clipboard.writeText rejects", async () => {
+    const user = userEvent.setup();
+    const writeTextSpy = vi.spyOn(navigator.clipboard, "writeText").mockRejectedValue(new Error("Permission denied"));
+    try {
+      getDealMock.mockResolvedValue(sampleDealDetail);
+      getDealHistoryMock.mockResolvedValue({ events: [], transactions: [] });
+
+      renderWithQuery(
+        <Routes>
+          <Route path="/deals/:id" element={<DealDetailsPage />} />
+        </Routes>,
+        `/deals/${TRADE_ID}`
+      );
+
+      const copyTradeButton = await screen.findByRole("button", { name: "Copy Trade ID" });
+      await user.click(copyTradeButton);
+
+      expect(writeTextSpy).toHaveBeenCalledWith(TRADE_ID);
+      expect(copyTradeButton).toHaveAttribute("title", "Copy Trade ID");
+      expect(copyTradeButton).not.toHaveAttribute("title", "Copied");
+    } finally {
+      writeTextSpy.mockRestore();
+    }
   });
 
   it("renders Escrow lifecycle progress stepper and copies Trade ID via CopyableHash on DealDetailsPage", async () => {
@@ -1121,6 +1172,33 @@ describe("SafeDeal Dashboard, DealDetails & Arbiter Pages", () => {
         expect.stringContaining("/api/v1/health"),
         expect.objectContaining({ method: "GET" })
       );
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("renders Degraded (Contract Unconfigured) on SupportPage when escrow contract is not configured", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          status: "UP",
+          service: "safedeal-api",
+          chainId: 31337,
+          chainName: "Anvil Local",
+          escrowContractConfigured: false,
+        }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }
+      )
+    );
+
+    try {
+      renderWithQuery(<SupportPage />);
+
+      expect(await screen.findByText("Degraded (Contract Unconfigured)")).toBeInTheDocument();
+      expect(screen.queryByText("Operational")).not.toBeInTheDocument();
     } finally {
       fetchSpy.mockRestore();
     }

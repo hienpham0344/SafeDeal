@@ -357,9 +357,16 @@ export function CreateDealPage() {
 
   async function handleCopyShareUrl() {
     if (!shareUrl) return;
-    await navigator.clipboard.writeText(shareUrl);
-    setCopiedLink(true);
-    setTimeout(() => setCopiedLink(false), 2000);
+    try {
+      if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) {
+        return;
+      }
+      await navigator.clipboard.writeText(shareUrl);
+      setCopiedLink(true);
+      setTimeout(() => setCopiedLink(false), 2000);
+    } catch {
+      // Do not falsely report success if writing to clipboard failed
+    }
   }
 
   const inputBaseClass =

@@ -419,7 +419,10 @@ export function DealDetailsPage() {
             />
           )}
 
-          <DealLifecycleStepper status={effectiveStatus ?? deal.status} />
+          <DealLifecycleStepper
+            status={effectiveStatus ?? deal.status}
+            deliveredAt={deal.deliveredAt}
+          />
 
           <div className="grid gap-6 lg:grid-cols-3">
             <Panel className="lg:col-span-2 space-y-6">

@@ -1,19 +1,13 @@
 import { AlertTriangle, Check, CircleDot, Info } from "lucide-react";
 import type { DealStatus } from "@/types/api";
 
-interface StageDefinition {
-  readonly key: "CREATED" | "FUNDED" | "DELIVERED" | "RELEASED";
-  readonly label: string;
-}
-
-const CORE_STAGES: readonly StageDefinition[] = [
-  { key: "CREATED", label: "Created" },
-  { key: "FUNDED", label: "Funded" },
-  { key: "DELIVERED", label: "Delivered" },
-  { key: "RELEASED", label: "Released" },
-];
-
 type StageState = "completed" | "active" | "upcoming";
+
+interface ResolvedStage {
+  readonly key: string;
+  readonly label: string;
+  readonly state: StageState;
+}
 
 interface BranchBanner {
   readonly tone: "neutral" | "warning" | "danger" | "success";
@@ -58,38 +52,111 @@ function getBranchBanner(status: DealStatus): BranchBanner | null {
   }
 }
 
-function resolveStageStates(status: DealStatus): readonly StageState[] {
+function resolveStages(status: DealStatus, deliveredAt?: string | null): readonly ResolvedStage[] {
   switch (status) {
     case "CREATED":
-      return ["active", "upcoming", "upcoming", "upcoming"];
+      return [
+        { key: "CREATED", label: "Created", state: "active" },
+        { key: "FUNDED", label: "Funded", state: "upcoming" },
+        { key: "DELIVERED", label: "Delivered", state: "upcoming" },
+        { key: "RELEASED", label: "Released", state: "upcoming" },
+      ];
     case "FUNDED":
-      return ["completed", "active", "upcoming", "upcoming"];
+      return [
+        { key: "CREATED", label: "Created", state: "completed" },
+        { key: "FUNDED", label: "Funded", state: "active" },
+        { key: "DELIVERED", label: "Delivered", state: "upcoming" },
+        { key: "RELEASED", label: "Released", state: "upcoming" },
+      ];
     case "DELIVERED":
-      return ["completed", "completed", "active", "upcoming"];
+      return [
+        { key: "CREATED", label: "Created", state: "completed" },
+        { key: "FUNDED", label: "Funded", state: "completed" },
+        { key: "DELIVERED", label: "Delivered", state: "active" },
+        { key: "RELEASED", label: "Released", state: "upcoming" },
+      ];
     case "RELEASED":
-      return ["completed", "completed", "completed", "completed"];
+      return [
+        { key: "CREATED", label: "Created", state: "completed" },
+        { key: "FUNDED", label: "Funded", state: "completed" },
+        { key: "DELIVERED", label: "Delivered", state: "completed" },
+        { key: "RELEASED", label: "Released", state: "completed" },
+      ];
     case "DRAFT":
-      return ["upcoming", "upcoming", "upcoming", "upcoming"];
+      return [
+        { key: "CREATED", label: "Created", state: "upcoming" },
+        { key: "FUNDED", label: "Funded", state: "upcoming" },
+        { key: "DELIVERED", label: "Delivered", state: "upcoming" },
+        { key: "RELEASED", label: "Released", state: "upcoming" },
+      ];
     case "CANCELLED":
-      return ["completed", "upcoming", "upcoming", "upcoming"];
+      return [
+        { key: "CREATED", label: "Created", state: "completed" },
+        { key: "CANCELLED", label: "Cancelled", state: "completed" },
+      ];
     case "REFUNDED":
+      return [
+        { key: "CREATED", label: "Created", state: "completed" },
+        { key: "FUNDED", label: "Funded", state: "completed" },
+        {
+          key: deliveredAt ? "DELIVERED" : "REFUNDING",
+          label: deliveredAt ? "Delivered" : "Reclaimed",
+          state: "completed",
+        },
+        { key: "REFUNDED", label: "Refunded", state: "completed" },
+      ];
     case "DISPUTED":
+      return deliveredAt
+        ? [
+            { key: "CREATED", label: "Created", state: "completed" },
+            { key: "FUNDED", label: "Funded", state: "completed" },
+            { key: "DELIVERED", label: "Delivered", state: "completed" },
+            { key: "DISPUTED", label: "Disputed", state: "active" },
+          ]
+        : [
+            { key: "CREATED", label: "Created", state: "completed" },
+            { key: "FUNDED", label: "Funded", state: "completed" },
+            { key: "DISPUTED", label: "Disputed", state: "active" },
+            { key: "RESOLVED", label: "Resolved", state: "upcoming" },
+          ];
     case "RESOLVED":
-      return ["completed", "completed", "upcoming", "upcoming"];
+      return deliveredAt
+        ? [
+            { key: "CREATED", label: "Created", state: "completed" },
+            { key: "FUNDED", label: "Funded", state: "completed" },
+            { key: "DELIVERED", label: "Delivered", state: "completed" },
+            { key: "RESOLVED", label: "Resolved", state: "completed" },
+          ]
+        : [
+            { key: "CREATED", label: "Created", state: "completed" },
+            { key: "FUNDED", label: "Funded", state: "completed" },
+            { key: "DISPUTED", label: "Disputed", state: "completed" },
+            { key: "RESOLVED", label: "Resolved", state: "completed" },
+          ];
   }
 }
 
-export function DealLifecycleStepper({ status }: { readonly status: DealStatus }) {
-  const states = resolveStageStates(status);
+export function DealLifecycleStepper({
+  status,
+  deliveredAt,
+}: {
+  readonly status: DealStatus;
+  readonly deliveredAt?: string | null;
+}) {
+  const stages = resolveStages(status, deliveredAt);
   const branch = getBranchBanner(status);
 
   return (
     <div className="space-y-3">
-      <ol aria-label="Escrow lifecycle progress" className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-        {CORE_STAGES.map((stage, index) => {
-          const state = states[index]!;
+      <ol
+        aria-label="Escrow lifecycle progress"
+        className={`grid gap-2 grid-cols-2 ${stages.length <= 2 ? "sm:grid-cols-2" : "sm:grid-cols-4"}`}
+      >
+        {stages.map((stage, index) => {
+          const state = stage.state;
           const isCurrent =
-            state === "active" || (status === "RELEASED" && stage.key === "RELEASED");
+            state === "active" ||
+            ((status === "RELEASED" || status === "RESOLVED") && index === stages.length - 1);
 
           const cardStyle =
             state === "completed"

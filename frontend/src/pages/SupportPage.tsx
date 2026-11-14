@@ -70,8 +70,18 @@ export function SupportPage() {
               <dd>
                 {healthQuery.isLoading ? (
                   <span className="font-mono text-xs text-sd-inkSubtle">Checking...</span>
-                ) : healthQuery.isError ? (
+                ) : healthQuery.isError || !healthQuery.data ? (
                   <span className="font-mono text-xs text-red-300">Unavailable</span>
+                ) : healthQuery.data.status !== "UP" ? (
+                  <span className="inline-flex items-center gap-1.5 rounded-md border border-red-400/30 bg-red-500/10 px-2.5 py-0.5 font-mono text-xs text-red-200">
+                    <span className="h-1.5 w-1.5 rounded-full bg-red-400" aria-hidden="true" />
+                    Degraded ({healthQuery.data.status})
+                  </span>
+                ) : !healthQuery.data.escrowContractConfigured ? (
+                  <span className="inline-flex items-center gap-1.5 rounded-md border border-amber-400/30 bg-amber-500/10 px-2.5 py-0.5 font-mono text-xs text-amber-200">
+                    <span className="h-1.5 w-1.5 rounded-full bg-amber-400" aria-hidden="true" />
+                    Degraded (Contract Unconfigured)
+                  </span>
                 ) : (
                   <span className="inline-flex items-center gap-1.5 rounded-md border border-emerald-400/30 bg-emerald-500/10 px-2.5 py-0.5 font-mono text-xs text-emerald-200">
                     <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" aria-hidden="true" />

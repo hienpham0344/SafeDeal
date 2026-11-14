@@ -11,7 +11,7 @@ import { useDealsQuery } from "@/features/deals/hooks/useDeals";
 import { useClaimableBalance, useEscrowContractExecutor } from "@/features/escrow/hooks/useEscrowActions";
 import { formatAvax, formatTimestamp, shortenAddress } from "@/utils/format";
 
-const ACTIVE_ESCROW_STATUSES = new Set(["CREATED", "FUNDED", "DELIVERED"]);
+const ACTIVE_ESCROW_STATUSES = new Set(["FUNDED", "DELIVERED", "DISPUTED"]);
 
 function parseSafeWei(wei: string): bigint {
   try {
@@ -51,11 +51,11 @@ export function DashboardPage() {
     }
 
     return {
-      totalDeals: items.length,
+      totalDeals: dealsQuery.data?.totalItems ?? items.length,
       activeEscrowWei,
       disputedCount,
     };
-  }, [dealsQuery.data?.items]);
+  }, [dealsQuery.data?.items, dealsQuery.data?.totalItems]);
 
   async function handleWithdrawAll() {
     setWithdrawSuccess(null);

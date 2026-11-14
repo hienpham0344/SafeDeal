@@ -21,11 +21,15 @@ export function CopyableHash({
   }, [copied]);
 
   async function handleCopy() {
+    if (!value) return;
     try {
-      await navigator.clipboard?.writeText(value);
+      if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) {
+        return;
+      }
+      await navigator.clipboard.writeText(value);
       setCopied(true);
     } catch {
-      // Ignore clipboard permission errors in restricted contexts
+      // Do not falsely report success if writing to clipboard failed or rejected
     }
   }
 
