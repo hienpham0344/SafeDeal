@@ -81,7 +81,9 @@ impl SiweMessageParser {
         let normalized = raw_message.replace("\r\n", "\n");
         let lines: Vec<&str> = normalized.split('\n').collect();
         if lines.len() < 7 {
-            return Err(DomainError::unauthorized("Malformed SIWE message structure."));
+            return Err(DomainError::unauthorized(
+                "Malformed SIWE message structure.",
+            ));
         }
 
         let first_line = lines[0];
@@ -126,7 +128,9 @@ impl SiweMessageParser {
                 nonce = Some(rest.trim().to_string());
             } else if let Some(rest) = line.strip_prefix("Issued At: ") {
                 if issued_at.is_some() {
-                    return Err(DomainError::unauthorized("Duplicate SIWE field: Issued At."));
+                    return Err(DomainError::unauthorized(
+                        "Duplicate SIWE field: Issued At.",
+                    ));
                 }
                 issued_at = Some(parse_utc_timestamp(rest.trim(), "Issued At")?);
             } else if let Some(rest) = line.strip_prefix("Expiration Time: ") {
@@ -139,8 +143,14 @@ impl SiweMessageParser {
             }
         }
 
-        let (Some(uri), Some(version), Some(chain_id), Some(nonce), Some(issued_at), Some(expiration_time)) =
-            (uri, version, chain_id, nonce, issued_at, expiration_time)
+        let (
+            Some(uri),
+            Some(version),
+            Some(chain_id),
+            Some(nonce),
+            Some(issued_at),
+            Some(expiration_time),
+        ) = (uri, version, chain_id, nonce, issued_at, expiration_time)
         else {
             return Err(DomainError::unauthorized(
                 "SIWE message is missing required security fields.",
@@ -285,7 +295,11 @@ impl SiweAuthService {
         }
 
         let parsed = SiweMessageParser::parse(message)?;
-        if !self.settings.siwe_domain.eq_ignore_ascii_case(&parsed.domain) {
+        if !self
+            .settings
+            .siwe_domain
+            .eq_ignore_ascii_case(&parsed.domain)
+        {
             return Err(DomainError::unauthorized("SIWE domain mismatch."));
         }
         if self.settings.siwe_uri != parsed.uri {
@@ -436,10 +450,7 @@ mod tests {
         let msg = "localhost:5173 wants you to sign in with your Ethereum account:\r\n0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266\r\n\r\nSign in to SafeDeal\r\n\r\nURI: http://localhost:5173\r\nVersion: 1\r\nChain ID: 31337\r\nNonce: deadbeef0123456789abcdef01234567\r\nIssued At: 2026-01-01T00:00:00Z\r\nExpiration Time: 2026-01-01T00:05:00Z";
         let parsed = SiweMessageParser::parse(msg).unwrap();
         assert_eq!(parsed.domain, "localhost:5173");
-        assert_eq!(
-            parsed.address,
-            "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266"
-        );
+        assert_eq!(parsed.address, "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266");
         assert_eq!(parsed.chain_id, 31337);
         assert_eq!(parsed.nonce, "deadbeef0123456789abcdef01234567");
         assert_eq!(parsed.version, "1");

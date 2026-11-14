@@ -42,7 +42,8 @@ impl BlockchainEventIndexerService {
     async fn do_poll_and_index(&self) -> Result<usize, DomainError> {
         // Phase 1: Query RPC head OUTSIDE any open database transaction
         let latest_block = self.blockchain_gateway.fetch_latest_block_number().await?;
-        let confirmations_lag = i64::from((self.blockchain_gateway.confirmations_required() - 1).max(0));
+        let confirmations_lag =
+            i64::from((self.blockchain_gateway.confirmations_required() - 1).max(0));
         let safe_head = (latest_block - confirmations_lag).max(0);
 
         let configured_chain_id = self.blockchain_gateway.chain_id();
@@ -195,7 +196,8 @@ async fn apply_event_to_deal_projection<'a>(
         current.delivered_at
     };
 
-    let (buyer_award_wei, seller_award_wei) = if ev.event_type == OnChainEventType::DisputeResolved {
+    let (buyer_award_wei, seller_award_wei) = if ev.event_type == OnChainEventType::DisputeResolved
+    {
         (ev.buyer_award_wei.clone(), ev.seller_award_wei.clone())
     } else {
         (

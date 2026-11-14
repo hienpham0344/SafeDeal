@@ -22,7 +22,9 @@ use tokio::sync::Mutex;
 
 use crate::config::DatabaseConfig;
 use audit_repo::{PgAuditLogRepository, PgTxAuditLogRepository};
-use auth_repo::{PgAuthNonceRepository, PgTxAuthNonceRepository, PgTxUserRepository, PgUserRepository};
+use auth_repo::{
+    PgAuthNonceRepository, PgTxAuthNonceRepository, PgTxUserRepository, PgUserRepository,
+};
 use deal_repo::{PgDealRepository, PgTxDealRepository};
 use dispute_repo::{
     PgDisputeEvidenceRepository, PgDisputeRepository, PgTxDisputeEvidenceRepository,
@@ -54,7 +56,11 @@ pub async fn run_migrations(pool: &PgPool) -> Result<(), sqlx::migrate::MigrateE
 
 pub fn map_sqlx_err(err: sqlx::Error) -> DomainError {
     if let sqlx::Error::Database(ref db_err) = err {
-        if db_err.code().as_deref().is_some_and(|c| c.starts_with("23")) {
+        if db_err
+            .code()
+            .as_deref()
+            .is_some_and(|c| c.starts_with("23"))
+        {
             return DomainError::conflict_with_code(
                 "DATA_CONFLICT",
                 "Submitted operation conflicts with an existing record.",

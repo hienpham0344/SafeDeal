@@ -158,7 +158,9 @@ mod tests {
         };
 
         let token = svc.create_token(&principal).unwrap();
-        let verified = svc.verify_token_at(&token, now + Duration::seconds(10)).unwrap();
+        let verified = svc
+            .verify_token_at(&token, now + Duration::seconds(10))
+            .unwrap();
         assert_eq!(verified.address, principal.address.to_ascii_lowercase());
         assert_eq!(verified.chain_id, 31337);
         assert_eq!(verified.csrf_token, "csrf_abc123");

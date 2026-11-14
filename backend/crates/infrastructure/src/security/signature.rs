@@ -121,7 +121,8 @@ mod tests {
 
         let verifier = K256SignatureVerifier;
         assert!(matches!(
-            verifier.recover_address_from_personal_sign(message, &format!("0x{}", hex::encode(raw))),
+            verifier
+                .recover_address_from_personal_sign(message, &format!("0x{}", hex::encode(raw))),
             Err(DomainError::Unauthorized { .. })
         ));
         assert!(matches!(

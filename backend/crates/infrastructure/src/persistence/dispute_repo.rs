@@ -96,7 +96,10 @@ async fn save_dispute_conn(
 ) -> Result<Dispute, DomainError> {
     let trade_id = dispute.trade_id.to_ascii_lowercase();
     let opened_by = dispute.opened_by.to_ascii_lowercase();
-    let open_tx = dispute.open_tx_hash.as_ref().map(|h| h.to_ascii_lowercase());
+    let open_tx = dispute
+        .open_tx_hash
+        .as_ref()
+        .map(|h| h.to_ascii_lowercase());
     let resolve_tx = dispute
         .resolve_tx_hash
         .as_ref()
@@ -104,9 +107,8 @@ async fn save_dispute_conn(
     let status = dispute.status.as_str();
 
     let row = match dispute.id {
-        None => {
-            sqlx::query_as::<_, DisputeRow>(
-                r#"
+        None => sqlx::query_as::<_, DisputeRow>(
+            r#"
                 INSERT INTO disputes (
                     trade_id, opened_by, reason, summary, status,
                     buyer_award_wei, seller_award_wei, resolution_rationale,
@@ -116,26 +118,24 @@ async fn save_dispute_conn(
                           buyer_award_wei, seller_award_wei, resolution_rationale,
                           open_tx_hash, resolve_tx_hash, created_at, resolved_at
                 "#,
-            )
-            .bind(&trade_id)
-            .bind(&opened_by)
-            .bind(&dispute.reason)
-            .bind(&dispute.summary)
-            .bind(status)
-            .bind(&dispute.buyer_award_wei)
-            .bind(&dispute.seller_award_wei)
-            .bind(&dispute.resolution_rationale)
-            .bind(&open_tx)
-            .bind(&resolve_tx)
-            .bind(dispute.created_at)
-            .bind(dispute.resolved_at)
-            .fetch_one(conn)
-            .await
-            .map_err(map_sqlx_err)?
-        }
-        Some(id) => {
-            sqlx::query_as::<_, DisputeRow>(
-                r#"
+        )
+        .bind(&trade_id)
+        .bind(&opened_by)
+        .bind(&dispute.reason)
+        .bind(&dispute.summary)
+        .bind(status)
+        .bind(&dispute.buyer_award_wei)
+        .bind(&dispute.seller_award_wei)
+        .bind(&dispute.resolution_rationale)
+        .bind(&open_tx)
+        .bind(&resolve_tx)
+        .bind(dispute.created_at)
+        .bind(dispute.resolved_at)
+        .fetch_one(conn)
+        .await
+        .map_err(map_sqlx_err)?,
+        Some(id) => sqlx::query_as::<_, DisputeRow>(
+            r#"
                 UPDATE disputes SET
                     trade_id = $2, opened_by = $3, reason = $4, summary = $5, status = $6,
                     buyer_award_wei = $7, seller_award_wei = $8, resolution_rationale = $9,
@@ -145,23 +145,22 @@ async fn save_dispute_conn(
                           buyer_award_wei, seller_award_wei, resolution_rationale,
                           open_tx_hash, resolve_tx_hash, created_at, resolved_at
                 "#,
-            )
-            .bind(id)
-            .bind(&trade_id)
-            .bind(&opened_by)
-            .bind(&dispute.reason)
-            .bind(&dispute.summary)
-            .bind(status)
-            .bind(&dispute.buyer_award_wei)
-            .bind(&dispute.seller_award_wei)
-            .bind(&dispute.resolution_rationale)
-            .bind(&open_tx)
-            .bind(&resolve_tx)
-            .bind(dispute.resolved_at)
-            .fetch_one(conn)
-            .await
-            .map_err(map_sqlx_err)?
-        }
+        )
+        .bind(id)
+        .bind(&trade_id)
+        .bind(&opened_by)
+        .bind(&dispute.reason)
+        .bind(&dispute.summary)
+        .bind(status)
+        .bind(&dispute.buyer_award_wei)
+        .bind(&dispute.seller_award_wei)
+        .bind(&dispute.resolution_rationale)
+        .bind(&open_tx)
+        .bind(&resolve_tx)
+        .bind(dispute.resolved_at)
+        .fetch_one(conn)
+        .await
+        .map_err(map_sqlx_err)?,
     };
     row.try_into()
 }
@@ -221,12 +220,13 @@ async fn find_dispute_ids_by_trade_ids_conn(
         return Ok(HashMap::new());
     }
 
-    let rows =
-        sqlx::query_as::<_, (String, i64)>("SELECT trade_id, id FROM disputes WHERE trade_id = ANY($1)")
-            .bind(&normalized)
-            .fetch_all(conn)
-            .await
-            .map_err(map_sqlx_err)?;
+    let rows = sqlx::query_as::<_, (String, i64)>(
+        "SELECT trade_id, id FROM disputes WHERE trade_id = ANY($1)",
+    )
+    .bind(&normalized)
+    .fetch_all(conn)
+    .await
+    .map_err(map_sqlx_err)?;
 
     let mut out = HashMap::with_capacity(rows.len());
     for (tid, id) in rows {
@@ -366,9 +366,8 @@ async fn save_evidence_conn(
 ) -> Result<DisputeEvidence, DomainError> {
     let submitted_by = ev.submitted_by.to_ascii_lowercase();
     let row = match ev.id {
-        None => {
-            sqlx::query_as::<_, EvidenceRow>(
-                r#"
+        None => sqlx::query_as::<_, EvidenceRow>(
+            r#"
                 INSERT INTO dispute_evidence (
                     dispute_id, submitted_by, title, notes, file_name,
                     mime_type, size_bytes, sha256_hex, storage_key, created_at
@@ -376,24 +375,22 @@ async fn save_evidence_conn(
                 RETURNING id, dispute_id, submitted_by, title, notes, file_name,
                           mime_type, size_bytes, sha256_hex, storage_key, created_at
                 "#,
-            )
-            .bind(ev.dispute_id)
-            .bind(&submitted_by)
-            .bind(&ev.title)
-            .bind(&ev.notes)
-            .bind(&ev.file_name)
-            .bind(&ev.mime_type)
-            .bind(ev.size_bytes)
-            .bind(&ev.sha256_hex)
-            .bind(&ev.storage_key)
-            .bind(ev.created_at)
-            .fetch_one(conn)
-            .await
-            .map_err(map_sqlx_err)?
-        }
-        Some(id) => {
-            sqlx::query_as::<_, EvidenceRow>(
-                r#"
+        )
+        .bind(ev.dispute_id)
+        .bind(&submitted_by)
+        .bind(&ev.title)
+        .bind(&ev.notes)
+        .bind(&ev.file_name)
+        .bind(&ev.mime_type)
+        .bind(ev.size_bytes)
+        .bind(&ev.sha256_hex)
+        .bind(&ev.storage_key)
+        .bind(ev.created_at)
+        .fetch_one(conn)
+        .await
+        .map_err(map_sqlx_err)?,
+        Some(id) => sqlx::query_as::<_, EvidenceRow>(
+            r#"
                 UPDATE dispute_evidence SET
                     title = $2, notes = $3, file_name = $4, mime_type = $5,
                     size_bytes = $6, sha256_hex = $7, storage_key = $8
@@ -401,19 +398,18 @@ async fn save_evidence_conn(
                 RETURNING id, dispute_id, submitted_by, title, notes, file_name,
                           mime_type, size_bytes, sha256_hex, storage_key, created_at
                 "#,
-            )
-            .bind(id)
-            .bind(&ev.title)
-            .bind(&ev.notes)
-            .bind(&ev.file_name)
-            .bind(&ev.mime_type)
-            .bind(ev.size_bytes)
-            .bind(&ev.sha256_hex)
-            .bind(&ev.storage_key)
-            .fetch_one(conn)
-            .await
-            .map_err(map_sqlx_err)?
-        }
+        )
+        .bind(id)
+        .bind(&ev.title)
+        .bind(&ev.notes)
+        .bind(&ev.file_name)
+        .bind(&ev.mime_type)
+        .bind(ev.size_bytes)
+        .bind(&ev.sha256_hex)
+        .bind(&ev.storage_key)
+        .fetch_one(conn)
+        .await
+        .map_err(map_sqlx_err)?,
     };
     Ok(row.into())
 }

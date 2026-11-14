@@ -53,7 +53,10 @@ impl From<UserRow> for UserAccount {
     }
 }
 
-async fn save_nonce_conn(conn: &mut PgConnection, nonce: &AuthNonce) -> Result<AuthNonce, DomainError> {
+async fn save_nonce_conn(
+    conn: &mut PgConnection,
+    nonce: &AuthNonce,
+) -> Result<AuthNonce, DomainError> {
     let wallet = nonce.wallet_address.to_ascii_lowercase();
     let row = match nonce.id {
         None => {

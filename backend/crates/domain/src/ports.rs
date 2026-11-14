@@ -62,8 +62,10 @@ pub trait BlockchainGateway: Send + Sync {
     fn confirmations_required(&self) -> i32;
     fn sync_batch_size(&self) -> i64;
 
-    async fn fetch_trade(&self, trade_id: &str)
-        -> Result<Option<OnChainTradeSnapshot>, DomainError>;
+    async fn fetch_trade(
+        &self,
+        trade_id: &str,
+    ) -> Result<Option<OnChainTradeSnapshot>, DomainError>;
     async fn inspect_transaction(
         &self,
         tx_hash: &str,
@@ -124,10 +126,14 @@ pub trait DealRepository: Send + Sync {
     async fn save(&self, deal: &Deal) -> Result<Deal, DomainError>;
     async fn find_by_trade_id(&self, trade_id: &str) -> Result<Option<Deal>, DomainError>;
     async fn find_by_trade_ids(&self, trade_ids: &[String]) -> Result<Vec<Deal>, DomainError>;
-    async fn find_by_trade_id_for_update(&self, trade_id: &str)
-        -> Result<Option<Deal>, DomainError>;
-    async fn find_by_create_tx_hash(&self, create_tx_hash: &str)
-        -> Result<Option<Deal>, DomainError>;
+    async fn find_by_trade_id_for_update(
+        &self,
+        trade_id: &str,
+    ) -> Result<Option<Deal>, DomainError>;
+    async fn find_by_create_tx_hash(
+        &self,
+        create_tx_hash: &str,
+    ) -> Result<Option<Deal>, DomainError>;
     async fn exists_by_create_tx_hash(&self, create_tx_hash: &str) -> Result<bool, DomainError>;
     async fn find_user_deals(
         &self,
@@ -180,10 +186,8 @@ pub trait EvidenceStoragePort: Send + Sync {
     ) -> Result<StoredAttachment, DomainError>;
     async fn load(&self, storage_key: &str) -> Result<Vec<u8>, DomainError>;
     async fn delete_best_effort(&self, storage_key: &str);
-    fn resolve_attachment_path(
-        &self,
-        storage_key: &str,
-    ) -> Result<std::path::PathBuf, DomainError>;
+    fn resolve_attachment_path(&self, storage_key: &str)
+        -> Result<std::path::PathBuf, DomainError>;
     fn is_storage_ready(&self) -> bool;
 }
 

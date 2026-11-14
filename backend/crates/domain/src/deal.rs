@@ -258,8 +258,14 @@ mod tests {
 
     #[test]
     fn maps_solidity_enum_ordinals_safely() {
-        assert_eq!(DealStatus::from_chain_ordinal(1).unwrap(), DealStatus::Created);
-        assert_eq!(DealStatus::from_chain_ordinal(6).unwrap(), DealStatus::Disputed);
+        assert_eq!(
+            DealStatus::from_chain_ordinal(1).unwrap(),
+            DealStatus::Created
+        );
+        assert_eq!(
+            DealStatus::from_chain_ordinal(6).unwrap(),
+            DealStatus::Disputed
+        );
         assert_eq!(
             DealStatus::from_chain_ordinal(8).unwrap(),
             DealStatus::Cancelled
