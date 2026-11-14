@@ -3,8 +3,7 @@ use alloy_primitives::U256;
 use crate::error::DomainError;
 
 pub const ZERO_ADDRESS: &str = "0x0000000000000000000000000000000000000000";
-pub const ZERO_BYTES32: &str =
-    "0x0000000000000000000000000000000000000000000000000000000000000000";
+pub const ZERO_BYTES32: &str = "0x0000000000000000000000000000000000000000000000000000000000000000";
 
 pub struct EthFormatValidator;
 
@@ -164,7 +163,8 @@ mod tests {
                 .unwrap(),
             U256::from(1_500_000_000_000_000_000u128)
         );
-        let zero_wei = EthFormatValidator::require_positive_wei(Some("0"), "amountWei").unwrap_err();
+        let zero_wei =
+            EthFormatValidator::require_positive_wei(Some("0"), "amountWei").unwrap_err();
         assert_eq!(zero_wei.message(), "amountWei must be greater than zero");
         assert!(EthFormatValidator::require_positive_wei(Some("-1"), "amountWei").is_err());
         assert_eq!(

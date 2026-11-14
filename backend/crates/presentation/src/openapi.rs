@@ -111,12 +111,14 @@ impl Modify for SpringDocParityModifier {
                                 }
                                 "page" => {
                                     obj.schema_type = SchemaType::Type(Type::Integer);
-                                    obj.format = Some(SchemaFormat::KnownFormat(KnownFormat::Int32));
+                                    obj.format =
+                                        Some(SchemaFormat::KnownFormat(KnownFormat::Int32));
                                     obj.default = Some(json!(0));
                                 }
                                 "size" => {
                                     obj.schema_type = SchemaType::Type(Type::Integer);
-                                    obj.format = Some(SchemaFormat::KnownFormat(KnownFormat::Int32));
+                                    obj.format =
+                                        Some(SchemaFormat::KnownFormat(KnownFormat::Int32));
                                     obj.default = Some(json!(20));
                                 }
                                 _ => {}

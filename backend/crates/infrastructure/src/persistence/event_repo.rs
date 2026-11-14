@@ -101,10 +101,7 @@ async fn record_chain_event_conn(
         .as_deref()
         .map(str::to_ascii_lowercase)
         .unwrap_or_else(|| ZERO_BYTES32.to_string());
-    let actor_address = event
-        .actor_address
-        .as_deref()
-        .map(str::to_ascii_lowercase);
+    let actor_address = event.actor_address.as_deref().map(str::to_ascii_lowercase);
     let terms_hash = event.terms_hash.as_deref().map(str::to_ascii_lowercase);
 
     let res = sqlx::query(

@@ -125,10 +125,7 @@ async fn save_deal_conn(conn: &mut PgConnection, deal: &Deal) -> Result<Deal, Do
     let buyer = deal.buyer.as_ref().map(|b| b.to_ascii_lowercase());
     let arbiter = deal.arbiter.to_ascii_lowercase();
     let terms_hash = deal.terms_hash.to_ascii_lowercase();
-    let create_tx_hash = deal
-        .create_tx_hash
-        .as_ref()
-        .map(|h| h.to_ascii_lowercase());
+    let create_tx_hash = deal.create_tx_hash.as_ref().map(|h| h.to_ascii_lowercase());
     let status_str = deal.status.as_str();
 
     let saved_deal = match deal.id {
@@ -349,20 +346,17 @@ async fn exists_by_create_tx_hash_conn(
     conn: &mut PgConnection,
     create_tx_hash: &str,
 ) -> Result<bool, DomainError> {
-    let exists =
-        sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM deals WHERE create_tx_hash = $1)")
-            .bind(create_tx_hash.trim().to_ascii_lowercase())
-            .fetch_one(conn)
-            .await
-            .map_err(map_sqlx_err)?;
+    let exists = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM deals WHERE create_tx_hash = $1)",
+    )
+    .bind(create_tx_hash.trim().to_ascii_lowercase())
+    .fetch_one(conn)
+    .await
+    .map_err(map_sqlx_err)?;
     Ok(exists)
 }
 
-fn push_role_filter<'a>(
-    qb: &mut QueryBuilder<'a, Postgres>,
-    role: &'a str,
-    lower_wallet: &'a str,
-) {
+fn push_role_filter<'a>(qb: &mut QueryBuilder<'a, Postgres>, role: &'a str, lower_wallet: &'a str) {
     match role {
         "seller" | "created" => {
             qb.push("d.seller_address = ");
@@ -407,10 +401,7 @@ async fn find_user_deals_conn(
     let limit = i64::from(size);
 
     let lower_wallet = wallet_address.trim().to_ascii_lowercase();
-    let normalized_role = role
-        .unwrap_or("all")
-        .trim()
-        .to_ascii_lowercase();
+    let normalized_role = role.unwrap_or("all").trim().to_ascii_lowercase();
 
     let mut count_qb = QueryBuilder::<Postgres>::new("SELECT COUNT(*) FROM deals d WHERE ");
     push_role_filter(&mut count_qb, &normalized_role, &lower_wallet);
@@ -499,7 +490,10 @@ impl DealRepository for PgDealRepository {
         find_by_trade_ids_conn(&mut conn, trade_ids).await
     }
 
-    async fn find_by_trade_id_for_update(&self, trade_id: &str) -> Result<Option<Deal>, DomainError> {
+    async fn find_by_trade_id_for_update(
+        &self,
+        trade_id: &str,
+    ) -> Result<Option<Deal>, DomainError> {
         let mut conn = acquire_conn(&self.pool).await?;
         find_by_trade_id_for_update_conn(&mut conn, trade_id).await
     }
@@ -571,7 +565,10 @@ impl DealRepository for PgTxDealRepository {
         find_by_trade_ids_conn(tx, trade_ids).await
     }
 
-    async fn find_by_trade_id_for_update(&self, trade_id: &str) -> Result<Option<Deal>, DomainError> {
+    async fn find_by_trade_id_for_update(
+        &self,
+        trade_id: &str,
+    ) -> Result<Option<Deal>, DomainError> {
         let mut guard = self.tx.lock().await;
         let tx = guard
             .as_mut()

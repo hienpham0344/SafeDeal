@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { formatEther } from "viem";
+import { formatEther, parseEther } from "viem";
+import { ArrowUpRight } from "lucide-react";
 import { AppShell } from "@/components/layout/AppShell";
 import { AlertBanner, EmptyState, LoadingState, Panel, StatusBadge } from "@/components/ui/Primitives";
 import { Button } from "@/components/ui/Button";
-import { disputePath } from "@/config/routes";
+import { CopyableHash } from "@/components/ui/CopyableHash";
+import { disputePath, ROUTES } from "@/config/routes";
 import {
   validateSplitAllocation,
 } from "@/features/arbitration/api/arbitration-api";
@@ -16,7 +18,7 @@ import { useAuthSession } from "@/features/authentication/hooks/useAuthSession";
 import { usePendingTxPersistence } from "@/features/deals/hooks/usePendingTransactions";
 import { useEscrowContractExecutor } from "@/features/escrow/hooks/useEscrowActions";
 import type { DisputeDetail } from "@/types/api";
-import { formatAvax, formatTimestamp } from "@/utils/format";
+import { formatAvax, formatTimestamp, shortenAddress } from "@/utils/format";
 
 function shouldClearFailedPendingTx(message: string): boolean {
   const normalized = message.toLowerCase();
@@ -28,8 +30,19 @@ function shouldClearFailedPendingTx(message: string): boolean {
   );
 }
 
+function parseAvaxSafe(value: string): bigint | null {
+  const trimmed = value.trim();
+  if (!/^\d+(\.\d{1,18})?$/.test(trimmed)) return null;
+  try {
+    return parseEther(trimmed);
+  } catch {
+    return null;
+  }
+}
+
 function ArbiterDisputeCard({ dispute }: { readonly dispute: DisputeDetail }) {
-  const totalAvax = formatEther(BigInt(dispute.dealAmountWei));
+  const totalWei = BigInt(dispute.dealAmountWei);
+  const totalAvax = formatEther(totalWei);
   const [buyerAvax, setBuyerAvax] = useState(() =>
     dispute.buyerAwardWei ? formatEther(BigInt(dispute.buyerAwardWei)) : totalAvax
   );
@@ -141,6 +154,40 @@ function ArbiterDisputeCard({ dispute }: { readonly dispute: DisputeDetail }) {
   const showSettlementForm =
     dispute.status === "OPEN" || needsRationaleBackfill || Boolean(confirmedResolveTxHash);
 
+  const buyerWei = parseAvaxSafe(buyerAvax);
+  const sellerWei = parseAvaxSafe(sellerAvax);
+  const allocatedWei = buyerWei !== null && sellerWei !== null ? buyerWei + sellerWei : null;
+  const isExactMatch = allocatedWei !== null && allocatedWei === totalWei;
+  const isOverAllocated = allocatedWei !== null && allocatedWei > totalWei;
+
+  let buyerWidthPct = 0;
+  let sellerWidthPct = 0;
+  if (buyerWei !== null && sellerWei !== null && totalWei > 0n) {
+    const denominator = allocatedWei !== null && allocatedWei > totalWei ? allocatedWei : totalWei;
+    buyerWidthPct = Number((buyerWei * 10000n) / denominator) / 100;
+    sellerWidthPct = Number((sellerWei * 10000n) / denominator) / 100;
+  }
+
+  const isAllocationLocked = Boolean(activeResolveTxHash);
+
+  function applySplitPreset(preset: "BUYER_ALL" | "SPLIT_HALF" | "SELLER_ALL") {
+    if (isAllocationLocked) return;
+    if (preset === "BUYER_ALL") {
+      setBuyerAvax(formatEther(totalWei));
+      setSellerAvax("0");
+      return;
+    }
+    if (preset === "SELLER_ALL") {
+      setBuyerAvax("0");
+      setSellerAvax(formatEther(totalWei));
+      return;
+    }
+    const half = totalWei / 2n;
+    const remainder = totalWei - half;
+    setBuyerAvax(formatEther(half));
+    setSellerAvax(formatEther(remainder));
+  }
+
   async function handleResolve(e: React.FormEvent) {
     e.preventDefault();
     if (inFlightRef.current) return;
@@ -232,32 +279,48 @@ function ArbiterDisputeCard({ dispute }: { readonly dispute: DisputeDetail }) {
   }
 
   return (
-    <Panel className="space-y-4">
-      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-white/10 pb-4">
-        <div>
+    <Panel className="space-y-5">
+      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-sd-line pb-4">
+        <div className="space-y-1 min-w-0">
           <h2 className="text-base font-medium text-white">
             Dispute #{dispute.id} · {dispute.dealTitle}
           </h2>
-          <p className="mt-1 font-mono text-xs text-white/50">
-            Trade {dispute.tradeId} · Locked: {formatAvax(dispute.dealAmountWei)}
-          </p>
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-xs text-sd-inkSubtle tabular-nums">
+            <span>Trade</span>
+            <CopyableHash
+              value={dispute.tradeId}
+              displayValue={shortenAddress(dispute.tradeId, 6)}
+              label="Trade ID"
+              className="text-xs"
+            />
+            <span>· Locked: {formatAvax(dispute.dealAmountWei)}</span>
+          </div>
         </div>
         <div className="flex items-center gap-2">
           <StatusBadge status={dispute.status} />
           <Link
             to={disputePath(String(dispute.id))}
-            className="rounded-lg border border-white/20 px-3 py-1.5 text-xs text-white hover:bg-white/10"
+            className="inline-flex min-h-[36px] items-center gap-1 rounded-lg border border-sd-lineStrong bg-sd-elevated/70 px-3 py-1.5 text-xs font-medium text-sd-ink transition-colors hover:border-white/30 hover:bg-sd-elevated"
           >
-            Inspect Evidence
+            <span>Inspect Evidence</span>
+            <ArrowUpRight size={13} aria-hidden="true" />
           </Link>
         </div>
       </div>
 
-      <p className="text-sm text-white/75">{dispute.summary}</p>
-      <p className="text-xs text-white/50">
-        Buyer: <span className="font-mono">{dispute.buyer}</span> · Seller:{" "}
-        <span className="font-mono">{dispute.seller}</span> · Opened {formatTimestamp(dispute.createdAt)}
-      </p>
+      <p className="text-sm leading-relaxed text-sd-inkMuted">{dispute.summary}</p>
+
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-sd-line bg-sd-inset px-3.5 py-2 text-xs text-sd-inkSubtle">
+        <span>
+          Buyer: <span className="font-mono text-sd-inkMuted">{shortenAddress(dispute.buyer)}</span>
+        </span>
+        <span aria-hidden="true">·</span>
+        <span>
+          Seller: <span className="font-mono text-sd-inkMuted">{shortenAddress(dispute.seller)}</span>
+        </span>
+        <span aria-hidden="true">·</span>
+        <span className="tabular-nums">Opened {formatTimestamp(dispute.createdAt)}</span>
+      </div>
 
       {errorMsg && <AlertBanner tone="error" message={errorMsg} />}
       {successMsg && <AlertBanner tone="success" message={successMsg} />}
@@ -274,48 +337,120 @@ function ArbiterDisputeCard({ dispute }: { readonly dispute: DisputeDetail }) {
       )}
 
       {dispute.status === "RESOLVED" && dispute.resolutionRationale && (
-        <div className="rounded-xl border border-white/15 bg-black/50 p-3 text-xs text-white/75 space-y-1">
-          <p>
+        <div className="rounded-xl border border-sd-lineStrong bg-sd-elevated/70 p-4 text-xs text-sd-inkMuted space-y-1.5">
+          <p className="tabular-nums">
             Buyer Award: <span className="font-mono text-white">{formatAvax(dispute.buyerAwardWei ?? "0")}</span>{" "}
-            · Seller Award: <span className="font-mono text-white">{formatAvax(dispute.sellerAwardWei ?? "0")}</span>
+            · Seller Award:{" "}
+            <span className="font-mono text-white">{formatAvax(dispute.sellerAwardWei ?? "0")}</span>
           </p>
-          <p className="text-white/65">Rationale: {dispute.resolutionRationale}</p>
+          <p className="leading-relaxed text-sd-inkMuted">Rationale: {dispute.resolutionRationale}</p>
         </div>
       )}
 
       {showSettlementForm && (
-        <form onSubmit={handleResolve} className="space-y-3 border-t border-white/10 pt-4">
+        <form onSubmit={handleResolve} className="space-y-4 border-t border-sd-line pt-5">
+          <div className="rounded-xl border border-sd-line bg-sd-inset p-4 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="text-xs font-medium text-sd-ink">Split Allocation</span>
+              <div className="flex flex-wrap items-center gap-1.5">
+                <button
+                  type="button"
+                  disabled={isAllocationLocked}
+                  onClick={() => applySplitPreset("BUYER_ALL")}
+                  className="inline-flex min-h-[30px] items-center rounded-md border border-sd-lineStrong bg-sd-elevated px-2.5 py-1 text-[11px] font-medium text-sd-ink transition-colors hover:border-white/30 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  100% Buyer
+                </button>
+                <button
+                  type="button"
+                  disabled={isAllocationLocked}
+                  onClick={() => applySplitPreset("SPLIT_HALF")}
+                  className="inline-flex min-h-[30px] items-center rounded-md border border-sd-lineStrong bg-sd-elevated px-2.5 py-1 text-[11px] font-medium text-sd-ink transition-colors hover:border-white/30 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  50 / 50
+                </button>
+                <button
+                  type="button"
+                  disabled={isAllocationLocked}
+                  onClick={() => applySplitPreset("SELLER_ALL")}
+                  className="inline-flex min-h-[30px] items-center rounded-md border border-sd-lineStrong bg-sd-elevated px-2.5 py-1 text-[11px] font-medium text-sd-ink transition-colors hover:border-white/30 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  100% Seller
+                </button>
+              </div>
+            </div>
+
+            <div
+              aria-label="Escrow split visualization"
+              className={`flex h-2.5 w-full overflow-hidden rounded-full border bg-sd-canvas ${
+                isOverAllocated ? "border-red-400/60" : "border-sd-line"
+              }`}
+            >
+              {buyerWidthPct > 0 && (
+                <div
+                  style={{ width: `${buyerWidthPct}%` }}
+                  className="h-full bg-sky-400 transition-all duration-150"
+                />
+              )}
+              {sellerWidthPct > 0 && (
+                <div
+                  style={{ width: `${sellerWidthPct}%` }}
+                  className="h-full bg-emerald-400 transition-all duration-150"
+                />
+              )}
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+              <p className="font-mono tabular-nums text-sd-inkMuted">
+                Locked: {totalAvax} AVAX · Allocated:{" "}
+                <span className={isExactMatch ? "text-emerald-300" : "text-amber-300"}>
+                  {allocatedWei !== null ? formatEther(allocatedWei) : "Invalid"} AVAX
+                </span>
+              </p>
+              <div className="flex items-center gap-3 font-mono text-[11px] text-sd-inkSubtle">
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="h-2 w-2 rounded-full bg-sky-400" aria-hidden="true" />
+                  Buyer
+                </span>
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="h-2 w-2 rounded-full bg-emerald-400" aria-hidden="true" />
+                  Seller
+                </span>
+              </div>
+            </div>
+          </div>
+
           <div className="grid gap-3 sm:grid-cols-2">
             <div>
-              <label htmlFor={`buyer-alloc-${dispute.id}`} className="block text-xs text-white/60">
+              <label htmlFor={`buyer-alloc-${dispute.id}`} className="block text-xs font-medium text-sd-inkMuted">
                 Buyer Allocation (AVAX)
               </label>
               <input
                 id={`buyer-alloc-${dispute.id}`}
                 type="text"
                 value={buyerAvax}
-                disabled={Boolean(activeResolveTxHash)}
+                disabled={isAllocationLocked}
                 onChange={(e) => setBuyerAvax(e.target.value)}
-                className="mt-1 w-full rounded-lg border border-white/20 bg-black px-3 py-2 font-mono text-sm text-white disabled:opacity-60"
+                className="mt-1.5 w-full rounded-lg border border-sd-lineStrong bg-sd-inset px-3 py-2 font-mono text-sm text-white tabular-nums focus:border-sd-accent focus:outline-none disabled:opacity-60"
               />
             </div>
             <div>
-              <label htmlFor={`seller-alloc-${dispute.id}`} className="block text-xs text-white/60">
+              <label htmlFor={`seller-alloc-${dispute.id}`} className="block text-xs font-medium text-sd-inkMuted">
                 Seller Allocation (AVAX)
               </label>
               <input
                 id={`seller-alloc-${dispute.id}`}
                 type="text"
                 value={sellerAvax}
-                disabled={Boolean(activeResolveTxHash)}
+                disabled={isAllocationLocked}
                 onChange={(e) => setSellerAvax(e.target.value)}
-                className="mt-1 w-full rounded-lg border border-white/20 bg-black px-3 py-2 font-mono text-sm text-white disabled:opacity-60"
+                className="mt-1.5 w-full rounded-lg border border-sd-lineStrong bg-sd-inset px-3 py-2 font-mono text-sm text-white tabular-nums focus:border-sd-accent focus:outline-none disabled:opacity-60"
               />
             </div>
           </div>
 
           <div>
-            <label htmlFor={`rationale-${dispute.id}`} className="block text-xs text-white/60">
+            <label htmlFor={`rationale-${dispute.id}`} className="block text-xs font-medium text-sd-inkMuted">
               Arbitration Rationale
             </label>
             <textarea
@@ -324,7 +459,7 @@ function ArbiterDisputeCard({ dispute }: { readonly dispute: DisputeDetail }) {
               value={rationale}
               onChange={(e) => setRationale(e.target.value)}
               placeholder="Document the evidence review and settlement rationale"
-              className="mt-1 w-full rounded-lg border border-white/20 bg-black px-3 py-2 text-sm text-white"
+              className="mt-1.5 w-full rounded-lg border border-sd-lineStrong bg-sd-inset px-3 py-2 text-sm text-white placeholder:text-sd-inkSubtle focus:border-sd-accent focus:outline-none"
             />
           </div>
 
@@ -356,6 +491,7 @@ export function ArbiterPage() {
 
   return (
     <AppShell
+      breadcrumb={{ label: "My Deals", to: ROUTES.dashboard }}
       title="Arbiter Dashboard"
       subtitle="Disputes assigned to your connected wallet. Every settlement requires explicit wallet signature."
     >

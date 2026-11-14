@@ -13,9 +13,7 @@ use safedeal_domain::ports::{
     in_tx, BlockchainGateway, DealEventRepository, DealRepository, DisputeRepository, PageSlice,
     UnitOfWork,
 };
-use safedeal_shared::{
-    CorrelationIdContext, DomainError, EthFormatValidator, ZERO_ADDRESS,
-};
+use safedeal_shared::{CorrelationIdContext, DomainError, EthFormatValidator, ZERO_ADDRESS};
 use std::str::FromStr;
 
 const MIN_INSPECTION_SECONDS: i64 = 3600;
@@ -61,7 +59,8 @@ impl CreateDealDraftUseCase {
     }
 
     pub async fn execute(&self, cmd: CreateDealCommand) -> Result<Deal, DomainError> {
-        let seller = EthFormatValidator::require_address(Some(&cmd.seller_address), "sellerAddress")?;
+        let seller =
+            EthFormatValidator::require_address(Some(&cmd.seller_address), "sellerAddress")?;
         let buyer = EthFormatValidator::normalize_optional_address(
             cmd.buyer_address.as_deref(),
             "buyerAddress",
@@ -311,8 +310,14 @@ impl BindDealTransactionUseCase {
             )));
         }
 
-        let configured_contract = self.blockchain_gateway.contract_address().to_ascii_lowercase();
-        if !receipt.to_address.eq_ignore_ascii_case(&configured_contract) {
+        let configured_contract = self
+            .blockchain_gateway
+            .contract_address()
+            .to_ascii_lowercase();
+        if !receipt
+            .to_address
+            .eq_ignore_ascii_case(&configured_contract)
+        {
             return Err(DomainError::validation(
                 "Transaction target contract does not match SafeDealEscrow.",
             ));
@@ -425,7 +430,8 @@ impl BindDealTransactionUseCase {
                     .map(str::to_ascii_lowercase)
                     .or(current.buyer);
                 let delivered_at = if snapshot.delivered_at_epoch > 0 {
-                    DateTime::from_timestamp(snapshot.delivered_at_epoch, 0).or(current.delivered_at)
+                    DateTime::from_timestamp(snapshot.delivered_at_epoch, 0)
+                        .or(current.delivered_at)
                 } else {
                     current.delivered_at
                 };
@@ -640,7 +646,10 @@ impl SyncDealUseCase {
             "On-chain contract state disagrees with stored canonical terms.",
         )?;
 
-        let configured_contract = self.blockchain_gateway.contract_address().to_ascii_lowercase();
+        let configured_contract = self
+            .blockchain_gateway
+            .contract_address()
+            .to_ascii_lowercase();
         let now = Utc::now();
         let snapshot_status = snapshot.to_deal_status()?;
 
@@ -671,7 +680,8 @@ impl SyncDealUseCase {
                     .map(str::to_ascii_lowercase)
                     .or(current.buyer);
                 let delivered_at = if snapshot.delivered_at_epoch > 0 {
-                    DateTime::from_timestamp(snapshot.delivered_at_epoch, 0).or(current.delivered_at)
+                    DateTime::from_timestamp(snapshot.delivered_at_epoch, 0)
+                        .or(current.delivered_at)
                 } else {
                     current.delivered_at
                 };
@@ -780,7 +790,10 @@ impl SyncDealUseCase {
                                 tx_hash: Some(ev.tx_hash.clone()),
                                 block_number: Some(ev.block_number),
                                 log_index: Some(ev.log_index),
-                                details: format!("Verified on-chain event {}", ev.event_type.as_str()),
+                                details: format!(
+                                    "Verified on-chain event {}",
+                                    ev.event_type.as_str()
+                                ),
                                 created_at: timeline_time,
                             })
                             .await?;
@@ -891,7 +904,9 @@ impl QueryDealsUseCase {
         &self,
         trade_ids: &[String],
     ) -> Result<HashMap<String, i64>, DomainError> {
-        self.dispute_repo.find_dispute_ids_by_trade_ids(trade_ids).await
+        self.dispute_repo
+            .find_dispute_ids_by_trade_ids(trade_ids)
+            .await
     }
 
     pub async fn get_history(
@@ -912,8 +927,10 @@ impl QueryDealsUseCase {
             )));
         }
         let (events, transactions) = tokio::join!(
-            self.deal_event_repo.find_by_trade_id_order_by_created_at_asc(&trade_id),
-            self.tx_repo.find_by_trade_id_order_by_created_at_asc(&trade_id),
+            self.deal_event_repo
+                .find_by_trade_id_order_by_created_at_asc(&trade_id),
+            self.tx_repo
+                .find_by_trade_id_order_by_created_at_asc(&trade_id),
         );
         Ok(DealHistory {
             events: events?,

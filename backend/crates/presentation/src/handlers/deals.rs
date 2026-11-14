@@ -6,14 +6,12 @@ use safedeal_domain::deal::Deal;
 use serde::Deserialize;
 
 use crate::dto::{
-    BindTxRequest, CreateDraftRequest, CreateDraftResponse, DealDetailResponse, DealHistoryResponse,
-    PaginatedDealSummaryResponse, SyncRequest,
+    BindTxRequest, CreateDraftRequest, CreateDraftResponse, DealDetailResponse,
+    DealHistoryResponse, PaginatedDealSummaryResponse, SyncRequest,
 };
 use crate::error::ApiError;
 use crate::extractors::{CurrentPrincipal, OptionalJsonBody, ValidatedJson};
-use crate::mapper::{
-    to_detail, to_event_response, to_summary, to_tx_response,
-};
+use crate::mapper::{to_detail, to_event_response, to_summary, to_tx_response};
 use crate::router::AppState;
 
 #[derive(Debug, Deserialize, Default)]
@@ -181,7 +179,11 @@ pub async fn list_deals(
         )
         .await?;
 
-    let trade_ids: Vec<String> = slice.items.iter().map(|d: &Deal| d.trade_id.clone()).collect();
+    let trade_ids: Vec<String> = slice
+        .items
+        .iter()
+        .map(|d: &Deal| d.trade_id.clone())
+        .collect();
     let dispute_ids = state.query_deals.find_dispute_ids(&trade_ids).await?;
     let items = slice
         .items

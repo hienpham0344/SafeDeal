@@ -86,10 +86,7 @@ impl EvidenceStoragePort for LocalEvidenceStorageAdapter {
             )));
         }
 
-        let mime = declared_mime_type
-            .unwrap_or("")
-            .trim()
-            .to_ascii_lowercase();
+        let mime = declared_mime_type.unwrap_or("").trim().to_ascii_lowercase();
         let extension = extension_for_mime(&mime).ok_or_else(|| {
             DomainError::validation(
                 "Unsupported evidence MIME type. Allowed: image/png, image/jpeg, application/pdf, text/plain.",
@@ -105,24 +102,26 @@ impl EvidenceStoragePort for LocalEvidenceStorageAdapter {
         let safe_original = sanitize_filename(original_filename, extension);
         let key = format!("{dispute_id}/{}{}", Uuid::new_v4(), extension);
         let target = self.resolve_within_root(&key)?;
-        let canonical_root = std::fs::canonicalize(&self.root_dir)
-            .map_err(|e| DomainError::internal(format!("Evidence storage root unavailable: {e}")))?;
+        let canonical_root = std::fs::canonicalize(&self.root_dir).map_err(|e| {
+            DomainError::internal(format!("Evidence storage root unavailable: {e}"))
+        })?;
 
         if let Some(parent) = target.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .map_err(|e| DomainError::internal(format!("Failed to prepare evidence dir: {e}")))?;
-            let canonical_parent = std::fs::canonicalize(parent)
-                .map_err(|e| DomainError::internal(format!("Failed to verify evidence dir: {e}")))?;
+            tokio::fs::create_dir_all(parent).await.map_err(|e| {
+                DomainError::internal(format!("Failed to prepare evidence dir: {e}"))
+            })?;
+            let canonical_parent = std::fs::canonicalize(parent).map_err(|e| {
+                DomainError::internal(format!("Failed to verify evidence dir: {e}"))
+            })?;
             if !canonical_parent.starts_with(&canonical_root) {
                 return Err(DomainError::validation(
                     "Storage path traversal attempt rejected.",
                 ));
             }
         }
-        tokio::fs::write(&target, bytes)
-            .await
-            .map_err(|e| DomainError::internal(format!("Failed to persist dispute evidence file: {e}")))?;
+        tokio::fs::write(&target, bytes).await.map_err(|e| {
+            DomainError::internal(format!("Failed to persist dispute evidence file: {e}"))
+        })?;
 
         let sha256_hex = hex::encode(Sha256::digest(bytes));
         Ok(StoredAttachment {
@@ -153,12 +152,15 @@ impl EvidenceStoragePort for LocalEvidenceStorageAdapter {
 
     fn resolve_attachment_path(&self, storage_key: &str) -> Result<PathBuf, DomainError> {
         let target = self.resolve_within_root(storage_key)?;
-        let canonical_root = std::fs::canonicalize(&self.root_dir)
-            .map_err(|e| DomainError::internal(format!("Evidence storage root unavailable: {e}")))?;
+        let canonical_root = std::fs::canonicalize(&self.root_dir).map_err(|e| {
+            DomainError::internal(format!("Evidence storage root unavailable: {e}"))
+        })?;
         match std::fs::symlink_metadata(&target) {
             Ok(_) => {}
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                return Err(DomainError::not_found("Evidence file missing from storage."));
+                return Err(DomainError::not_found(
+                    "Evidence file missing from storage.",
+                ));
             }
             Err(err) => {
                 return Err(DomainError::internal(format!(
@@ -180,7 +182,9 @@ impl EvidenceStoragePort for LocalEvidenceStorageAdapter {
         }
         match std::fs::metadata(&canonical_target) {
             Ok(meta) if meta.is_file() => Ok(canonical_target),
-            _ => Err(DomainError::not_found("Evidence file missing from storage.")),
+            _ => Err(DomainError::not_found(
+                "Evidence file missing from storage.",
+            )),
         }
     }
 
@@ -227,11 +231,7 @@ fn sanitize_filename(original: &str, fallback_ext: &str) -> String {
         return format!("evidence{fallback_ext}");
     }
     let normalized_slashes = original.replace('\\', "/");
-    let file_name = normalized_slashes
-        .rsplit('/')
-        .next()
-        .unwrap_or("")
-        .trim();
+    let file_name = normalized_slashes.rsplit('/').next().unwrap_or("").trim();
     let sanitized: String = file_name
         .chars()
         .map(|c| {

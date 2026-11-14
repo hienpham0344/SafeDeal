@@ -35,17 +35,16 @@ pub struct AlloyBlockchainGateway {
 impl AlloyBlockchainGateway {
     pub fn new(config: &BlockchainConfig) -> Result<Self, String> {
         let contract_address = config.escrow_contract_address.trim().to_ascii_lowercase();
-        let parsed_contract = if contract_address.is_empty()
-            || contract_address.eq_ignore_ascii_case(ZERO_ADDRESS)
-        {
-            None
-        } else {
-            Some(
-                contract_address
-                    .parse::<Address>()
-                    .map_err(|e| format!("Invalid ESCROW_CONTRACT_ADDRESS: {e}"))?,
-            )
-        };
+        let parsed_contract =
+            if contract_address.is_empty() || contract_address.eq_ignore_ascii_case(ZERO_ADDRESS) {
+                None
+            } else {
+                Some(
+                    contract_address
+                        .parse::<Address>()
+                        .map_err(|e| format!("Invalid ESCROW_CONTRACT_ADDRESS: {e}"))?,
+                )
+            };
 
         let provider = if config.enabled {
             let url = Url::parse(config.rpc_url.trim())
@@ -250,12 +249,10 @@ impl BlockchainGateway for AlloyBlockchainGateway {
             return Ok(Vec::new());
         }
 
-        let from_u64 = u64::try_from(from_block).map_err(|_| {
-            DomainError::validation("fromBlock must be non-negative")
-        })?;
-        let to_u64 = u64::try_from(to_block).map_err(|_| {
-            DomainError::validation("toBlock must be non-negative")
-        })?;
+        let from_u64 = u64::try_from(from_block)
+            .map_err(|_| DomainError::validation("fromBlock must be non-negative"))?;
+        let to_u64 = u64::try_from(to_block)
+            .map_err(|_| DomainError::validation("toBlock must be non-negative"))?;
 
         let filter = Filter::new()
             .address(contract)
@@ -296,9 +293,7 @@ impl BlockchainGateway for AlloyBlockchainGateway {
                 DomainError::external_service("RPC log missing blockNumber during decode")
             })?;
             let ts = block_timestamps.get(&bn).copied().ok_or_else(|| {
-                DomainError::external_service(format!(
-                    "Missing resolved timestamp for block {bn}"
-                ))
+                DomainError::external_service(format!("Missing resolved timestamp for block {bn}"))
             })?;
             if let Some(ev) = SafeDealContractCodec::decode_rpc_log(entry, ts)? {
                 decoded.push(ev);

@@ -50,9 +50,7 @@ pub async fn health(State(state): State<AppState>) -> Json<HealthStatusResponse>
         (status = 200, description = "OK", body = ReadinessStatusResponse, content_type = "*/*")
     )
 )]
-pub async fn ready(
-    State(state): State<AppState>,
-) -> (StatusCode, Json<ReadinessStatusResponse>) {
+pub async fn ready(State(state): State<AppState>) -> (StatusCode, Json<ReadinessStatusResponse>) {
     let database_connected = state.database_readiness.is_database_connected().await;
     let evidence_storage_ready = state.evidence_storage.is_storage_ready();
     let siwe_configured = !state.siwe_settings.siwe_domain.trim().is_empty()
@@ -91,7 +89,10 @@ pub async fn actuator_health(
     let db_ok = state.database_readiness.is_database_connected().await;
     let storage_ok = state.evidence_storage.is_storage_ready();
     if db_ok && storage_ok {
-        (StatusCode::OK, Json(ActuatorStatusResponse { status: "UP" }))
+        (
+            StatusCode::OK,
+            Json(ActuatorStatusResponse { status: "UP" }),
+        )
     } else {
         (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -104,7 +105,10 @@ pub async fn actuator_readiness(
     State(state): State<AppState>,
 ) -> (StatusCode, Json<ActuatorStatusResponse>) {
     if state.database_readiness.is_database_connected().await {
-        (StatusCode::OK, Json(ActuatorStatusResponse { status: "UP" }))
+        (
+            StatusCode::OK,
+            Json(ActuatorStatusResponse { status: "UP" }),
+        )
     } else {
         (
             StatusCode::SERVICE_UNAVAILABLE,

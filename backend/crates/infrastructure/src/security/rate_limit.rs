@@ -52,7 +52,10 @@ impl AuthRateLimitState {
         if self.max_requests_per_minute == 0 {
             return false;
         }
-        let calls = self.call_counter.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+        let calls = self
+            .call_counter
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1);
         let mut guard = self
             .windows
             .lock()

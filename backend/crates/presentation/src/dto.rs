@@ -201,7 +201,12 @@ impl ValidateRequest for CreateDraftRequest {
         ) {
             check_len_range(&self.description, "description", 10, 4000, &mut errors);
         }
-        check_not_blank(&self.amount_wei, "amountWei", "must not be blank", &mut errors);
+        check_not_blank(
+            &self.amount_wei,
+            "amountWei",
+            "must not be blank",
+            &mut errors,
+        );
         check_not_blank(
             &self.arbiter_address,
             "arbiterAddress",

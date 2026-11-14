@@ -163,7 +163,12 @@ impl DisputeUseCase {
                     .find_by_trade_id_for_update(&trade_id)
                     .await?
                     .ok_or_else(|| DomainError::not_found(format!("Deal not found: {trade_id}")))?;
-                if repos.disputes().find_by_trade_id(&trade_id).await?.is_some() {
+                if repos
+                    .disputes()
+                    .find_by_trade_id(&trade_id)
+                    .await?
+                    .is_some()
+                {
                     return Err(DomainError::conflict(format!(
                         "A dispute case already exists for trade {trade_id}"
                     )));
@@ -302,23 +307,20 @@ impl DisputeUseCase {
 
         let now = Utc::now();
         let correlation_id = CorrelationIdContext::get_or_default("n/a");
-        let cleanup_storage_key = attachment
-            .as_ref()
-            .map(|att| att.storage_key.clone());
+        let cleanup_storage_key = attachment.as_ref().map(|att| att.storage_key.clone());
 
         let result = in_tx(self.uow.as_ref(), move |repos| {
             Box::pin(async move {
-                let (file_name, mime_type, size_bytes, sha256_hex, storage_key) =
-                    match attachment {
-                        Some(att) => (
-                            Some(att.sanitized_file_name),
-                            Some(att.mime_type),
-                            Some(att.size_bytes),
-                            Some(att.sha256_hex),
-                            Some(att.storage_key),
-                        ),
-                        None => (None, None, None, None, None),
-                    };
+                let (file_name, mime_type, size_bytes, sha256_hex, storage_key) = match attachment {
+                    Some(att) => (
+                        Some(att.sanitized_file_name),
+                        Some(att.mime_type),
+                        Some(att.size_bytes),
+                        Some(att.sha256_hex),
+                        Some(att.storage_key),
+                    ),
+                    None => (None, None, None, None, None),
+                };
                 let saved = repos
                     .dispute_evidence()
                     .save(&DisputeEvidence {
@@ -361,9 +363,7 @@ impl DisputeUseCase {
 
         if result.is_err() {
             if let Some(storage_key) = cleanup_storage_key {
-                self.evidence_storage
-                    .delete_best_effort(&storage_key)
-                    .await;
+                self.evidence_storage.delete_best_effort(&storage_key).await;
             }
         }
 

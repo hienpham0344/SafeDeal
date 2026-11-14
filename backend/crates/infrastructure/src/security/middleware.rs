@@ -124,10 +124,7 @@ pub fn apply_security_layers(
         )))
 }
 
-async fn correlation_and_security_headers_middleware(
-    req: Request<Body>,
-    next: Next,
-) -> Response {
+async fn correlation_and_security_headers_middleware(req: Request<Body>, next: Next) -> Response {
     let incoming = req
         .headers()
         .get(CORRELATION_ID_HEADER)
@@ -147,7 +144,8 @@ async fn correlation_and_security_headers_middleware(
         path = %path
     );
 
-    let mut response = with_correlation_id(correlation_id.clone(), next.run(req).instrument(span)).await;
+    let mut response =
+        with_correlation_id(correlation_id.clone(), next.run(req).instrument(span)).await;
 
     let headers = response.headers_mut();
     if let Ok(cid_header) = HeaderValue::from_str(&correlation_id) {
@@ -237,10 +235,7 @@ async fn double_submit_csrf_middleware(
     req: Request<Body>,
     next: Next,
 ) -> Response {
-    if matches!(
-        *req.method(),
-        Method::GET | Method::HEAD | Method::OPTIONS
-    ) {
+    if matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS) {
         return next.run(req).await;
     }
 

@@ -231,8 +231,7 @@ impl AppConfig {
         let blockchain = BlockchainConfig {
             enabled: parse_bool(vars, "BLOCKCHAIN_SYNC_ENABLED", true)?,
             chain_id: parse_i64(vars, "CHAIN_ID", 31337, 1)?,
-            chain_name: non_empty(vars, "CHAIN_NAME")
-                .unwrap_or_else(|| "Anvil Local".to_string()),
+            chain_name: non_empty(vars, "CHAIN_NAME").unwrap_or_else(|| "Anvil Local".to_string()),
             rpc_url: non_empty(vars, "AVALANCHE_RPC_URL")
                 .unwrap_or_else(|| "http://127.0.0.1:8545".to_string()),
             escrow_contract_address: vars
@@ -347,7 +346,9 @@ pub fn validate_common_and_production(
         return Err(ConfigError::new("NONCE_TTL_SECONDS must be >= 30."));
     }
     if auth.siwe_domain.trim().is_empty() || auth.siwe_uri.trim().is_empty() {
-        return Err(ConfigError::new("SIWE_DOMAIN and SIWE_URI cannot be blank."));
+        return Err(ConfigError::new(
+            "SIWE_DOMAIN and SIWE_URI cannot be blank.",
+        ));
     }
     if auth.session_cookie_name.trim().is_empty() || auth.csrf_cookie_name.trim().is_empty() {
         return Err(ConfigError::new(
@@ -615,7 +616,11 @@ fn non_empty(vars: &HashMap<String, String>, key: &str) -> Option<String> {
         .map(ToString::to_string)
 }
 
-fn parse_bool(vars: &HashMap<String, String>, key: &str, default: bool) -> Result<bool, ConfigError> {
+fn parse_bool(
+    vars: &HashMap<String, String>,
+    key: &str,
+    default: bool,
+) -> Result<bool, ConfigError> {
     match non_empty(vars, key) {
         None => Ok(default),
         Some(v) => match v.to_ascii_lowercase().as_str() {
@@ -895,7 +900,9 @@ mod tests {
         assert!(is_loopback_host_or_url("http://0.0.0.0:8080"));
         assert!(is_loopback_host_or_url("http://[::1]:5173"));
         assert!(is_loopback_host_or_url("http://[::ffff:127.0.0.1]:8545"));
-        assert!(!is_loopback_host_or_url("https://not-localhost.example.com"));
+        assert!(!is_loopback_host_or_url(
+            "https://not-localhost.example.com"
+        ));
         assert!(!is_loopback_host_or_url("app.safedeal.network"));
 
         let mut http_siwe = valid_prod_auth();

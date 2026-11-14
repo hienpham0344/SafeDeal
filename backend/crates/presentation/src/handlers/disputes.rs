@@ -110,9 +110,7 @@ pub async fn list_evidence(
         .dispute_use_case
         .list_evidence(dispute_id, &principal.address)
         .await?;
-    Ok(Json(
-        items.into_iter().map(to_evidence_response).collect(),
-    ))
+    Ok(Json(items.into_iter().map(to_evidence_response).collect()))
 }
 
 #[utoipa::path(
@@ -257,10 +255,7 @@ pub async fn download_evidence(
     if let Ok(disp_val) = HeaderValue::from_str(&disposition) {
         headers.insert(header::CONTENT_DISPOSITION, disp_val);
     }
-    headers.insert(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static("no-store"),
-    );
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     headers.insert(
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),
@@ -283,7 +278,10 @@ fn map_multipart_rejection(rej: MultipartRejection) -> ApiError {
 
 fn map_multipart_error(err: MultipartError) -> ApiError {
     if err.status() == StatusCode::PAYLOAD_TOO_LARGE
-        || err.body_text().to_ascii_lowercase().contains("length limit")
+        || err
+            .body_text()
+            .to_ascii_lowercase()
+            .contains("length limit")
     {
         ApiError::file_too_large()
     } else {
