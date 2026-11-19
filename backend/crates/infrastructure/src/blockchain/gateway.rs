@@ -192,6 +192,12 @@ impl BlockchainGateway for AlloyBlockchainGateway {
         })?;
         let block_number = i64::try_from(block_number_u64)
             .map_err(|_| DomainError::external_service("Receipt blockNumber exceeds i64 range"))?;
+        if self.confirmations_required > 1 {
+            let latest_block = self.fetch_latest_block_number().await?;
+            if latest_block - block_number + 1 < i64::from(self.confirmations_required) {
+                return Ok(None);
+            }
+        }
         let block_timestamp = self
             .fetch_block_timestamp_epoch(provider, block_number_u64)
             .await?;

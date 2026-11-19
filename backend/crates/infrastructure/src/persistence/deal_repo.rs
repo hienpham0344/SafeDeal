@@ -363,26 +363,30 @@ fn push_role_filter<'a>(qb: &mut QueryBuilder<'a, Postgres>, role: &'a str, lowe
             qb.push_bind(lower_wallet);
         }
         "buyer" => {
-            qb.push("d.buyer_address = ");
+            qb.push("(d.buyer_address = ");
             qb.push_bind(lower_wallet);
+            qb.push(" AND d.on_chain_bound = TRUE AND d.status <> 'DRAFT')");
         }
         "funded" => {
             qb.push("(d.buyer_address = ");
             qb.push_bind(lower_wallet);
-            qb.push(" AND d.status NOT IN ('DRAFT', 'CREATED'))");
+            qb.push(
+                " AND d.on_chain_bound = TRUE AND d.status NOT IN ('DRAFT', 'CREATED', 'CANCELLED'))",
+            );
         }
         "arbiter" => {
-            qb.push("d.arbiter_address = ");
+            qb.push("(d.arbiter_address = ");
             qb.push_bind(lower_wallet);
+            qb.push(" AND d.on_chain_bound = TRUE AND d.status <> 'DRAFT')");
         }
         _ => {
             qb.push("(d.seller_address = ");
             qb.push_bind(lower_wallet);
-            qb.push(" OR d.buyer_address = ");
+            qb.push(" OR ((d.buyer_address = ");
             qb.push_bind(lower_wallet);
             qb.push(" OR d.arbiter_address = ");
             qb.push_bind(lower_wallet);
-            qb.push(")");
+            qb.push(") AND d.on_chain_bound = TRUE AND d.status <> 'DRAFT'))");
         }
     }
 }
@@ -461,6 +465,35 @@ async fn find_open_bound_deals_conn(conn: &mut PgConnection) -> Result<Vec<Deal>
     rows.into_iter().map(row_to_deal).collect()
 }
 
+async fn purge_expired_drafts_conn(
+    conn: &mut PgConnection,
+    cutoff: DateTime<Utc>,
+) -> Result<u64, DomainError> {
+    let result = sqlx::query(
+        r#"
+        WITH expired_deals AS (
+            SELECT id, trade_id FROM deals
+            WHERE status = 'DRAFT'
+              AND on_chain_bound = FALSE
+              AND updated_at < $1
+            FOR UPDATE SKIP LOCKED
+        ),
+        deleted_events AS (
+            DELETE FROM deal_events
+            WHERE trade_id IN (SELECT trade_id FROM expired_deals)
+        )
+        DELETE FROM deals
+        WHERE id IN (SELECT id FROM expired_deals)
+        "#,
+    )
+    .bind(cutoff)
+    .execute(conn)
+    .await
+    .map_err(map_sqlx_err)?;
+
+    Ok(result.rows_affected())
+}
+
 pub struct PgDealRepository {
     pool: PgPool,
 }
@@ -526,6 +559,11 @@ impl DealRepository for PgDealRepository {
     async fn find_open_bound_deals(&self) -> Result<Vec<Deal>, DomainError> {
         let mut conn = acquire_conn(&self.pool).await?;
         find_open_bound_deals_conn(&mut conn).await
+    }
+
+    async fn purge_expired_drafts(&self, cutoff: DateTime<Utc>) -> Result<u64, DomainError> {
+        let mut conn = acquire_conn(&self.pool).await?;
+        purge_expired_drafts_conn(&mut conn, cutoff).await
     }
 }
 
@@ -616,5 +654,13 @@ impl DealRepository for PgTxDealRepository {
             .as_mut()
             .ok_or_else(|| DomainError::internal("Transaction already finalized"))?;
         find_open_bound_deals_conn(tx).await
+    }
+
+    async fn purge_expired_drafts(&self, cutoff: DateTime<Utc>) -> Result<u64, DomainError> {
+        let mut guard = self.tx.lock().await;
+        let tx = guard
+            .as_mut()
+            .ok_or_else(|| DomainError::internal("Transaction already finalized"))?;
+        purge_expired_drafts_conn(tx, cutoff).await
     }
 }

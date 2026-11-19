@@ -6,3 +6,4 @@ pub mod config;
 pub mod persistence;
 pub mod security;
 pub mod storage;
+pub mod storage_s3;
