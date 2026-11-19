@@ -161,6 +161,45 @@ async fn apply_event_to_deal_projection<'a>(
         return Ok(());
     }
 
+    if !current.on_chain_bound || current.status == DealStatus::Draft {
+        if ev.event_type != OnChainEventType::TradeCreated {
+            tracing::warn!(
+                trade_id = %trade_id,
+                event_type = %ev.event_type.as_str(),
+                tx_hash = %ev.tx_hash,
+                "Ignoring non-TradeCreated event for unbound draft deal"
+            );
+            return Ok(());
+        }
+        let seller_matches = ev
+            .actor_address
+            .as_deref()
+            .is_some_and(|a| a.eq_ignore_ascii_case(&current.seller));
+        let terms_matches = ev
+            .terms_hash
+            .as_deref()
+            .is_some_and(|th| th.eq_ignore_ascii_case(&current.terms_hash));
+        let amount_matches = ev.amount_wei.as_deref() == Some(current.amount_wei.as_str());
+        let event_buyer = ev
+            .buyer_address
+            .as_deref()
+            .filter(|b| !b.trim().is_empty() && !EthFormatValidator::is_zero_address(b));
+        let buyer_matches = match current.buyer.as_ref() {
+            Some(expected) => {
+                event_buyer.is_some_and(|actual| actual.eq_ignore_ascii_case(expected))
+            }
+            None => event_buyer.is_none(),
+        };
+        if !seller_matches || !terms_matches || !amount_matches || !buyer_matches {
+            tracing::warn!(
+                trade_id = %trade_id,
+                tx_hash = %ev.tx_hash,
+                "Ignoring mismatched TradeCreated event for unbound draft deal"
+            );
+            return Ok(());
+        }
+    }
+
     let next_status = match ev.event_type {
         OnChainEventType::TradeCreated => DealStatus::Created,
         OnChainEventType::TradeFunded => DealStatus::Funded,
