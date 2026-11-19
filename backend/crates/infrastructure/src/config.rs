@@ -55,8 +55,15 @@ pub struct AppConfig {
     pub blockchain: BlockchainConfig,
     pub evidence: EvidenceConfig,
     pub rate_limit: RateLimitConfig,
+    pub deals: DealsConfig,
     pub swagger_ui_enabled: bool,
     pub api_docs_enabled: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct DealsConfig {
+    pub draft_ttl_seconds: i64,
+    pub cleanup_interval_seconds: u64,
 }
 
 #[derive(Clone)]
@@ -127,9 +134,63 @@ pub struct BlockchainConfig {
     pub rpc_timeout_ms: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvidenceStorageBackend {
+    Local,
+    S3,
+}
+
+impl EvidenceStorageBackend {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::S3 => "s3",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Result<Self, ConfigError> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "local" | "filesystem" | "disk" => Ok(Self::Local),
+            "s3" | "r2" | "object" => Ok(Self::S3),
+            other => Err(ConfigError::new(format!(
+                "Invalid EVIDENCE_STORAGE_BACKEND value '{other}'. Allowed: local, s3."
+            ))),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct S3EvidenceConfig {
+    pub endpoint: String,
+    pub bucket: String,
+    pub region: String,
+    pub access_key_id: String,
+    pub secret_access_key: String,
+    pub key_prefix: String,
+    pub force_path_style: bool,
+    pub timeout_ms: u64,
+}
+
+impl fmt::Debug for S3EvidenceConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("S3EvidenceConfig")
+            .field("endpoint", &self.endpoint)
+            .field("bucket", &self.bucket)
+            .field("region", &self.region)
+            .field("access_key_id", &"[REDACTED]")
+            .field("secret_access_key", &"[REDACTED]")
+            .field("key_prefix", &self.key_prefix)
+            .field("force_path_style", &self.force_path_style)
+            .field("timeout_ms", &self.timeout_ms)
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct EvidenceConfig {
+    pub backend: EvidenceStorageBackend,
     pub storage_dir: String,
+    pub s3: Option<S3EvidenceConfig>,
     pub max_bytes: usize,
     pub max_request_bytes: usize,
 }
@@ -254,9 +315,33 @@ impl AppConfig {
             ));
         }
 
+        let evidence_backend = match non_empty(vars, "EVIDENCE_STORAGE_BACKEND") {
+            Some(raw) => EvidenceStorageBackend::parse(&raw)?,
+            None => EvidenceStorageBackend::Local,
+        };
+        let evidence_s3 = match evidence_backend {
+            EvidenceStorageBackend::Local => None,
+            EvidenceStorageBackend::S3 => Some(S3EvidenceConfig {
+                endpoint: non_empty(vars, "EVIDENCE_S3_ENDPOINT").unwrap_or_default(),
+                bucket: non_empty(vars, "EVIDENCE_S3_BUCKET").unwrap_or_default(),
+                region: non_empty(vars, "EVIDENCE_S3_REGION").unwrap_or_else(|| "auto".to_string()),
+                access_key_id: non_empty(vars, "EVIDENCE_S3_ACCESS_KEY_ID").unwrap_or_default(),
+                secret_access_key: non_empty(vars, "EVIDENCE_S3_SECRET_ACCESS_KEY")
+                    .unwrap_or_default(),
+                key_prefix: vars
+                    .get("EVIDENCE_S3_KEY_PREFIX")
+                    .map(|s| s.trim().trim_matches('/').to_string())
+                    .unwrap_or_default(),
+                force_path_style: parse_bool(vars, "EVIDENCE_S3_FORCE_PATH_STYLE", true)?,
+                timeout_ms: parse_u64(vars, "EVIDENCE_S3_TIMEOUT_MS", 15_000, 1_000)?,
+            }),
+        };
+
         let evidence = EvidenceConfig {
+            backend: evidence_backend,
             storage_dir: non_empty(vars, "EVIDENCE_STORAGE_DIR")
                 .unwrap_or_else(|| "./storage/evidence".to_string()),
+            s3: evidence_s3,
             max_bytes: evidence_max_bytes,
             max_request_bytes: evidence_max_request_bytes,
         };
@@ -264,6 +349,13 @@ impl AppConfig {
         let rate_limit = RateLimitConfig {
             enabled: parse_bool(vars, "RATE_LIMIT_ENABLED", true)?,
             auth_requests_per_minute: parse_usize(vars, "AUTH_RATE_LIMIT_PER_MINUTE", 30, 1)?,
+        };
+
+        let draft_ttl_seconds = parse_i64(vars, "DEAL_DRAFT_TTL_SECONDS", 86_400, 60)?;
+        let cleanup_interval_seconds = parse_u64(vars, "DEAL_CLEANUP_INTERVAL_SECONDS", 3_600, 0)?;
+        let deals = DealsConfig {
+            draft_ttl_seconds,
+            cleanup_interval_seconds,
         };
 
         let swagger_ui_enabled = parse_bool(vars, "SWAGGER_UI_ENABLED", !is_prod_or_staging)?;
@@ -279,6 +371,7 @@ impl AppConfig {
             blockchain,
             evidence,
             rate_limit,
+            deals,
             swagger_ui_enabled,
             api_docs_enabled,
         };
@@ -355,6 +448,11 @@ pub fn validate_common_and_production(
             "SESSION_COOKIE_NAME and CSRF_COOKIE_NAME cannot be blank.",
         ));
     }
+    if auth.cookie_same_site == CookieSameSite::None && !auth.cookie_secure {
+        return Err(ConfigError::new(
+            "COOKIE_SECURE must be true when COOKIE_SAME_SITE=None.",
+        ));
+    }
 
     if cors.allowed_origins.is_empty() {
         return Err(ConfigError::new("CORS_ALLOWED_ORIGINS cannot be empty."));
@@ -389,10 +487,73 @@ pub fn validate_common_and_production(
         }
     }
 
-    if evidence.storage_dir.trim().is_empty() || evidence.max_bytes < 1024 {
+    if evidence.max_bytes < 1024 || evidence.max_request_bytes < evidence.max_bytes {
         return Err(ConfigError::new(
-            "EVIDENCE_STORAGE_DIR cannot be blank and EVIDENCE_MAX_BYTES must be >= 1024.",
+            "EVIDENCE_MAX_BYTES must be >= 1024 and EVIDENCE_MAX_REQUEST_BYTES >= EVIDENCE_MAX_BYTES.",
         ));
+    }
+    match evidence.backend {
+        EvidenceStorageBackend::Local => {
+            if evidence.storage_dir.trim().is_empty() {
+                return Err(ConfigError::new(
+                    "EVIDENCE_STORAGE_DIR cannot be blank when EVIDENCE_STORAGE_BACKEND=local.",
+                ));
+            }
+        }
+        EvidenceStorageBackend::S3 => {
+            let s3 = evidence.s3.as_ref().ok_or_else(|| {
+                ConfigError::new("S3 configuration is required when EVIDENCE_STORAGE_BACKEND=s3.")
+            })?;
+            let endpoint = s3.endpoint.trim();
+            if !(endpoint.starts_with("http://") || endpoint.starts_with("https://")) {
+                return Err(ConfigError::new(
+                    "EVIDENCE_S3_ENDPOINT must be a valid http:// or https:// URL when EVIDENCE_STORAGE_BACKEND=s3.",
+                ));
+            }
+            let bucket = s3.bucket.trim();
+            if bucket.len() < 3
+                || bucket.len() > 63
+                || bucket.contains('/')
+                || bucket.contains('\\')
+                || bucket.chars().any(char::is_whitespace)
+            {
+                return Err(ConfigError::new(
+                    "EVIDENCE_S3_BUCKET must be a valid bucket name (3-63 chars, no slashes or whitespace).",
+                ));
+            }
+            if s3.region.trim().is_empty() {
+                return Err(ConfigError::new(
+                    "EVIDENCE_S3_REGION cannot be blank when EVIDENCE_STORAGE_BACKEND=s3.",
+                ));
+            }
+            if s3.access_key_id.trim().is_empty() || s3.secret_access_key.trim().is_empty() {
+                return Err(ConfigError::new(
+                    "EVIDENCE_S3_ACCESS_KEY_ID and EVIDENCE_S3_SECRET_ACCESS_KEY are required when EVIDENCE_STORAGE_BACKEND=s3.",
+                ));
+            }
+            if s3.timeout_ms < 1000 {
+                return Err(ConfigError::new("EVIDENCE_S3_TIMEOUT_MS must be >= 1000."));
+            }
+            if has_prod_or_staging(profiles) {
+                if !endpoint.to_ascii_lowercase().starts_with("https://")
+                    || is_loopback_host_or_url(endpoint)
+                {
+                    return Err(ConfigError::new(
+                        "EVIDENCE_S3_ENDPOINT must use https:// and cannot point to localhost/loopback in staging/production.",
+                    ));
+                }
+                let lower_ak = s3.access_key_id.to_ascii_lowercase();
+                let lower_sk = s3.secret_access_key.to_ascii_lowercase();
+                if PLACEHOLDER_SECRET_WORDS
+                    .iter()
+                    .any(|word| lower_ak.contains(word) || lower_sk.contains(word))
+                {
+                    return Err(ConfigError::new(
+                        "Production/staging profiles forbid placeholder S3 credentials.",
+                    ));
+                }
+            }
+        }
     }
     if rate_limit.auth_requests_per_minute < 1 {
         return Err(ConfigError::new("AUTH_RATE_LIMIT_PER_MINUTE must be >= 1."));
@@ -940,5 +1101,92 @@ mod tests {
             true,
         )
         .is_err());
+    }
+
+    #[test]
+    fn parses_and_validates_s3_evidence_storage_configuration() {
+        let mut vars = HashMap::new();
+        vars.insert(
+            "JWT_SECRET".to_string(),
+            "0123456789abcdef0123456789abcdef".to_string(),
+        );
+        vars.insert("BLOCKCHAIN_SYNC_ENABLED".to_string(), "false".to_string());
+        vars.insert("EVIDENCE_STORAGE_BACKEND".to_string(), "s3".to_string());
+        // Missing S3 fields must fail fast
+        assert!(AppConfig::from_map(&vars).is_err());
+
+        vars.insert(
+            "EVIDENCE_S3_ENDPOINT".to_string(),
+            "http://127.0.0.1:9000".to_string(),
+        );
+        vars.insert(
+            "EVIDENCE_S3_BUCKET".to_string(),
+            "safedeal-evidence".to_string(),
+        );
+        vars.insert("EVIDENCE_S3_REGION".to_string(), "auto".to_string());
+        vars.insert(
+            "EVIDENCE_S3_ACCESS_KEY_ID".to_string(),
+            "AKIA_LOCAL_DEV_KEY".to_string(),
+        );
+        vars.insert(
+            "EVIDENCE_S3_SECRET_ACCESS_KEY".to_string(),
+            "super-secret-minio-key-123456".to_string(),
+        );
+        vars.insert(
+            "EVIDENCE_S3_KEY_PREFIX".to_string(),
+            "/disputes/".to_string(),
+        );
+
+        let local_cfg = AppConfig::from_map(&vars).unwrap();
+        assert_eq!(local_cfg.evidence.backend, EvidenceStorageBackend::S3);
+        let s3 = local_cfg.evidence.s3.as_ref().unwrap();
+        assert_eq!(s3.bucket, "safedeal-evidence");
+        assert_eq!(s3.key_prefix, "disputes");
+        assert!(s3.force_path_style);
+        // Debug output must redact credentials
+        let debug_str = format!("{s3:?}");
+        assert!(!debug_str.contains("AKIA_LOCAL_DEV_KEY"));
+        assert!(!debug_str.contains("super-secret-minio-key-123456"));
+        assert!(debug_str.contains("[REDACTED]"));
+
+        // Prod profile rejects loopback/http S3 endpoint and placeholder credentials
+        vars.insert("APP_ENV".to_string(), "prod".to_string());
+        vars.insert(
+            "DATABASE_URL".to_string(),
+            "postgresql://pguser:pgpass@db.internal:5432/prod".to_string(),
+        );
+        vars.insert("COOKIE_SECURE".to_string(), "true".to_string());
+        vars.insert(
+            "SIWE_DOMAIN".to_string(),
+            "app.safedeal.network".to_string(),
+        );
+        vars.insert(
+            "SIWE_URI".to_string(),
+            "https://app.safedeal.network".to_string(),
+        );
+        vars.insert(
+            "CORS_ALLOWED_ORIGINS".to_string(),
+            "https://app.safedeal.network".to_string(),
+        );
+        let err = AppConfig::from_map(&vars).unwrap_err();
+        assert!(err.to_string().contains("EVIDENCE_S3_ENDPOINT"));
+
+        vars.insert(
+            "EVIDENCE_S3_ENDPOINT".to_string(),
+            "https://account123.r2.cloudflarestorage.com".to_string(),
+        );
+        vars.insert(
+            "EVIDENCE_S3_SECRET_ACCESS_KEY".to_string(),
+            "change-me-secret".to_string(),
+        );
+        let err = AppConfig::from_map(&vars).unwrap_err();
+        assert!(err.to_string().contains("placeholder S3 credentials"));
+
+        vars.insert(
+            "EVIDENCE_S3_SECRET_ACCESS_KEY".to_string(),
+            "prod-valid-random-secret-key-987654321".to_string(),
+        );
+        let prod_cfg = AppConfig::from_map(&vars).unwrap();
+        assert_eq!(prod_cfg.evidence.backend, EvidenceStorageBackend::S3);
     }
 }

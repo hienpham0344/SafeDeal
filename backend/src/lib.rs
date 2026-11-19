@@ -7,18 +7,19 @@ use axum::Router;
 use safedeal_application::arbitration::ArbitrationUseCase;
 use safedeal_application::auth::{SiweAuthService, SiweSettings};
 use safedeal_application::deals::{
-    BindDealTransactionUseCase, CreateDealDraftUseCase, QueryDealsUseCase, SyncDealUseCase,
+    BindDealTransactionUseCase, CleanupOrphanDraftsUseCase, CreateDealDraftUseCase,
+    QueryDealsUseCase, SyncDealUseCase,
 };
 use safedeal_application::disputes::DisputeUseCase;
 use safedeal_application::indexer::BlockchainEventIndexerService;
-use safedeal_domain::ports::BlockchainGateway;
+use safedeal_domain::ports::{BlockchainGateway, EvidenceStoragePort};
 use safedeal_infrastructure::config::AppConfig;
 use safedeal_infrastructure::persistence::PgRepositories;
 use safedeal_infrastructure::security::{
     apply_security_layers, AuthRateLimitState, HttpSessionCookieAdapter, JwtSessionService,
     K256SignatureVerifier,
 };
-use safedeal_infrastructure::storage::LocalEvidenceStorageAdapter;
+use safedeal_infrastructure::storage::build_evidence_storage;
 use safedeal_presentation::{build_api_router, AppState};
 use sqlx::PgPool;
 
@@ -28,12 +29,13 @@ pub struct ApplicationComponents {
     pub bind_deal_transaction: Arc<BindDealTransactionUseCase>,
     pub sync_deal: Arc<SyncDealUseCase>,
     pub query_deals: Arc<QueryDealsUseCase>,
+    pub cleanup_orphan_drafts: Arc<CleanupOrphanDraftsUseCase>,
     pub siwe_auth: Arc<SiweAuthService>,
     pub dispute_use_case: Arc<DisputeUseCase>,
     pub arbitration_use_case: Arc<ArbitrationUseCase>,
     pub indexer: Arc<BlockchainEventIndexerService>,
     pub repos: Arc<PgRepositories>,
-    pub evidence_storage: Arc<LocalEvidenceStorageAdapter>,
+    pub evidence_storage: Arc<dyn EvidenceStoragePort>,
 }
 
 pub fn assemble_application(
@@ -42,10 +44,7 @@ pub fn assemble_application(
     blockchain_gateway: Arc<dyn BlockchainGateway>,
 ) -> Result<ApplicationComponents, String> {
     let repos = Arc::new(PgRepositories::new(pool));
-    let evidence_storage = Arc::new(
-        LocalEvidenceStorageAdapter::new(&config.evidence)
-            .map_err(|e| format!("Cannot initialize evidence storage: {e}"))?,
-    );
+    let evidence_storage = build_evidence_storage(&config.evidence)?;
 
     let signature_verifier = Arc::new(K256SignatureVerifier);
     let jwt_service = JwtSessionService::new(&config.auth);
@@ -86,7 +85,7 @@ pub fn assemble_application(
         Arc::clone(&repos.audit_logs) as Arc<dyn safedeal_domain::ports::AuditLogRepository>,
         Arc::clone(&blockchain_gateway),
         Arc::clone(&sync_deal),
-        Arc::clone(&evidence_storage) as Arc<dyn safedeal_domain::ports::EvidenceStoragePort>,
+        Arc::clone(&evidence_storage),
     ));
     let arbitration_use_case = Arc::new(ArbitrationUseCase::new(
         Arc::clone(&repos.uow),
@@ -95,6 +94,10 @@ pub fn assemble_application(
     let indexer = Arc::new(BlockchainEventIndexerService::new(
         Arc::clone(&repos.uow),
         Arc::clone(&blockchain_gateway),
+    ));
+    let cleanup_orphan_drafts = Arc::new(CleanupOrphanDraftsUseCase::new(
+        Arc::clone(&repos.uow),
+        config.deals.draft_ttl_seconds,
     ));
 
     let app_state = AppState {
@@ -109,8 +112,7 @@ pub fn assemble_application(
         blockchain_gateway,
         database_readiness: Arc::clone(&repos.readiness)
             as Arc<dyn safedeal_domain::ports::DatabaseReadinessPort>,
-        evidence_storage: Arc::clone(&evidence_storage)
-            as Arc<dyn safedeal_domain::ports::EvidenceStoragePort>,
+        evidence_storage: Arc::clone(&evidence_storage),
         siwe_settings,
         evidence_max_bytes: config.evidence.max_bytes,
         evidence_max_request_bytes: config.evidence.max_request_bytes,
@@ -128,6 +130,7 @@ pub fn assemble_application(
         bind_deal_transaction,
         sync_deal,
         query_deals,
+        cleanup_orphan_drafts,
         siwe_auth,
         dispute_use_case,
         arbitration_use_case,

@@ -97,6 +97,39 @@ async fn run_server(config: AppConfig) -> Result<(), String> {
         None
     };
 
+    let cleanup_task = if config.deals.cleanup_interval_seconds > 0 {
+        let cleanup = Arc::clone(&components.cleanup_orphan_drafts);
+        let cancel = shutdown.clone();
+        let interval_secs = config.deals.cleanup_interval_seconds.max(60);
+        Some(tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(Duration::from_secs(interval_secs));
+            ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+            loop {
+                tokio::select! {
+                    _ = cancel.cancelled() => {
+                        tracing::info!("Stopping background orphan draft cleanup task");
+                        break;
+                    }
+                    _ = ticker.tick() => {
+                        match cleanup.execute().await {
+                            Ok(purged) => {
+                                if purged > 0 {
+                                    tracing::info!(purged, "Purged abandoned deal drafts");
+                                }
+                            }
+                            Err(err) => {
+                                tracing::warn!(error = %err, "Orphan draft cleanup task failed");
+                            }
+                        }
+                    }
+                }
+            }
+        }))
+    } else {
+        tracing::info!("Background orphan draft cleanup disabled by configuration");
+        None
+    };
+
     let bind_addr = format!("{}:{}", config.server_host, config.server_port);
     let listener = TcpListener::bind(&bind_addr)
         .await
@@ -106,8 +139,10 @@ async fn run_server(config: AppConfig) -> Result<(), String> {
         address = %bind_addr,
         chain_id = config.blockchain.chain_id,
         blockchain_sync_enabled = config.blockchain.enabled,
+        evidence_storage_backend = config.evidence.backend.as_str(),
         api_docs_enabled = config.api_docs_enabled,
         swagger_ui_enabled = config.swagger_ui_enabled,
+        draft_ttl_seconds = config.deals.draft_ttl_seconds,
         "SafeDeal Rust API server listening"
     );
 
@@ -122,6 +157,9 @@ async fn run_server(config: AppConfig) -> Result<(), String> {
     shutdown.cancel();
 
     if let Some(handle) = indexer_task {
+        let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
+    }
+    if let Some(handle) = cleanup_task {
         let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
     }
 

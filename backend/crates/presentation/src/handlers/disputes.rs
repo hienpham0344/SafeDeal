@@ -4,7 +4,7 @@ use axum::extract::{Multipart, Path, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::Response;
 use axum::Json;
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use safedeal_shared::DomainError;
 use serde::Deserialize;
 use tokio_util::io::ReaderStream;
@@ -145,19 +145,57 @@ pub async fn upload_evidence(
     let mut content_type: Option<String> = None;
     let mut file_bytes: Option<Bytes> = None;
 
-    while let Some(field) = multipart.next_field().await.map_err(map_multipart_error)? {
+    const MAX_TEXT_FIELD_BYTES: usize = 65_536; // 64 KiB bound on text fields
+
+    while let Some(mut field) = multipart.next_field().await.map_err(map_multipart_error)? {
         match field.name() {
             Some("title") => {
-                form_title = Some(field.text().await.map_err(map_multipart_error)?);
+                let mut accumulated = BytesMut::new();
+                while let Some(chunk) = field.chunk().await.map_err(map_multipart_error)? {
+                    if accumulated.len() + chunk.len() > MAX_TEXT_FIELD_BYTES {
+                        return Err(ApiError::from(DomainError::validation(
+                            "Title field exceeds size limit.",
+                        )));
+                    }
+                    accumulated.extend_from_slice(&chunk);
+                }
+                let text = String::from_utf8(accumulated.to_vec()).map_err(|_| {
+                    ApiError::from(DomainError::validation("Title contains invalid UTF-8."))
+                })?;
+                form_title = Some(text);
             }
             Some("notes") => {
-                form_notes = Some(field.text().await.map_err(map_multipart_error)?);
+                let mut accumulated = BytesMut::new();
+                while let Some(chunk) = field.chunk().await.map_err(map_multipart_error)? {
+                    if accumulated.len() + chunk.len() > MAX_TEXT_FIELD_BYTES {
+                        return Err(ApiError::from(DomainError::validation(
+                            "Notes field exceeds size limit.",
+                        )));
+                    }
+                    accumulated.extend_from_slice(&chunk);
+                }
+                let text = String::from_utf8(accumulated.to_vec()).map_err(|_| {
+                    ApiError::from(DomainError::validation("Notes contains invalid UTF-8."))
+                })?;
+                form_notes = Some(text);
             }
             Some("file") => {
+                if saw_file {
+                    return Err(ApiError::from(DomainError::validation(
+                        "Multiple file attachments in a single request are not permitted.",
+                    )));
+                }
                 saw_file = true;
                 file_name = field.file_name().map(str::to_string);
                 content_type = field.content_type().map(str::to_string);
-                file_bytes = Some(field.bytes().await.map_err(map_multipart_error)?);
+                let mut accumulated = BytesMut::new();
+                while let Some(chunk) = field.chunk().await.map_err(map_multipart_error)? {
+                    if accumulated.len() + chunk.len() > state.evidence_max_bytes {
+                        return Err(ApiError::file_too_large());
+                    }
+                    accumulated.extend_from_slice(&chunk);
+                }
+                file_bytes = Some(accumulated.freeze());
             }
             _ => {}
         }
@@ -223,19 +261,36 @@ pub async fn download_evidence(
         .prepare_evidence_download(dispute_id, evidence_id, &principal.address)
         .await?;
 
-    let file = tokio::fs::File::open(&target.path)
-        .await
-        .map_err(|_| DomainError::not_found("Evidence file missing from storage."))?;
-    let meta = file
-        .metadata()
-        .await
-        .map_err(|e| DomainError::internal(format!("Failed to stat evidence file: {e}")))?;
+    let (content_len, body) = match target.payload {
+        safedeal_domain::ports::EvidenceDownloadPayload::LocalFile(path) => {
+            let file = tokio::fs::File::open(&path)
+                .await
+                .map_err(|_| DomainError::not_found("Evidence file missing from storage."))?;
+            let meta = file
+                .metadata()
+                .await
+                .map_err(|e| DomainError::internal(format!("Failed to stat evidence file: {e}")))?;
+            (meta.len(), Body::from_stream(ReaderStream::new(file)))
+        }
+        safedeal_domain::ports::EvidenceDownloadPayload::Bytes(bytes) => {
+            (bytes.len() as u64, Body::from(bytes))
+        }
+    };
 
-    let filename = target
+    let raw_filename = target
         .metadata
         .file_name
         .as_deref()
         .unwrap_or("evidence.bin");
+    let filename: String = raw_filename
+        .chars()
+        .filter(|c| !matches!(c, '"' | '\\' | '\r' | '\n'))
+        .collect();
+    let safe_filename = if filename.is_empty() {
+        "evidence.bin"
+    } else {
+        filename.as_str()
+    };
     let mime = target
         .metadata
         .mime_type
@@ -248,10 +303,10 @@ pub async fn download_evidence(
         HeaderValue::from_str(mime)
             .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
     );
-    if let Ok(len_val) = HeaderValue::from_str(&meta.len().to_string()) {
+    if let Ok(len_val) = HeaderValue::from_str(&content_len.to_string()) {
         headers.insert(header::CONTENT_LENGTH, len_val);
     }
-    let disposition = format!("attachment; filename=\"{filename}\"");
+    let disposition = format!("attachment; filename=\"{safe_filename}\"");
     if let Ok(disp_val) = HeaderValue::from_str(&disposition) {
         headers.insert(header::CONTENT_DISPOSITION, disp_val);
     }
@@ -261,8 +316,7 @@ pub async fn download_evidence(
         HeaderValue::from_static("nosniff"),
     );
 
-    let stream = ReaderStream::new(file);
-    let mut response = Response::new(Body::from_stream(stream));
+    let mut response = Response::new(body);
     *response.status_mut() = StatusCode::OK;
     *response.headers_mut() = headers;
     Ok(response)
