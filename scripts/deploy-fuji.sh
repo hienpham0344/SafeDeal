@@ -36,5 +36,5 @@ echo "Deploying SafeDealEscrow to Avalanche Fuji C-Chain ($FUJI_RPC_URL)..."
     "$FORGE_BIN" script script/Deploy.s.sol:Deploy \
       --rpc-url "$FUJI_RPC_URL" \
       --broadcast \
-      "${VERIFY_ARGS[@]}"
+      ${VERIFY_ARGS[@]+"${VERIFY_ARGS[@]}"}
 )
