@@ -199,6 +199,12 @@ impl Deal {
     }
 
     pub fn can_view(&self, wallet_address: Option<&str>) -> bool {
+        if !self.on_chain_bound || self.status == DealStatus::Draft {
+            let Some(wallet) = wallet_address else {
+                return false;
+            };
+            return wallet.trim().eq_ignore_ascii_case(&self.seller);
+        }
         self.is_participant_or_arbiter(wallet_address)
             || self.is_open_buyer_eligible(wallet_address)
     }
@@ -290,5 +296,57 @@ mod tests {
         assert!(!DealStatus::Delivered.can_reconcile_to(DealStatus::Refunded));
         assert!(!DealStatus::Disputed.can_reconcile_to(DealStatus::Released));
         assert!(!DealStatus::Released.can_reconcile_to(DealStatus::Disputed));
+    }
+
+    #[test]
+    fn draft_or_unbound_deal_is_only_viewable_by_seller() {
+        let now = Utc::now();
+        let seller = "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266";
+        let buyer = "0x70997970c51812dc3a010c7d01b50e0d17dc79c8";
+        let arbiter = "0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc";
+        let outsider = "0x90f79bf6eb2c4f870365e785982e1f101e93b906";
+
+        let mut deal = Deal {
+            id: Some(1),
+            trade_id: format!("0x{}", "1".repeat(64)),
+            chain_id: 31337,
+            contract_address: format!("0x{}", "a".repeat(40)),
+            seller: seller.to_string(),
+            buyer: Some(buyer.to_string()),
+            arbiter: arbiter.to_string(),
+            amount_wei: "1000".to_string(),
+            terms_hash: format!("0x{}", "b".repeat(64)),
+            funding_deadline: now,
+            delivery_deadline: now,
+            inspection_window_seconds: 3600,
+            delivered_at: None,
+            funded_at: None,
+            status: DealStatus::Draft,
+            on_chain_bound: false,
+            settled: false,
+            create_tx_hash: None,
+            buyer_award_wei: None,
+            seller_award_wei: None,
+            title: "Draft".to_string(),
+            description: "Desc".to_string(),
+            terms: "Terms".to_string(),
+            canonical_terms_json: "{}".to_string(),
+            schema_version: 1,
+            created_at: now,
+            updated_at: now,
+        };
+
+        assert!(deal.can_view(Some(seller)));
+        assert!(!deal.can_view(Some(buyer)));
+        assert!(!deal.can_view(Some(arbiter)));
+        assert!(!deal.can_view(Some(outsider)));
+        assert!(!deal.can_view(None));
+
+        deal.status = DealStatus::Created;
+        deal.on_chain_bound = true;
+        assert!(deal.can_view(Some(seller)));
+        assert!(deal.can_view(Some(buyer)));
+        assert!(deal.can_view(Some(arbiter)));
+        assert!(!deal.can_view(Some(outsider)));
     }
 }
