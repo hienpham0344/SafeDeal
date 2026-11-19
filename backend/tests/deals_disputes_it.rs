@@ -863,3 +863,268 @@ async fn sync_deal_preserves_create_tx_hash_and_rejects_spoofed_contract_and_cro
         .text()
         .contains("disagrees with stored canonical terms"));
 }
+
+#[tokio::test]
+async fn purges_expired_orphan_drafts_and_cascades_deal_terms_leaving_bound_and_fresh_drafts() {
+    let harness = TestAppHarness::start().await;
+    let seller = harness.login_wallet(&TestWallet::random()).await;
+    let buyer = harness.login_wallet(&TestWallet::random()).await;
+    let arbiter = harness.login_wallet(&TestWallet::random()).await;
+
+    let now = Utc::now().timestamp();
+    let funding_deadline = now + 3600;
+    let delivery_deadline = now + 7200;
+    let amount_wei = "1000000000000000000";
+
+    // 1. Create draft 1 (will be aged back to 48 hours ago - expired orphan)
+    let draft1_res = seller
+        .post_json(
+            harness.app(),
+            "/api/v1/deals/drafts",
+            serde_json::json!({
+                "title": "Stale Orphan Draft 1",
+                "description": "Should be purged by cleanup",
+                "amountWei": amount_wei,
+                "buyerAddress": buyer.address,
+                "arbiterAddress": arbiter.address,
+                "fundingDeadlineEpochSeconds": funding_deadline,
+                "deliveryDeadlineEpochSeconds": delivery_deadline,
+                "inspectionWindowSeconds": 86400,
+                "terms": "Draft 1 terms"
+            }),
+        )
+        .await;
+    assert_eq!(draft1_res.status, StatusCode::CREATED);
+    let trade1_id = draft1_res.json()["tradeId"].as_str().unwrap().to_string();
+
+    // 2. Create draft 2 (fresh draft - created now)
+    let draft2_res = seller
+        .post_json(
+            harness.app(),
+            "/api/v1/deals/drafts",
+            serde_json::json!({
+                "title": "Fresh Draft 2",
+                "description": "Should NOT be purged by cleanup",
+                "amountWei": amount_wei,
+                "buyerAddress": buyer.address,
+                "arbiterAddress": arbiter.address,
+                "fundingDeadlineEpochSeconds": funding_deadline,
+                "deliveryDeadlineEpochSeconds": delivery_deadline,
+                "inspectionWindowSeconds": 86400,
+                "terms": "Draft 2 terms"
+            }),
+        )
+        .await;
+    assert_eq!(draft2_res.status, StatusCode::CREATED);
+    let trade2_id = draft2_res.json()["tradeId"].as_str().unwrap().to_string();
+
+    // 3. Create draft 3 and mark it bound on-chain (should NOT be purged even if aged 48h)
+    let draft3_res = seller
+        .post_json(
+            harness.app(),
+            "/api/v1/deals/drafts",
+            serde_json::json!({
+                "title": "Stale Bound Deal 3",
+                "description": "Bound on-chain deal must never be purged",
+                "amountWei": amount_wei,
+                "buyerAddress": buyer.address,
+                "arbiterAddress": arbiter.address,
+                "fundingDeadlineEpochSeconds": funding_deadline,
+                "deliveryDeadlineEpochSeconds": delivery_deadline,
+                "inspectionWindowSeconds": 86400,
+                "terms": "Deal 3 terms"
+            }),
+        )
+        .await;
+    assert_eq!(draft3_res.status, StatusCode::CREATED);
+    let trade3_id = draft3_res.json()["tradeId"].as_str().unwrap().to_string();
+
+    // Age draft 1 and bound deal 3 back by 48 hours directly in DB
+    let stale_ts = Utc::now() - chrono::Duration::hours(48);
+    sqlx::query("UPDATE deals SET created_at = $1, updated_at = $1 WHERE trade_id = $2")
+        .bind(stale_ts)
+        .bind(&trade1_id)
+        .execute(&harness.pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE deals SET status = 'CREATED', on_chain_bound = TRUE, created_at = $1, updated_at = $1 WHERE trade_id = $2",
+    )
+    .bind(stale_ts)
+    .bind(&trade3_id)
+    .execute(&harness.pool)
+    .await
+    .unwrap();
+
+    // Execute cleanup with 24-hour TTL (cutoff = now - 24 hours)
+    let purged_count = harness
+        .components
+        .cleanup_orphan_drafts
+        .execute()
+        .await
+        .unwrap();
+    assert_eq!(purged_count, 1);
+
+    // Verify draft 1 was deleted
+    let d1_db = harness
+        .components
+        .repos
+        .deals
+        .find_by_trade_id(&trade1_id)
+        .await
+        .unwrap();
+    assert!(d1_db.is_none());
+
+    // Verify deal_terms and deal_events for draft 1 were cleaned up
+    let draft1_terms_hash = draft1_res.json()["termsHash"].as_str().unwrap().to_string();
+    let terms_count: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM deal_terms WHERE terms_hash = $1")
+            .bind(&draft1_terms_hash)
+            .fetch_one(&harness.pool)
+            .await
+            .unwrap();
+    assert_eq!(terms_count.0, 0);
+
+    let events_count: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM deal_events WHERE trade_id = $1")
+            .bind(&trade1_id)
+            .fetch_one(&harness.pool)
+            .await
+            .unwrap();
+    assert_eq!(events_count.0, 0);
+
+    // Verify audit log recorded ORPHAN_DRAFTS_CLEANED
+    let audit_count: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM audit_logs WHERE action = 'ORPHAN_DRAFTS_CLEANED'")
+            .fetch_one(&harness.pool)
+            .await
+            .unwrap();
+    assert_eq!(audit_count.0, 1);
+
+    // Verify fresh draft 2 and bound deal 3 remain intact
+    let d2_db = harness
+        .components
+        .repos
+        .deals
+        .find_by_trade_id(&trade2_id)
+        .await
+        .unwrap();
+    assert!(d2_db.is_some());
+    assert_eq!(d2_db.unwrap().title, "Fresh Draft 2");
+
+    let d3_db = harness
+        .components
+        .repos
+        .deals
+        .find_by_trade_id(&trade3_id)
+        .await
+        .unwrap();
+    assert!(d3_db.is_some());
+    assert_eq!(d3_db.unwrap().title, "Stale Bound Deal 3");
+}
+
+#[tokio::test]
+async fn rejects_duplicate_evidence_files_in_multipart_upload() {
+    let harness = TestAppHarness::start().await;
+    let seller = harness.login_wallet(&TestWallet::random()).await;
+    let buyer = harness.login_wallet(&TestWallet::random()).await;
+    let arbiter = harness.login_wallet(&TestWallet::random()).await;
+
+    let now = Utc::now().timestamp();
+    let funding_deadline = now + 3600;
+    let delivery_deadline = now + 7200;
+    let amount_wei = "1000000000000000000";
+
+    let draft_res = seller
+        .post_json(
+            harness.app(),
+            "/api/v1/deals/drafts",
+            serde_json::json!({
+                "title": "Evidence Upload Test Deal",
+                "description": "Smart contract audit",
+                "amountWei": amount_wei,
+                "buyerAddress": buyer.address,
+                "arbiterAddress": arbiter.address,
+                "fundingDeadlineEpochSeconds": funding_deadline,
+                "deliveryDeadlineEpochSeconds": delivery_deadline,
+                "inspectionWindowSeconds": 86400,
+                "terms": "Audit terms"
+            }),
+        )
+        .await;
+    let trade_id = draft_res.json()["tradeId"].as_str().unwrap().to_string();
+
+    // Before binding, buyer and arbiter cannot view or list the seller's unbound DRAFT
+    let buyer_draft_get = buyer
+        .get(harness.app(), &format!("/api/v1/deals/{trade_id}"))
+        .await;
+    assert_eq!(buyer_draft_get.status, StatusCode::FORBIDDEN);
+    let buyer_draft_list = buyer.get(harness.app(), "/api/v1/deals").await;
+    assert_eq!(buyer_draft_list.status, StatusCode::OK);
+    assert_eq!(
+        buyer_draft_list.json()["items"].as_array().unwrap().len(),
+        0
+    );
+
+    // Mark deal as DISPUTED and on-chain bound directly in DB (with gateway sync disabled for this unit check)
+    harness.gateway.inner.update(|s| s.enabled = false).await;
+    sqlx::query("UPDATE deals SET status = 'DISPUTED', on_chain_bound = TRUE WHERE trade_id = $1")
+        .bind(&trade_id)
+        .execute(&harness.pool)
+        .await
+        .unwrap();
+
+    // Open dispute
+    let dispute_res = buyer
+        .post_json(
+            harness.app(),
+            &format!("/api/v1/deals/{trade_id}/disputes"),
+            serde_json::json!({
+                "reason": "Deliverable did not meet specs",
+                "summary": "Full summary of the dispute reason for testing evidence upload."
+            }),
+        )
+        .await;
+    assert_eq!(dispute_res.status, StatusCode::CREATED);
+    let dispute_id = dispute_res.json()["id"].as_i64().unwrap();
+
+    // Construct a multipart payload with duplicate "file" parts
+    let boundary = "----WebKitFormBoundaryDuplicateFileTest123";
+    let png = sample_png();
+    let mut body = Vec::new();
+    body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+    body.extend_from_slice(
+        b"Content-Disposition: form-data; name=\"title\"\r\n\r\nFirst Evidence\r\n",
+    );
+    body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+    body.extend_from_slice(
+        b"Content-Disposition: form-data; name=\"notes\"\r\n\r\nEvidence notes content\r\n",
+    );
+    body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+    body.extend_from_slice(
+        b"Content-Disposition: form-data; name=\"file\"; filename=\"file1.png\"\r\nContent-Type: image/png\r\n\r\n",
+    );
+    body.extend_from_slice(&png);
+    body.extend_from_slice(b"\r\n");
+    // Second file part in same request
+    body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+    body.extend_from_slice(
+        b"Content-Disposition: form-data; name=\"file\"; filename=\"file2.png\"\r\nContent-Type: image/png\r\n\r\n",
+    );
+    body.extend_from_slice(&png);
+    body.extend_from_slice(b"\r\n");
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+
+    let res = buyer
+        .post_multipart(
+            harness.app(),
+            &format!("/api/v1/disputes/{dispute_id}/evidence"),
+            boundary,
+            body,
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::BAD_REQUEST);
+    assert!(res
+        .text()
+        .contains("Multiple file attachments in a single request are not permitted"));
+}
