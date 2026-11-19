@@ -45,7 +45,7 @@ fn check_not_blank(
     errors: &mut Vec<ApiFieldError>,
 ) -> bool {
     match value.as_deref() {
-        Some(v) if !v.trim().is_empty() => true,
+        Some(v) if !safedeal_shared::validation::trim_js_whitespace(v).is_empty() => true,
         _ => {
             errors.push(ApiFieldError {
                 field: field.to_string(),
@@ -64,7 +64,9 @@ fn check_len_range(
     errors: &mut Vec<ApiFieldError>,
 ) {
     if let Some(v) = value.as_deref() {
-        let len = v.chars().count();
+        let len = safedeal_shared::validation::trim_js_whitespace(v)
+            .chars()
+            .count();
         if len < min || len > max {
             errors.push(ApiFieldError {
                 field: field.to_string(),

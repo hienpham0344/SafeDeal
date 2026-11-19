@@ -32,6 +32,14 @@ pub struct StoredAttachment {
     pub storage_key: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EvidenceDownloadPayload {
+    /// Local filesystem path for zero-copy streaming via `ReaderStream`.
+    LocalFile(std::path::PathBuf),
+    /// Bounded in-memory bytes loaded from remote object storage (e.g. S3/R2).
+    Bytes(Vec<u8>),
+}
+
 #[async_trait]
 pub trait AuditLogRepository: Send + Sync {
     async fn append(&self, entry: &AuditLogEntry) -> Result<(), DomainError>;
@@ -144,6 +152,7 @@ pub trait DealRepository: Send + Sync {
         size: i32,
     ) -> Result<PageSlice, DomainError>;
     async fn find_open_bound_deals(&self) -> Result<Vec<Deal>, DomainError>;
+    async fn purge_expired_drafts(&self, cutoff: DateTime<Utc>) -> Result<u64, DomainError>;
 }
 
 #[async_trait]
@@ -185,10 +194,12 @@ pub trait EvidenceStoragePort: Send + Sync {
         bytes: &[u8],
     ) -> Result<StoredAttachment, DomainError>;
     async fn load(&self, storage_key: &str) -> Result<Vec<u8>, DomainError>;
+    async fn open_download(
+        &self,
+        storage_key: &str,
+    ) -> Result<EvidenceDownloadPayload, DomainError>;
     async fn delete_best_effort(&self, storage_key: &str);
-    fn resolve_attachment_path(&self, storage_key: &str)
-        -> Result<std::path::PathBuf, DomainError>;
-    fn is_storage_ready(&self) -> bool;
+    async fn is_storage_ready(&self) -> bool;
 }
 
 pub trait SignatureVerifierPort: Send + Sync {

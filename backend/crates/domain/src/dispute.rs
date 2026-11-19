@@ -1,7 +1,9 @@
 use std::fmt;
 
 use chrono::{DateTime, Utc};
+use safedeal_shared::DomainError;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -63,6 +65,24 @@ impl DisputeEvidence {
             .as_deref()
             .is_some_and(|key| !key.trim().is_empty())
     }
+
+    /// Verifies that downloaded evidence bytes match the recorded SHA-256 digest when present.
+    pub fn verify_bytes_integrity(&self, bytes: &[u8]) -> Result<(), DomainError> {
+        if let Some(expected) = self
+            .sha256_hex
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            let actual = hex::encode(Sha256::digest(bytes));
+            if !actual.eq_ignore_ascii_case(expected) {
+                return Err(DomainError::internal(
+                    "Stored evidence integrity verification failed (SHA-256 mismatch).",
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,4 +95,35 @@ pub struct AuditLogEntry {
     pub correlation_id: Option<String>,
     pub details: String,
     pub created_at: DateTime<Utc>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn verifies_evidence_sha256_integrity_and_rejects_tampered_bytes() {
+        let payload = b"immutable dispute proof";
+        let expected_sha = hex::encode(Sha256::digest(payload));
+        let evidence = DisputeEvidence {
+            id: Some(1),
+            dispute_id: 10,
+            submitted_by: "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266".to_string(),
+            title: "Tracking Proof".to_string(),
+            notes: "Verified courier receipt".to_string(),
+            file_name: Some("proof.txt".to_string()),
+            mime_type: Some("text/plain".to_string()),
+            size_bytes: Some(payload.len() as i64),
+            sha256_hex: Some(expected_sha),
+            storage_key: Some("10/proof.txt".to_string()),
+            created_at: Utc::now(),
+        };
+
+        assert!(evidence.verify_bytes_integrity(payload).is_ok());
+        let err = evidence
+            .verify_bytes_integrity(b"tampered dispute proof")
+            .unwrap_err();
+        assert!(matches!(err, DomainError::Internal(_)));
+        assert!(err.to_string().contains("SHA-256 mismatch"));
+    }
 }

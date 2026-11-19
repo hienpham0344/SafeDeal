@@ -12,4 +12,4 @@ pub use correlation::{
 };
 pub use error::{DomainError, FieldViolation};
 pub use time::format_iso_utc;
-pub use validation::{EthFormatValidator, ZERO_ADDRESS, ZERO_BYTES32};
+pub use validation::{trim_js_whitespace, EthFormatValidator, ZERO_ADDRESS, ZERO_BYTES32};
