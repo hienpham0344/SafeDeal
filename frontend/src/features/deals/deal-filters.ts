@@ -22,7 +22,12 @@ export function filterDealsForTab(
       return deals.filter((d) => me && d.seller.toLowerCase() === me);
     case "FUNDED":
       return deals.filter(
-        (d) => me && d.buyer?.toLowerCase() === me && d.status !== "CREATED" && d.status !== "DRAFT"
+        (d) =>
+          me &&
+          d.buyer?.toLowerCase() === me &&
+          d.status !== "CREATED" &&
+          d.status !== "DRAFT" &&
+          d.status !== "CANCELLED"
       );
     case "ACTIVE":
       return deals.filter(

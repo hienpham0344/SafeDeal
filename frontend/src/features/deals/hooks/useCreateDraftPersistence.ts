@@ -18,7 +18,46 @@ function isHex32(value: unknown): value is `0x${string}` {
   return typeof value === "string" && /^0x[0-9a-fA-F]{64}$/.test(value);
 }
 
-export function loadPersistedCreateDraft(sellerAddress: string | undefined): PersistedCreateDraft | null {
+export const DEFAULT_DRAFT_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+export function pruneExpiredDrafts(ttlMs: number = DEFAULT_DRAFT_TTL_MS): number {
+  if (typeof window === "undefined") return 0;
+  let prunedCount = 0;
+  try {
+    const prefix = appConfig.transactions.createDraftStoragePrefix;
+    const matchingKeys: string[] = [];
+    for (let i = 0; i < window.sessionStorage.length; i++) {
+      const key = window.sessionStorage.key(i);
+      if (key && key.startsWith(prefix)) {
+        matchingKeys.push(key);
+      }
+    }
+    const now = Date.now();
+    for (const key of matchingKeys) {
+      const raw = window.sessionStorage.getItem(key);
+      if (!raw) continue;
+      try {
+        const parsed = JSON.parse(raw) as Partial<PersistedCreateDraft>;
+        const updatedAt = typeof parsed.updatedAt === "string" ? Date.parse(parsed.updatedAt) : NaN;
+        if (isNaN(updatedAt) || now - updatedAt > ttlMs) {
+          window.sessionStorage.removeItem(key);
+          prunedCount++;
+        }
+      } catch {
+        window.sessionStorage.removeItem(key);
+        prunedCount++;
+      }
+    }
+  } catch {
+    // Ignore storage iteration errors
+  }
+  return prunedCount;
+}
+
+export function loadPersistedCreateDraft(
+  sellerAddress: string | undefined,
+  ttlMs: number = DEFAULT_DRAFT_TTL_MS
+): PersistedCreateDraft | null {
   if (typeof window === "undefined" || !sellerAddress) return null;
   try {
     const raw = window.sessionStorage.getItem(buildDraftStorageKey(sellerAddress));
@@ -32,17 +71,26 @@ export function loadPersistedCreateDraft(sellerAddress: string | undefined): Per
       isHex32(parsed.previewDraft.tradeId) &&
       isHex32(parsed.clientTermsHash)
     ) {
+      const updatedAtStr = typeof parsed.updatedAt === "string" ? parsed.updatedAt : null;
+      const parsedTime = updatedAtStr ? Date.parse(updatedAtStr) : NaN;
+      if (isNaN(parsedTime) || Date.now() - parsedTime > ttlMs) {
+        clearPersistedCreateDraft(sellerAddress);
+        return null;
+      }
+
       const submittedHash = isHex32(parsed.submittedCreateTxHash) ? parsed.submittedCreateTxHash : null;
       return {
         sellerAddress: parsed.sellerAddress,
         previewDraft: parsed.previewDraft,
         clientTermsHash: parsed.clientTermsHash,
         submittedCreateTxHash: submittedHash,
-        updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : new Date().toISOString(),
+        updatedAt: updatedAtStr ?? new Date().toISOString(),
       };
     }
+    clearPersistedCreateDraft(sellerAddress);
     return null;
   } catch {
+    clearPersistedCreateDraft(sellerAddress);
     return null;
   }
 }
@@ -74,14 +122,52 @@ export function clearPersistedCreateDraft(sellerAddress: string | undefined): vo
   }
 }
 
-export function useCreateDraftPersistence(sellerAddress: string | undefined) {
-  const [persistedDraft, setPersistedDraft] = useState<PersistedCreateDraft | null>(() =>
-    loadPersistedCreateDraft(sellerAddress)
-  );
+export function clearAllPersistedCreateDrafts(): void {
+  if (typeof window === "undefined") return;
+  try {
+    const prefix = appConfig.transactions.createDraftStoragePrefix;
+    const keysToRemove: string[] = [];
+    for (let i = 0; i < window.sessionStorage.length; i++) {
+      const key = window.sessionStorage.key(i);
+      if (key && key.startsWith(prefix)) {
+        keysToRemove.push(key);
+      }
+    }
+    for (const key of keysToRemove) {
+      window.sessionStorage.removeItem(key);
+    }
+  } catch {
+    // Ignore storage removal errors
+  }
+}
+
+export function useCreateDraftPersistence(
+  sellerAddress: string | undefined,
+  ttlMs: number = DEFAULT_DRAFT_TTL_MS
+) {
+  const [persistedDraft, setPersistedDraft] = useState<PersistedCreateDraft | null>(() => {
+    pruneExpiredDrafts(ttlMs);
+    return loadPersistedCreateDraft(sellerAddress, ttlMs);
+  });
 
   useEffect(() => {
-    setPersistedDraft(loadPersistedCreateDraft(sellerAddress));
-  }, [sellerAddress]);
+    pruneExpiredDrafts(ttlMs);
+    const next = loadPersistedCreateDraft(sellerAddress, ttlMs);
+    setPersistedDraft((prev) => {
+      if (
+        prev &&
+        next &&
+        prev.sellerAddress === next.sellerAddress &&
+        prev.previewDraft.tradeId === next.previewDraft.tradeId &&
+        prev.clientTermsHash === next.clientTermsHash &&
+        prev.submittedCreateTxHash === next.submittedCreateTxHash &&
+        prev.updatedAt === next.updatedAt
+      ) {
+        return prev;
+      }
+      return next;
+    });
+  }, [sellerAddress, ttlMs]);
 
   const persistDraftState = useCallback(
     (state: {

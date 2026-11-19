@@ -44,7 +44,7 @@ export function CreateDealPage() {
   const createDraftMutation = useCreateDealDraftMutation();
   const bindTxMutation = useBindDealTxMutation();
   const { mutateAsync: bindDealTxAsync } = bindTxMutation;
-  const { createTrade, waitForHash, activeAction, txError } = useEscrowContractExecutor();
+  const { createTrade, waitForHash, activeAction, txError, clearTxError } = useEscrowContractExecutor();
   const { persistedDraft, persistDraftState, clearDraftState } = useCreateDraftPersistence(address);
 
   const [previewDraft, setPreviewDraft] = useState<CreateDealDraftResponse | null>(
@@ -139,23 +139,30 @@ export function CreateDealPage() {
     setSubmittedCreateTxHash((prev) => prev ?? persistedDraft.submittedCreateTxHash ?? null);
   }, [address, persistedDraft]);
 
+  const previewDraftRef = useRef<CreateDealDraftResponse | null>(previewDraft);
+  previewDraftRef.current = previewDraft;
+  const previewDraftTradeId = previewDraft?.tradeId ?? null;
+  const pendingTxHash = pendingTx?.txHash ?? null;
+  const pendingTxAction = pendingTx?.action ?? null;
+
   // Recover an in-flight createTrade transaction after browser reload without re-invoking createTrade
   useEffect(() => {
-    if (!previewDraft || !pendingTx || pendingTx.action !== "createTrade") return;
+    const targetDraft = previewDraftRef.current;
+    if (!targetDraft || !previewDraftTradeId || !pendingTxHash || pendingTxAction !== "createTrade") return;
     if (submittedCreateTxHashRef.current || createdTradeId) return;
     if (!isConnected || isWrongNetwork || !isAuthenticated) return;
-    if (inFlightSubmitRef.current || recoveredPendingHashRef.current === pendingTx.txHash) return;
+    if (inFlightSubmitRef.current || recoveredPendingHashRef.current === pendingTxHash) return;
 
-    recoveredPendingHashRef.current = pendingTx.txHash;
-    const targetDraft = previewDraft;
+    let cancelled = false;
+    recoveredPendingHashRef.current = pendingTxHash;
     const effectiveTermsHash = clientTermsHash ?? targetDraft.termsHash;
     setIsRecoveringPending(true);
     setSubmitError(null);
 
     void (async () => {
       try {
-        const recovered = await waitForHash(pendingTx.txHash);
-        if (!mountedRef.current) return;
+        const recovered = await waitForHash(pendingTxHash);
+        if (cancelled || !mountedRef.current) return;
         setSubmittedCreateTxHash(recovered.txHash);
         persistDraftState({
           previewDraft: targetDraft,
@@ -167,25 +174,31 @@ export function CreateDealPage() {
           tradeId: targetDraft.tradeId,
           txHash: recovered.txHash,
         });
-        if (!mountedRef.current) return;
+        if (cancelled || !mountedRef.current) return;
 
         clearPending();
         clearDraftState();
         setSubmittedCreateTxHash(null);
         setCreatedTradeId(targetDraft.tradeId);
       } catch (err) {
-        if (!mountedRef.current) return;
+        if (cancelled || !mountedRef.current) return;
         const message = err instanceof Error ? err.message : "Failed to recover pending create transaction.";
         if (!submittedCreateTxHashRef.current && message.includes("reverted on-chain")) {
           clearPending();
+        } else {
+          recoveredPendingHashRef.current = null;
         }
         setSubmitError(message);
       } finally {
-        if (mountedRef.current) {
+        if (!cancelled && mountedRef.current) {
           setIsRecoveringPending(false);
         }
       }
     })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [
     bindDealTxAsync,
     clearDraftState,
@@ -195,9 +208,10 @@ export function CreateDealPage() {
     isAuthenticated,
     isConnected,
     isWrongNetwork,
-    pendingTx,
+    pendingTxAction,
+    pendingTxHash,
     persistDraftState,
-    previewDraft,
+    previewDraftTradeId,
     waitForHash,
   ]);
 
@@ -286,8 +300,9 @@ export function CreateDealPage() {
   }
 
   async function onSubmitOnChain() {
-    if (!previewDraft) return;
+    if (!previewDraft || inFlightSubmitRef.current) return;
     setSubmitError(null);
+    clearTxError();
     inFlightSubmitRef.current = true;
     const effectiveTermsHash = clientTermsHash ?? previewDraft.termsHash;
 
@@ -353,6 +368,7 @@ export function CreateDealPage() {
     setClientTermsHash(null);
     setSubmittedCreateTxHash(null);
     setSubmitError(null);
+    clearTxError();
   }
 
   async function handleCopyShareUrl() {
