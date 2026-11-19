@@ -84,7 +84,7 @@ impl ArbitrationUseCase {
         let now_p1 = Utc::now();
         let (already_resolved, ctx) = in_tx(self.uow.as_ref(), move |repos| {
             Box::pin(async move {
-                let dispute = repos
+                let initial_dispute = repos
                     .disputes()
                     .find_by_id(dispute_id)
                     .await?
@@ -93,10 +93,20 @@ impl ArbitrationUseCase {
                     })?;
                 let deal = repos
                     .deals()
-                    .find_by_trade_id(&dispute.trade_id)
+                    .find_by_trade_id_for_update(&initial_dispute.trade_id)
                     .await?
                     .ok_or_else(|| {
-                        DomainError::not_found(format!("Deal not found: {}", dispute.trade_id))
+                        DomainError::not_found(format!(
+                            "Deal not found: {}",
+                            initial_dispute.trade_id
+                        ))
+                    })?;
+                let dispute = repos
+                    .disputes()
+                    .find_by_id(dispute_id)
+                    .await?
+                    .ok_or_else(|| {
+                        DomainError::not_found(format!("Dispute not found: {dispute_id}"))
                     })?;
                 if !deal.arbiter.eq_ignore_ascii_case(&caller_p1) {
                     return Err(DomainError::forbidden(
@@ -174,12 +184,6 @@ impl ArbitrationUseCase {
             return Err(DomainError::validation(format!(
                 "Resolution transaction reverted on-chain: {tx_hash}"
             )));
-        }
-        let configured_contract = self.blockchain_gateway.contract_address();
-        if !receipt.to_address.eq_ignore_ascii_case(configured_contract) {
-            return Err(DomainError::validation(
-                "Resolution transaction did not target SafeDealEscrow.",
-            ));
         }
 
         let resolved_event = receipt

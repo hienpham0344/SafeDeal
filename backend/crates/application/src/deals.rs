@@ -314,14 +314,6 @@ impl BindDealTransactionUseCase {
             .blockchain_gateway
             .contract_address()
             .to_ascii_lowercase();
-        if !receipt
-            .to_address
-            .eq_ignore_ascii_case(&configured_contract)
-        {
-            return Err(DomainError::validation(
-                "Transaction target contract does not match SafeDealEscrow.",
-            ));
-        }
 
         let created_event = receipt
             .decoded_events
@@ -455,8 +447,16 @@ impl BindDealTransactionUseCase {
                     on_chain_bound: true,
                     settled: snapshot.settled || reconciled_status.is_settled(),
                     create_tx_hash: Some(tx_hash.clone()),
-                    buyer_award_wei: Some(snapshot.buyer_award_wei),
-                    seller_award_wei: Some(snapshot.seller_award_wei),
+                    buyer_award_wei: if reconciled_status == DealStatus::Resolved {
+                        Some(snapshot.buyer_award_wei)
+                    } else {
+                        current.buyer_award_wei
+                    },
+                    seller_award_wei: if reconciled_status == DealStatus::Resolved {
+                        Some(snapshot.seller_award_wei)
+                    } else {
+                        current.seller_award_wei
+                    },
                     title: current.title,
                     description: current.description,
                     terms: current.terms,
@@ -580,7 +580,9 @@ impl SyncDealUseCase {
                     .find_by_trade_id(&tid_p1)
                     .await?
                     .ok_or_else(|| DomainError::not_found(format!("Deal not found: {tid_p1}")))?;
-                if !found.can_view(Some(&caller_p1)) {
+                if !found.can_view(Some(&caller_p1))
+                    && !found.is_participant_or_arbiter(Some(&caller_p1))
+                {
                     return Err(DomainError::forbidden(
                         "Caller is not authorized to synchronize this deal.",
                     ));
@@ -611,12 +613,6 @@ impl SyncDealUseCase {
                     "Submitted transaction reverted on-chain: {hash}"
                 )));
             }
-            let configured_contract = self.blockchain_gateway.contract_address();
-            if !rec.to_address.eq_ignore_ascii_case(configured_contract) {
-                return Err(DomainError::validation(
-                    "Submitted transaction did not target configured SafeDealEscrow contract.",
-                ));
-            }
             let matches_trade = rec.decoded_events.iter().any(|ev| {
                 ev.trade_id
                     .as_deref()
@@ -624,7 +620,7 @@ impl SyncDealUseCase {
             });
             if !matches_trade {
                 return Err(DomainError::validation(format!(
-                    "Submitted transaction did not emit any verified event for tradeId: {trade_id}"
+                    "Submitted transaction did not emit any verified SafeDealEscrow event for tradeId: {trade_id}"
                 )));
             }
             Some(rec)
@@ -944,12 +940,22 @@ fn validate_snapshot_matches_deal(
     snapshot: &OnChainTradeSnapshot,
     message: &str,
 ) -> Result<(), DomainError> {
-    let buyer_matches = deal.buyer.as_ref().is_none_or(|expected| {
-        snapshot
-            .buyer
-            .as_deref()
-            .is_some_and(|actual| actual.eq_ignore_ascii_case(expected))
-    });
+    let snapshot_status = snapshot.to_deal_status()?;
+    let snapshot_buyer = snapshot
+        .buyer
+        .as_deref()
+        .filter(|b| !b.is_empty() && !EthFormatValidator::is_zero_address(b));
+    let buyer_matches = match deal.buyer.as_ref() {
+        Some(expected) => {
+            snapshot_buyer.is_some_and(|actual| actual.eq_ignore_ascii_case(expected))
+        }
+        None => match snapshot_status {
+            DealStatus::Created | DealStatus::Cancelled | DealStatus::Draft => {
+                snapshot_buyer.is_none()
+            }
+            _ => true,
+        },
+    };
     if !deal.seller.eq_ignore_ascii_case(&snapshot.seller)
         || !buyer_matches
         || !deal.arbiter.eq_ignore_ascii_case(&snapshot.arbiter)
@@ -973,4 +979,55 @@ fn require_trimmed(raw: &str, field: &str, min: usize, max: usize) -> Result<Str
         )));
     }
     Ok(trimmed.to_string())
+}
+
+pub struct CleanupOrphanDraftsUseCase {
+    uow: Arc<dyn UnitOfWork>,
+    ttl_seconds: i64,
+}
+
+impl CleanupOrphanDraftsUseCase {
+    pub fn new(uow: Arc<dyn UnitOfWork>, ttl_seconds: i64) -> Self {
+        Self {
+            uow,
+            ttl_seconds: ttl_seconds.max(60),
+        }
+    }
+
+    pub fn ttl_seconds(&self) -> i64 {
+        self.ttl_seconds
+    }
+
+    pub async fn execute(&self) -> Result<u64, DomainError> {
+        let cutoff = Utc::now() - chrono::Duration::seconds(self.ttl_seconds);
+        self.execute_with_cutoff(cutoff).await
+    }
+
+    pub async fn execute_with_cutoff(&self, cutoff: DateTime<Utc>) -> Result<u64, DomainError> {
+        let correlation_id = CorrelationIdContext::get_or_default("cleanup");
+        in_tx(self.uow.as_ref(), move |repos| {
+            Box::pin(async move {
+                let purged = repos.deals().purge_expired_drafts(cutoff).await?;
+                if purged > 0 {
+                    repos
+                        .audit_logs()
+                        .append(&AuditLogEntry {
+                            id: None,
+                            action: "ORPHAN_DRAFTS_CLEANED".to_string(),
+                            actor_address: None,
+                            resource_type: "DEALS".to_string(),
+                            resource_id: format!("purged_count={purged}"),
+                            correlation_id: Some(correlation_id),
+                            details: format!(
+                                "Purged {purged} orphan deal drafts created before {cutoff}"
+                            ),
+                            created_at: Utc::now(),
+                        })
+                        .await?;
+                }
+                Ok(purged)
+            })
+        })
+        .await
+    }
 }
