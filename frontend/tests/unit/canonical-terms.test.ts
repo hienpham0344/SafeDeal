@@ -78,4 +78,25 @@ describe("canonical-terms (RFC 8785)", () => {
     expect(buildCanonicalTermsJson(base)).toContain('"buyer":"0x70997970c51812dc3a010c7d01b50e0d17dc79c8"');
     expect(h1.termsHash).not.toBe(h2.termsHash);
   });
+
+  it("normalizes zero-address buyer to null and strips leading zeros from amountWei matching Rust backend", async () => {
+    const padded = await computeCanonicalTermsHash({
+      version: 1,
+      chainId: 43113,
+      seller: "0x70997970c51812dc3a010c7d01b50e0d17dc79c8",
+      buyer: "0x0000000000000000000000000000000000000000",
+      arbiter: "0x90f79bf6eb2c4f870365e785982e1f101e93b906",
+      amountWei: "0001500000000000000000",
+      fundingDeadline: 1800000000,
+      deliveryDeadline: 1800086400,
+      inspectionWindowSeconds: 259200,
+      title: "Hardware Wallet Sale",
+      description: "Sealed device with tracking",
+      terms: "Shipped within 24 hours",
+    });
+
+    expect(padded.termsHash).toBe("0xbf5ef59687168af6140d2ebd15e63b94df1ac4d3206e45f3a2f681cb962ade62");
+    expect(padded.canonicalJson).toContain('"buyer":null');
+    expect(padded.canonicalJson).toContain('"amountWei":"1500000000000000000"');
+  });
 });

@@ -204,4 +204,57 @@ describe("AuthSessionProvider race & cache isolation", () => {
 
     expect(screen.getByTestId("auth-state")).toHaveTextContent(BUYER);
   });
+
+  it("clears persisted drafts, pending transactions, and cached private queries on explicit disconnectAndSignOut", async () => {
+    window.sessionStorage.clear();
+    window.sessionStorage.setItem(
+      `safedeal:create-draft:${SELLER.toLowerCase()}`,
+      JSON.stringify({ sellerAddress: SELLER, updatedAt: new Date().toISOString() })
+    );
+    window.sessionStorage.setItem(
+      "safedeal:pending-tx:deal-1",
+      JSON.stringify({
+        txHash: "0x1111111111111111111111111111111111111111111111111111111111111111",
+        action: "fundTrade",
+        startedAt: new Date().toISOString(),
+      })
+    );
+
+    fetchCurrentSessionMock.mockResolvedValue({
+      address: SELLER,
+      chainId: 31337,
+      authenticatedAt: "2026-01-01T00:00:00Z",
+    });
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    queryClient.setQueryData(["deals", "list", {}], { items: [{ tradeId: "0x1" }] });
+    queryClient.setQueryData(["disputes", "detail", "1"], { id: 1 });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AuthSessionProvider>
+          <SessionProbe />
+        </AuthSessionProvider>
+      </QueryClientProvider>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("auth-state")).toHaveTextContent(SELLER);
+    });
+
+    await act(async () => {
+      screen.getByRole("button", { name: "SignOut" }).click();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("auth-state")).toHaveTextContent("anon");
+    });
+
+    expect(window.sessionStorage.getItem(`safedeal:create-draft:${SELLER.toLowerCase()}`)).toBeNull();
+    expect(window.sessionStorage.getItem("safedeal:pending-tx:deal-1")).toBeNull();
+    expect(queryClient.getQueryData(["deals", "list", {}])).toBeUndefined();
+    expect(queryClient.getQueryData(["disputes", "detail", "1"])).toBeUndefined();
+  });
 });

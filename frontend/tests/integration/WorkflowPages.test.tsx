@@ -566,11 +566,88 @@ describe("SafeDeal Dashboard, DealDetails & Arbiter Pages", () => {
     expect(window.sessionStorage.getItem(`safedeal:create-draft:${SELLER.toLowerCase()}`)).toBeNull();
   });
 
+  it("automatically expires and purges abandoned drafts older than 24 hours on CreateDealPage load", async () => {
+    const expiredTimestamp = new Date(Date.now() - 25 * 3600 * 1000).toISOString();
+    const { termsHash, canonicalJson } = await computeCanonicalTermsHash({
+      version: 1,
+      chainId: 31337,
+      seller: SELLER,
+      buyer: BUYER,
+      arbiter: ARBITER,
+      amountWei: "1000000000000000000",
+      fundingDeadline: 1893499200,
+      deliveryDeadline: 1894104000,
+      inspectionWindowSeconds: 72 * 3600,
+      title: "Stale Abandoned Deal Draft",
+      description: "This draft has exceeded the 24h retention window.",
+      terms: "Terms text.",
+    });
+
+    const draftPayload = {
+      tradeId: TRADE_ID,
+      termsHash,
+      contractAddress: CONTRACT_ADDR,
+      chainId: 31337,
+      deal: {
+        ...sampleDealDetail,
+        title: "Stale Abandoned Deal Draft",
+        description: "This draft has exceeded the 24h retention window.",
+        terms: "Terms text.",
+        canonicalTermsJson: canonicalJson,
+        amountWei: "1000000000000000000",
+        fundingDeadline: new Date(1893499200 * 1000).toISOString(),
+        deliveryDeadline: new Date(1894104000 * 1000).toISOString(),
+        inspectionWindowSeconds: 72 * 3600,
+        status: "DRAFT",
+        onChainBound: false,
+        createTxHash: null,
+      },
+    };
+
+    window.sessionStorage.setItem(
+      `safedeal:create-draft:${SELLER.toLowerCase()}`,
+      JSON.stringify({
+        sellerAddress: SELLER,
+        previewDraft: draftPayload,
+        clientTermsHash: termsHash,
+        submittedCreateTxHash: null,
+        updatedAt: expiredTimestamp,
+      })
+    );
+
+    renderWithQuery(<CreateDealPage />);
+
+    // Should NOT restore the draft, should render Step 1 form instead of Step 2 preview
+    expect(await screen.findByRole("button", { name: "Preview On-Chain Transaction" })).toBeInTheDocument();
+    expect(screen.queryByText("Stale Abandoned Deal Draft")).toBeNull();
+    // Storage should be cleared
+    expect(window.sessionStorage.getItem(`safedeal:create-draft:${SELLER.toLowerCase()}`)).toBeNull();
+  });
+
   it("synchronizes DealDetailsPage fundTrade exactly once without duplicate waitForHash and retains txHash across transient 503 failure", async () => {
     const user = userEvent.setup();
     const fundTxHash = "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" as const;
+    const { termsHash: verifiedTermsHash, canonicalJson } = await computeCanonicalTermsHash({
+      version: 1,
+      chainId: sampleDealDetail.chainId,
+      seller: sampleDealDetail.seller,
+      buyer: sampleDealDetail.buyer,
+      arbiter: sampleDealDetail.arbiter,
+      amountWei: sampleDealDetail.amountWei,
+      fundingDeadline: Math.floor(Date.parse(sampleDealDetail.fundingDeadline) / 1000),
+      deliveryDeadline: Math.floor(Date.parse(sampleDealDetail.deliveryDeadline) / 1000),
+      inspectionWindowSeconds: sampleDealDetail.inspectionWindowSeconds,
+      title: sampleDealDetail.title,
+      description: sampleDealDetail.description,
+      terms: sampleDealDetail.terms,
+    });
+    const verifiedDeal = {
+      ...sampleDealDetail,
+      termsHash: verifiedTermsHash,
+      canonicalTermsJson: canonicalJson,
+    };
     mockSessionState.address = BUYER;
-    getDealMock.mockResolvedValue({ ...sampleDealDetail, status: "CREATED" });
+    getDealMock.mockResolvedValue({ ...verifiedDeal, status: "CREATED" });
     getDealHistoryMock.mockResolvedValue({ events: [], transactions: [] });
     mockOnChainTrade = { data: { status: 1 }, refetch: vi.fn().mockResolvedValue(undefined) };
 
@@ -585,7 +662,7 @@ describe("SafeDeal Dashboard, DealDetails & Arbiter Pages", () => {
     // First sync attempt fails transiently (503); second sync succeeds via Sync On-Chain button
     syncDealMock
       .mockRejectedValueOnce(new Error("Backend temporarily unavailable (503)"))
-      .mockResolvedValueOnce({ ...sampleDealDetail, status: "FUNDED" });
+      .mockResolvedValueOnce({ ...verifiedDeal, status: "FUNDED" });
 
     renderWithQuery(
       <Routes>
