@@ -32,9 +32,12 @@ export function AppShell({
     isWrongNetwork,
     isAuthenticated,
     isAuthenticating,
+    authError,
+    walletModalOpen,
     openWalletModal,
     signInWithWallet,
     switchToExpectedNetwork,
+    clearAuthError,
   } = useAuthSession();
 
   useEffect(() => {
@@ -213,6 +216,19 @@ export function AppShell({
             action={
               <Button size="sm" disabled={isAuthenticating} onClick={() => void signInWithWallet()}>
                 {isAuthenticating ? "Signing..." : "Sign In"}
+              </Button>
+            }
+          />
+        )}
+
+        {authError && !walletModalOpen && (
+          <AlertBanner
+            tone="error"
+            title="Authentication Error"
+            message={authError}
+            action={
+              <Button size="sm" variant="secondary" onClick={clearAuthError}>
+                Dismiss
               </Button>
             }
           />

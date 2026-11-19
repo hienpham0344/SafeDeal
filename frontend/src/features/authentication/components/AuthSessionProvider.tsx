@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAccount, useChainId, useConnect, useDisconnect, useSignMessage, useSwitchChain } from "wagmi";
 import { env } from "@/config/env";
+import { setUnauthorizedHandler } from "@/services/http/api-client";
 import {
   fetchCurrentSession,
   logoutSession,
@@ -12,6 +13,8 @@ import {
   AuthSessionContext,
   type AuthSessionContextValue,
 } from "@/features/authentication/hooks/useAuthSession";
+import { clearAllPersistedCreateDrafts } from "@/features/deals/hooks/useCreateDraftPersistence";
+import { clearAllPendingTxs } from "@/features/deals/hooks/usePendingTransactions";
 import type { AuthSessionUser } from "@/types/api";
 
 export function AuthSessionProvider({ children }: { readonly children: ReactNode }) {
@@ -45,6 +48,15 @@ export function AuthSessionProvider({ children }: { readonly children: ReactNode
       sessionUser.address.toLowerCase() === address.toLowerCase()
   );
 
+  useEffect(() => {
+    setUnauthorizedHandler(() => {
+      queryClient.setQueryData(["auth", "session"], null);
+    });
+    return () => {
+      setUnauthorizedHandler(null);
+    };
+  }, [queryClient]);
+
   // If the connected wallet changes to a different address than the backend session, clear stale session cleanly
   useEffect(() => {
     if (
@@ -58,12 +70,17 @@ export function AuthSessionProvider({ children }: { readonly children: ReactNode
     }
     let cancelled = false;
     const mismatchedAddress = sessionUser.address.toLowerCase();
-    void logoutSession().then(() => {
-      if (cancelled) return;
-      queryClient.setQueryData<AuthSessionUser | null>(["auth", "session"], (current) =>
-        current && current.address.toLowerCase() === mismatchedAddress ? null : current
-      );
-    });
+    void logoutSession()
+      .catch(() => undefined)
+      .then(() => {
+        if (cancelled) return;
+        queryClient.setQueryData<AuthSessionUser | null>(["auth", "session"], (current) =>
+          current && current.address.toLowerCase() === mismatchedAddress ? null : current
+        );
+        queryClient.removeQueries({ queryKey: ["deals"] });
+        queryClient.removeQueries({ queryKey: ["disputes"] });
+        queryClient.removeQueries({ queryKey: ["arbitration"] });
+      });
     return () => {
       cancelled = true;
     };
@@ -112,13 +129,13 @@ export function AuthSessionProvider({ children }: { readonly children: ReactNode
       const challenge = await requestAuthNonce(address, env.chainId);
       const signature = await signMessageAsync({ message: challenge.message });
       const user = await verifyWalletSignature(challenge.message, signature);
-      queryClient.setQueryData(["auth", "session"], user);
-      setWalletModalOpen(false);
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["deals"] }),
         queryClient.invalidateQueries({ queryKey: ["disputes"] }),
         queryClient.invalidateQueries({ queryKey: ["arbitration"] }),
       ]);
+      queryClient.setQueryData(["auth", "session"], user);
+      setWalletModalOpen(false);
       return user;
     } catch (error) {
       setAuthError(error instanceof Error ? error.message : "Wallet sign-in failed.");
@@ -131,8 +148,17 @@ export function AuthSessionProvider({ children }: { readonly children: ReactNode
   const disconnectAndSignOut = useCallback(async () => {
     setAuthError(null);
     await queryClient.cancelQueries({ queryKey: ["auth", "session"] });
-    await logoutSession();
+    try {
+      await logoutSession();
+    } catch {
+      // Ensure local session & wallet state are still cleared if server logout fails
+    }
     queryClient.setQueryData(["auth", "session"], null);
+    clearAllPersistedCreateDrafts();
+    clearAllPendingTxs();
+    queryClient.removeQueries({ queryKey: ["deals"] });
+    queryClient.removeQueries({ queryKey: ["disputes"] });
+    queryClient.removeQueries({ queryKey: ["arbitration"] });
     await disconnectAsync().catch(() => undefined);
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ["deals"] }),
@@ -154,8 +180,14 @@ export function AuthSessionProvider({ children }: { readonly children: ReactNode
       isSessionLoading: sessionQuery.isLoading,
       authError,
       walletModalOpen,
-      openWalletModal: () => setWalletModalOpen(true),
-      closeWalletModal: () => setWalletModalOpen(false),
+      openWalletModal: () => {
+        setAuthError(null);
+        setWalletModalOpen(true);
+      },
+      closeWalletModal: () => {
+        setAuthError(null);
+        setWalletModalOpen(false);
+      },
       connectInjectedWallet,
       signInWithWallet,
       switchToExpectedNetwork,
