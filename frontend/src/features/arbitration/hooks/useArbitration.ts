@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { listAssignedDisputes, recordArbitrationResolution } from "@/features/arbitration/api/arbitration-api";
 import { dealKeys } from "@/features/deals/hooks/useDeals";
 import { disputeKeys } from "@/features/disputes/hooks/useDisputes";
+import type { DisputeDetail } from "@/types/api";
 
 export const arbitrationKeys = {
   assigned: ["arbitration", "assigned"] as const,
@@ -29,6 +30,9 @@ export function useRecordResolutionMutation() {
     }) => recordArbitrationResolution(disputeId, { txHash, rationale }),
     onSuccess: (dispute) => {
       queryClient.setQueryData(disputeKeys.detail(String(dispute.id)), dispute);
+      queryClient.setQueryData<readonly DisputeDetail[]>(arbitrationKeys.assigned, (old) =>
+        old ? old.map((item) => (item.id === dispute.id ? dispute : item)) : old
+      );
       void queryClient.invalidateQueries({ queryKey: arbitrationKeys.assigned });
       void queryClient.invalidateQueries({ queryKey: dealKeys.detail(dispute.tradeId) });
       void queryClient.invalidateQueries({ queryKey: dealKeys.all });

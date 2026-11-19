@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { usePublicClient, useReadContract, useWriteContract } from "wagmi";
 import { appConfig } from "@/config/app.config";
 import { contractsConfig } from "@/config/contracts";
@@ -16,7 +16,7 @@ function classifyWalletError(error: unknown): string {
   if (msg.includes("User rejected") || msg.includes("User denied")) {
     return "Transaction rejected in wallet.";
   }
-  if (msg.includes("timed out") || msg.includes("Timeout")) {
+  if (/timed out|timeout/i.test(msg)) {
     return "Transaction confirmation timed out. Check explorer or refresh to sync state.";
   }
   return msg;
@@ -36,13 +36,14 @@ export function useClaimableBalance(accountAddress: `0x${string}` | undefined) {
 }
 
 export function useOnChainTrade(tradeId: `0x${string}` | undefined) {
+  const isValidBytes32 = Boolean(tradeId && /^0x[0-9a-fA-F]{64}$/.test(tradeId));
   return useReadContract({
     address: contractsConfig.escrowAddress,
     abi: contractsConfig.escrowAbi,
     functionName: "getTrade",
-    args: tradeId ? [tradeId] : undefined,
+    args: isValidBytes32 && tradeId ? [tradeId] : undefined,
     query: {
-      enabled: Boolean(contractsConfig.escrowAddress && tradeId),
+      enabled: Boolean(contractsConfig.escrowAddress && isValidBytes32),
       refetchInterval: 10_000,
     },
   });
@@ -53,6 +54,7 @@ export function useEscrowContractExecutor() {
   const publicClient = usePublicClient({ chainId: env.chainId });
   const { writeContractAsync } = useWriteContract();
   const [activeAction, setActiveAction] = useState<string | null>(null);
+  const activeActionRef = useRef<string | null>(null);
   const [txError, setTxError] = useState<string | null>(null);
 
   const ensureReady = useCallback(() => {
@@ -99,9 +101,11 @@ export function useEscrowContractExecutor() {
       submit: (contractAddress: `0x${string}`) => Promise<`0x${string}`>,
       onHashSubmitted?: (txHash: `0x${string}`) => void
     ): Promise<TxExecutionResult> => {
-      if (activeAction) {
-        throw new Error(`Another transaction (${activeAction}) is already in progress.`);
+      const currentActive = activeActionRef.current ?? activeAction;
+      if (currentActive) {
+        throw new Error(`Another transaction (${currentActive}) is already in progress.`);
       }
+      activeActionRef.current = actionName;
       setTxError(null);
       setActiveAction(actionName);
       try {
@@ -114,6 +118,7 @@ export function useEscrowContractExecutor() {
         setTxError(readable);
         throw new Error(readable);
       } finally {
+        activeActionRef.current = null;
         setActiveAction(null);
       }
     },

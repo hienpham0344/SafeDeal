@@ -53,7 +53,7 @@ export function DealDetailsPage() {
   const navigate = useNavigate();
   const tradeId = id as `0x${string}` | undefined;
 
-  const { address, isConnected, isAuthenticated, openWalletModal, signInWithWallet } = useAuthSession();
+  const { address, isConnected, isWrongNetwork, isAuthenticated, openWalletModal, signInWithWallet } = useAuthSession();
   const dealQuery = useDealQuery(tradeId, isAuthenticated);
   const historyQuery = useDealHistoryQuery(tradeId, isAuthenticated);
   const syncMutation = useSyncDealMutation();
@@ -68,13 +68,16 @@ export function DealDetailsPage() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionSuccess, setActionSuccess] = useState<string | null>(null);
   const [verifiedTermsHash, setVerifiedTermsHash] = useState<string | null>(null);
+  const [termsHashError, setTermsHashError] = useState(false);
+  const [isRecoveringPending, setIsRecoveringPending] = useState(false);
+  const [nowSeconds, setNowSeconds] = useState(() => Math.floor(Date.now() / 1000));
   const [disputeReason, setDisputeReason] = useState("");
   const [disputeSummary, setDisputeSummary] = useState("");
   const [showDisputeForm, setShowDisputeForm] = useState(false);
 
   const deal = dealQuery.data;
 
-  const { waitForHash } = executor;
+  const { waitForHash, clearTxError } = executor;
   const { mutateAsync: bindDealTxAsync } = bindTxMutation;
   const { mutateAsync: syncDealAsync } = syncMutation;
 
@@ -94,28 +97,43 @@ export function DealDetailsPage() {
   }, []);
 
   useEffect(() => {
+    const timer = window.setInterval(() => {
+      setNowSeconds(Math.floor(Date.now() / 1000));
+    }, 5_000);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  useEffect(() => {
     recoveredPendingHashRef.current = null;
     setActionError(null);
     setActionSuccess(null);
-  }, [tradeId]);
+    clearTxError();
+  }, [address, clearTxError, tradeId]);
+
+  const pendingTxHash = pendingTx?.txHash ?? null;
+  const pendingTxAction = pendingTx?.action ?? null;
 
   // Resume pending tx waiting only after browser reload (never duplicate active in-mount submissions)
   useEffect(() => {
-    if (!pendingTx) {
+    if (!pendingTxHash || !pendingTxAction) {
       recoveredPendingHashRef.current = null;
       return;
     }
-    if (!tradeId || !isAuthenticated) return;
-    if (inFlightActionRef.current || recoveredPendingHashRef.current === pendingTx.txHash) return;
+    if (!tradeId || !isConnected || isWrongNetwork || !isAuthenticated) return;
+    if (inFlightActionRef.current || recoveredPendingHashRef.current === pendingTxHash) return;
 
-    recoveredPendingHashRef.current = pendingTx.txHash;
-    const targetTxHash = pendingTx.txHash;
-    const targetAction = pendingTx.action;
+    let cancelled = false;
+    recoveredPendingHashRef.current = pendingTxHash;
+    const targetTxHash = pendingTxHash;
+    const targetAction = pendingTxAction;
+    setIsRecoveringPending(true);
 
     void (async () => {
       try {
         const result = await waitForHash(targetTxHash);
-        if (!mountedRef.current) return;
+        if (cancelled || !mountedRef.current) return;
 
         if (targetAction === "createTrade") {
           await bindDealTxAsync({ tradeId, txHash: result.txHash });
@@ -123,28 +141,41 @@ export function DealDetailsPage() {
           await syncDealAsync({ tradeId, txHash: result.txHash });
         }
 
-        if (!mountedRef.current) return;
+        if (cancelled || !mountedRef.current) return;
         await Promise.all([refetchOnChainRef.current(), refetchClaimableRef.current()]);
         clearPending();
         recoveredPendingHashRef.current = null;
-        if (mountedRef.current) {
+        if (!cancelled && mountedRef.current) {
           setActionSuccess(`Pending ${targetAction} transaction confirmed (${result.txHash}).`);
         }
       } catch (err) {
-        if (!mountedRef.current) return;
+        if (cancelled || !mountedRef.current) return;
         const message = err instanceof Error ? err.message : "Pending transaction failed.";
         if (shouldClearFailedPendingTx(message)) {
           clearPending();
           recoveredPendingHashRef.current = null;
+        } else {
+          recoveredPendingHashRef.current = null;
         }
         setActionError(message);
+      } finally {
+        if (!cancelled && mountedRef.current) {
+          setIsRecoveringPending(false);
+        }
       }
     })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [
     bindDealTxAsync,
     clearPending,
     isAuthenticated,
-    pendingTx,
+    isConnected,
+    isWrongNetwork,
+    pendingTxAction,
+    pendingTxHash,
     syncDealAsync,
     tradeId,
     waitForHash,
@@ -154,11 +185,26 @@ export function DealDetailsPage() {
   useEffect(() => {
     if (!deal) return;
     let active = true;
+    setVerifiedTermsHash(null);
+    setTermsHashError(false);
+
+    let canonicalBuyer = deal.buyer;
+    if (deal.canonicalTermsJson) {
+      try {
+        const parsed = JSON.parse(deal.canonicalTermsJson) as { buyer?: string | null };
+        if (parsed && parsed.buyer === null) {
+          canonicalBuyer = null;
+        }
+      } catch {
+        // Fallback to deal.buyer if canonicalTermsJson is not valid JSON
+      }
+    }
+
     void computeCanonicalTermsHash({
       version: 1,
       chainId: deal.chainId,
       seller: deal.seller,
-      buyer: deal.buyer,
+      buyer: canonicalBuyer,
       arbiter: deal.arbiter,
       amountWei: deal.amountWei,
       fundingDeadline: Math.floor(Date.parse(deal.fundingDeadline) / 1000),
@@ -167,9 +213,13 @@ export function DealDetailsPage() {
       title: deal.title,
       description: deal.description,
       terms: deal.terms,
-    }).then((res) => {
-      if (active) setVerifiedTermsHash(res.termsHash);
-    });
+    })
+      .then((res) => {
+        if (active) setVerifiedTermsHash(res.termsHash);
+      })
+      .catch(() => {
+        if (active) setTermsHashError(true);
+      });
     return () => {
       active = false;
     };
@@ -183,30 +233,42 @@ export function DealDetailsPage() {
 
   const effectiveStatus = onChainStatus && onChainStatus !== "NONE" ? onChainStatus : deal?.status;
 
+  const onChainBuyer =
+    onChainQuery.data?.buyer && onChainQuery.data.buyer.toLowerCase() !== zeroAddress
+      ? onChainQuery.data.buyer
+      : null;
+  const effectiveBuyer = deal?.buyer ?? onChainBuyer;
+
   const me = address?.toLowerCase();
   const isSeller = Boolean(me && deal && deal.seller.toLowerCase() === me);
-  const isBuyer = Boolean(me && deal?.buyer && deal.buyer.toLowerCase() === me);
+  const isBuyer = Boolean(me && effectiveBuyer && effectiveBuyer.toLowerCase() === me);
   const isArbiter = Boolean(me && deal && deal.arbiter.toLowerCase() === me);
   const isOpenBuyerEligible = Boolean(
-    me && deal && !deal.buyer && !isSeller && !isArbiter
+    me && deal && !effectiveBuyer && !isSeller && !isArbiter
   );
 
-  const nowSeconds = Math.floor(Date.now() / 1000);
   const fundingDeadlineEpoch = deal ? Math.floor(Date.parse(deal.fundingDeadline) / 1000) : 0;
   const deliveryDeadlineEpoch = deal ? Math.floor(Date.parse(deal.deliveryDeadline) / 1000) : 0;
-  const deliveredAtEpoch = deal?.deliveredAt ? Math.floor(Date.parse(deal.deliveredAt) / 1000) : 0;
+  const onChainDeliveredAtEpoch = onChainQuery.data ? Number(onChainQuery.data.deliveredAt) : 0;
+  const deliveredAtEpoch =
+    onChainDeliveredAtEpoch > 0
+      ? onChainDeliveredAtEpoch
+      : deal?.deliveredAt
+        ? Math.floor(Date.parse(deal.deliveredAt) / 1000)
+        : 0;
   const sellerDisputeUnlockEpoch = deal ? deliveredAtEpoch + deal.inspectionWindowSeconds : 0;
 
   const termsHashVerified = useMemo(() => {
     if (!deal || !verifiedTermsHash) return false;
     return verifiedTermsHash.toLowerCase() === deal.termsHash.toLowerCase();
   }, [deal, verifiedTermsHash]);
+  const termsHashMismatch = Boolean((verifiedTermsHash && !termsHashVerified) || termsHashError);
 
   async function runAndSync(
     actionName: string,
     fn: (onHash: (hash: `0x${string}`) => void) => Promise<{ txHash: `0x${string}` }>
   ) {
-    if (!tradeId) return;
+    if (!tradeId || inFlightActionRef.current) return;
     setActionError(null);
     setActionSuccess(null);
     inFlightActionRef.current = true;
@@ -245,6 +307,7 @@ export function DealDetailsPage() {
   }
 
   async function handleWithdraw() {
+    if (inFlightActionRef.current) return;
     setActionError(null);
     setActionSuccess(null);
     inFlightActionRef.current = true;
@@ -281,6 +344,7 @@ export function DealDetailsPage() {
     if (!deal) return;
     setActionError(null);
     setActionSuccess(null);
+    clearTxError();
     try {
       if (pendingTx?.action === "createTrade" && !deal.onChainBound) {
         await bindDealTxAsync({ tradeId: deal.tradeId, txHash: pendingTx.txHash });
@@ -307,8 +371,15 @@ export function DealDetailsPage() {
     e.preventDefault();
     if (!tradeId || !deal || inFlightActionRef.current) return;
     setActionError(null);
-    if (disputeReason.trim().length < 5 || disputeSummary.trim().length < 10) {
+    clearTxError();
+    const trimmedReason = disputeReason.trim();
+    const trimmedSummary = disputeSummary.trim();
+    if (trimmedReason.length < 5 || trimmedSummary.length < 10) {
       setActionError("Enter a clear dispute reason (5+ chars) and summary (10+ chars).");
+      return;
+    }
+    if (trimmedReason.length > 200 || trimmedSummary.length > 4000) {
+      setActionError("Dispute reason (max 200 chars) or summary (max 4,000 chars) is too long.");
       return;
     }
 
@@ -332,20 +403,18 @@ export function DealDetailsPage() {
         txHash = res.txHash;
         confirmedTxHash = txHash;
         await syncDealAsync({ tradeId, txHash });
-        clearPending();
-        recoveredPendingHashRef.current = null;
       }
       const dispute = await createDisputeMutation.mutateAsync({
         tradeId,
-        reason: disputeReason.trim(),
-        summary: disputeSummary.trim(),
+        reason: trimmedReason,
+        summary: trimmedSummary,
         txHash,
       });
-      if (pendingTx?.action === "openDispute") {
-        clearPending();
-        recoveredPendingHashRef.current = null;
+      clearPending();
+      recoveredPendingHashRef.current = null;
+      if (mountedRef.current) {
+        navigate(disputePath(String(dispute.id)));
       }
-      navigate(disputePath(String(dispute.id)));
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to open dispute.";
       if (!confirmedTxHash && (!submittedTxHash || shouldClearFailedPendingTx(message))) {
@@ -464,6 +533,8 @@ export function DealDetailsPage() {
                   <CopyableHash value={deal.termsHash} label="Terms Hash" className="text-xs" />
                   {termsHashVerified ? (
                     <span className="text-emerald-300">(client SHA-256 verified)</span>
+                  ) : termsHashMismatch ? (
+                    <span className="text-rose-300">(terms hash mismatch!)</span>
                   ) : (
                     <span className="text-amber-300">(verifying...)</span>
                   )}
@@ -501,7 +572,13 @@ export function DealDetailsPage() {
 
                   {effectiveStatus === "CREATED" && (isBuyer || isOpenBuyerEligible) && nowSeconds <= fundingDeadlineEpoch && (
                     <Button
-                      disabled={Boolean(executor.activeAction) || syncMutation.isPending || bindTxMutation.isPending}
+                      disabled={
+                        Boolean(executor.activeAction) ||
+                        isRecoveringPending ||
+                        syncMutation.isPending ||
+                        bindTxMutation.isPending ||
+                        termsHashMismatch
+                      }
                       onClick={() =>
                         void runAndSync("fundTrade", (onHash) =>
                           executor.fundTrade(deal.tradeId, BigInt(deal.amountWei), onHash)
@@ -528,19 +605,31 @@ export function DealDetailsPage() {
 
                   {effectiveStatus === "FUNDED" && isSeller && (
                     <>
-                      <Button
-                        disabled={Boolean(executor.activeAction) || syncMutation.isPending || bindTxMutation.isPending}
-                        onClick={() =>
-                          void runAndSync("markDelivered", (onHash) =>
-                            executor.markDelivered(deal.tradeId, onHash)
-                          )
-                        }
-                      >
-                        Mark Delivered
-                      </Button>
+                      {nowSeconds <= deliveryDeadlineEpoch && (
+                        <Button
+                          disabled={
+                            Boolean(executor.activeAction) ||
+                            isRecoveringPending ||
+                            syncMutation.isPending ||
+                            bindTxMutation.isPending
+                          }
+                          onClick={() =>
+                            void runAndSync("markDelivered", (onHash) =>
+                              executor.markDelivered(deal.tradeId, onHash)
+                            )
+                          }
+                        >
+                          Mark Delivered
+                        </Button>
+                      )}
                       <Button
                         variant="secondary"
-                        disabled={Boolean(executor.activeAction) || syncMutation.isPending || bindTxMutation.isPending}
+                        disabled={
+                          Boolean(executor.activeAction) ||
+                          isRecoveringPending ||
+                          syncMutation.isPending ||
+                          bindTxMutation.isPending
+                        }
                         onClick={() =>
                           void runAndSync("refundBySeller", (onHash) =>
                             executor.refundBySeller(deal.tradeId, onHash)
@@ -580,7 +669,7 @@ export function DealDetailsPage() {
 
                   {((effectiveStatus === "FUNDED" && (isBuyer || isSeller)) ||
                     (effectiveStatus === "DELIVERED" &&
-                      (isBuyer || (isSeller && nowSeconds > sellerDisputeUnlockEpoch)))) && (
+                      (isBuyer || (isSeller && deliveredAtEpoch > 0 && nowSeconds > sellerDisputeUnlockEpoch)))) && (
                     <Button
                       variant="danger"
                       disabled={Boolean(executor.activeAction) || syncMutation.isPending || createDisputeMutation.isPending}
@@ -723,6 +812,8 @@ export function DealDetailsPage() {
             <h2 className="text-base font-medium text-white">Verified Timeline &amp; Transactions</h2>
             {historyQuery.isLoading ? (
               <p className="text-sm text-sd-inkMuted">Loading timeline...</p>
+            ) : historyQuery.isError ? (
+              <p className="text-sm text-rose-300">Failed to load timeline events.</p>
             ) : !historyQuery.data || historyQuery.data.events.length === 0 ? (
               <p className="text-sm text-sd-inkMuted">No verified events recorded yet.</p>
             ) : (

@@ -13,9 +13,20 @@ export interface CanonicalTermsInput {
   readonly terms: string;
 }
 
+const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
+
 function normalizeOptionalAddress(address: string | null | undefined): string | null {
   if (!address || !address.trim()) return null;
-  return address.trim().toLowerCase();
+  const lower = address.trim().toLowerCase();
+  return lower === ZERO_ADDRESS ? null : lower;
+}
+
+function normalizeAmountWei(amountWei: string): string {
+  const trimmed = amountWei.trim();
+  if (/^\d+$/.test(trimmed)) {
+    return trimmed.replace(/^0+/, "") || "0";
+  }
+  return trimmed;
 }
 
 /**
@@ -50,7 +61,7 @@ export function canonicalizeJsonValue(value: unknown): string {
 
 export function buildCanonicalTermsJson(input: CanonicalTermsInput): string {
   const normalized: CanonicalTermsInput = {
-    amountWei: input.amountWei.trim(),
+    amountWei: normalizeAmountWei(input.amountWei),
     arbiter: input.arbiter.trim().toLowerCase(),
     buyer: normalizeOptionalAddress(input.buyer),
     chainId: input.chainId,

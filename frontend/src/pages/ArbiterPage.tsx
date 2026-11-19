@@ -94,9 +94,12 @@ function ArbiterDisputeCard({ dispute }: { readonly dispute: DisputeDetail }) {
     }
   }, [clearPending, dispute.resolutionRationale, dispute.status]);
 
+  const pendingTxHash = pendingTx?.txHash ?? null;
+  const pendingTxAction = pendingTx?.action ?? null;
+
   // Recover a pending resolveDispute tx across reloads without prompting a duplicate settlement tx
   useEffect(() => {
-    if (!pendingTx || pendingTx.action !== "resolveDispute") {
+    if (!pendingTxHash || pendingTxAction !== "resolveDispute") {
       recoveredPendingHashRef.current = null;
       return;
     }
@@ -106,33 +109,40 @@ function ArbiterDisputeCard({ dispute }: { readonly dispute: DisputeDetail }) {
     }
     if (confirmedResolveTxHashRef.current) return;
     if (!isConnected || isWrongNetwork || !isAuthenticated) return;
-    if (inFlightRef.current || recoveredPendingHashRef.current === pendingTx.txHash) return;
+    if (inFlightRef.current || recoveredPendingHashRef.current === pendingTxHash) return;
 
-    recoveredPendingHashRef.current = pendingTx.txHash;
-    const targetTxHash = pendingTx.txHash;
+    let cancelled = false;
+    recoveredPendingHashRef.current = pendingTxHash;
+    const targetTxHash = pendingTxHash;
     setIsRecoveringPending(true);
     setErrorMsg(null);
 
     void (async () => {
       try {
         const recovered = await waitForHash(targetTxHash);
-        if (!mountedRef.current) return;
+        if (cancelled || !mountedRef.current) return;
         confirmedResolveTxHashRef.current = recovered.txHash;
         setConfirmedResolveTxHash(recovered.txHash);
       } catch (err) {
-        if (!mountedRef.current) return;
+        if (cancelled || !mountedRef.current) return;
         const message = err instanceof Error ? err.message : "Failed to verify pending settlement transaction.";
         if (shouldClearFailedPendingTx(message)) {
           clearPending();
           recoveredPendingHashRef.current = null;
+        } else {
+          recoveredPendingHashRef.current = null;
         }
         setErrorMsg(message);
       } finally {
-        if (mountedRef.current) {
+        if (!cancelled && mountedRef.current) {
           setIsRecoveringPending(false);
         }
       }
     })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [
     clearPending,
     dispute.resolveTxHash,
@@ -140,7 +150,8 @@ function ArbiterDisputeCard({ dispute }: { readonly dispute: DisputeDetail }) {
     isAuthenticated,
     isConnected,
     isWrongNetwork,
-    pendingTx,
+    pendingTxAction,
+    pendingTxHash,
     waitForHash,
   ]);
 
@@ -194,8 +205,13 @@ function ArbiterDisputeCard({ dispute }: { readonly dispute: DisputeDetail }) {
     setErrorMsg(null);
     setSuccessMsg(null);
 
-    if (rationale.trim().length < 10) {
+    const trimmedRationale = rationale.trim();
+    if (trimmedRationale.length < 10) {
       setErrorMsg("Provide an arbitration rationale of at least 10 characters.");
+      return;
+    }
+    if (trimmedRationale.length > 4000) {
+      setErrorMsg("Arbitration rationale cannot exceed 4,000 characters.");
       return;
     }
 

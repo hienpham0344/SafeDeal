@@ -94,6 +94,7 @@ export function LandingPage() {
               <Link
                 key={item.to}
                 to={item.to}
+                tabIndex={mobileMenuOpen ? undefined : -1}
                 onClick={() => setMobileMenuOpen(false)}
                 className="text-3xl font-medium text-white/90 hover:text-white"
               >
@@ -104,6 +105,7 @@ export function LandingPage() {
 
           <button
             type="button"
+            tabIndex={mobileMenuOpen ? undefined : -1}
             onClick={() => {
               setMobileMenuOpen(false);
               openWalletModal();
