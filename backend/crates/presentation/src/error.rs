@@ -106,8 +106,8 @@ impl ApiError {
 
 impl From<DomainError> for ApiError {
     fn from(err: DomainError) -> Self {
-        let status = StatusCode::from_u16(err.http_status())
-            .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        let status =
+            StatusCode::from_u16(err.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
         let code = err.error_code().to_string();
         let message = if matches!(err, DomainError::Internal(_)) {
             let cid = CorrelationIdContext::get_or_default("n/a");

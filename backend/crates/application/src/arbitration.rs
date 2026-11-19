@@ -34,8 +34,7 @@ impl ArbitrationUseCase {
                 if disputes.is_empty() {
                     return Ok(Vec::new());
                 }
-                let trade_ids: Vec<String> =
-                    disputes.iter().map(|d| d.trade_id.clone()).collect();
+                let trade_ids: Vec<String> = disputes.iter().map(|d| d.trade_id.clone()).collect();
                 let deals = repos.deals().find_by_trade_ids(&trade_ids).await?;
                 let mut deals_by_trade_id: HashMap<String, Deal> = deals
                     .into_iter()
@@ -85,7 +84,7 @@ impl ArbitrationUseCase {
         let now_p1 = Utc::now();
         let (already_resolved, ctx) = in_tx(self.uow.as_ref(), move |repos| {
             Box::pin(async move {
-                let dispute = repos
+                let initial_dispute = repos
                     .disputes()
                     .find_by_id(dispute_id)
                     .await?
@@ -94,10 +93,20 @@ impl ArbitrationUseCase {
                     })?;
                 let deal = repos
                     .deals()
-                    .find_by_trade_id(&dispute.trade_id)
+                    .find_by_trade_id_for_update(&initial_dispute.trade_id)
                     .await?
                     .ok_or_else(|| {
-                        DomainError::not_found(format!("Deal not found: {}", dispute.trade_id))
+                        DomainError::not_found(format!(
+                            "Deal not found: {}",
+                            initial_dispute.trade_id
+                        ))
+                    })?;
+                let dispute = repos
+                    .disputes()
+                    .find_by_id(dispute_id)
+                    .await?
+                    .ok_or_else(|| {
+                        DomainError::not_found(format!("Dispute not found: {dispute_id}"))
                     })?;
                 if !deal.arbiter.eq_ignore_ascii_case(&caller_p1) {
                     return Err(DomainError::forbidden(
@@ -176,15 +185,6 @@ impl ArbitrationUseCase {
                 "Resolution transaction reverted on-chain: {tx_hash}"
             )));
         }
-        let configured_contract = self.blockchain_gateway.contract_address();
-        if !receipt
-            .to_address
-            .eq_ignore_ascii_case(configured_contract)
-        {
-            return Err(DomainError::validation(
-                "Resolution transaction did not target SafeDealEscrow.",
-            ));
-        }
 
         let resolved_event = receipt
             .decoded_events
@@ -224,9 +224,7 @@ impl ArbitrationUseCase {
             .fetch_trade(&ctx.deal.trade_id)
             .await?
             .ok_or_else(|| {
-                DomainError::external_service(
-                    "Unable to fetch on-chain trade after resolution.",
-                )
+                DomainError::external_service("Unable to fetch on-chain trade after resolution.")
             })?;
         if snapshot.to_deal_status()? != DealStatus::Resolved {
             return Err(DomainError::validation(

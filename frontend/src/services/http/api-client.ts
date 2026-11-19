@@ -33,9 +33,14 @@ export function shouldRetryQueryError(failureCount: number, error: unknown): boo
 }
 
 let inMemoryCsrfToken: string | null = null;
+let unauthorizedHandler: (() => void) | null = null;
 
 export function setCsrfToken(token: string | null): void {
   inMemoryCsrfToken = token;
+}
+
+export function setUnauthorizedHandler(handler: (() => void) | null): void {
+  unauthorizedHandler = handler;
 }
 
 export function readCookie(name: string): string | null {
@@ -95,6 +100,12 @@ export async function apiRequest<T>(path: string, options: ApiRequestOptions = {
   const payload = isJson ? await response.json().catch(() => null) : null;
 
   if (!response.ok) {
+    if (response.status === 401) {
+      inMemoryCsrfToken = null;
+      if (path !== "/api/v1/auth/me") {
+        unauthorizedHandler?.();
+      }
+    }
     const err = payload as Partial<ApiErrorPayload> | null;
     throw new ApiClientError(
       response.status,

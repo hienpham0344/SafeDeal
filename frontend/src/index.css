@@ -28,3 +28,52 @@
     transform: translateY(0);
   }
 }
+
+[data-surface="app"] {
+  --sd-canvas: #09090b;
+  --sd-surface: #111318;
+  --sd-surface-elevated: #171a21;
+  --sd-surface-inset: #0c0e12;
+  --sd-line: rgba(255, 255, 255, 0.09);
+  --sd-line-strong: rgba(255, 255, 255, 0.18);
+  --sd-ink: #f4f4f6;
+  --sd-ink-muted: #a1a1aa;
+  --sd-ink-subtle: #71717a;
+  --sd-accent: #10b981;
+
+  color-scheme: dark;
+  background-color: var(--sd-canvas);
+  color: var(--sd-ink);
+  font-family: "Geist", sans-serif;
+}
+
+.sd-app-bg {
+  background-color: var(--sd-canvas);
+  background-image:
+    radial-gradient(ellipse 75% 45% at 50% -10%, rgba(16, 185, 129, 0.07), transparent 65%),
+    linear-gradient(to right, rgba(255, 255, 255, 0.025) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.025) 1px, transparent 1px);
+  background-size: 100% 100%, 48px 48px, 48px 48px;
+}
+
+@layer utilities {
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+[data-surface="app"] :focus-visible {
+  outline: 2px solid var(--sd-accent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-surface="app"] *,
+  [data-surface="app"] *::before,
+  [data-surface="app"] *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

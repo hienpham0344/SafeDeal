@@ -37,6 +37,7 @@ pub struct SecurityMiddlewareState {
     pub rate_limiter: Arc<AuthRateLimitState>,
     pub session_cookie_name: String,
     pub csrf_cookie_name: String,
+    pub trust_proxy_headers: bool,
 }
 
 #[derive(Serialize)]
@@ -97,11 +98,15 @@ pub fn apply_security_layers(
     rate_limiter: Arc<AuthRateLimitState>,
 ) -> Result<Router, String> {
     let cors_layer = build_cors_layer(&config.cors)?;
+    let trust_proxy_headers = std::env::var("AUTH_TRUST_PROXY_HEADERS")
+        .ok()
+        .is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "true" | "1" | "yes"));
     let state = Arc::new(SecurityMiddlewareState {
         jwt_service,
         rate_limiter,
         session_cookie_name: config.auth.session_cookie_name.clone(),
         csrf_cookie_name: config.auth.csrf_cookie_name.clone(),
+        trust_proxy_headers,
     });
 
     Ok(router
@@ -124,10 +129,7 @@ pub fn apply_security_layers(
         )))
 }
 
-async fn correlation_and_security_headers_middleware(
-    req: Request<Body>,
-    next: Next,
-) -> Response {
+async fn correlation_and_security_headers_middleware(req: Request<Body>, next: Next) -> Response {
     let incoming = req
         .headers()
         .get(CORRELATION_ID_HEADER)
@@ -147,7 +149,8 @@ async fn correlation_and_security_headers_middleware(
         path = %path
     );
 
-    let mut response = with_correlation_id(correlation_id.clone(), next.run(req).instrument(span)).await;
+    let mut response =
+        with_correlation_id(correlation_id.clone(), next.run(req).instrument(span)).await;
 
     let headers = response.headers_mut();
     if let Ok(cid_header) = HeaderValue::from_str(&correlation_id) {
@@ -178,11 +181,26 @@ async fn auth_rate_limit_middleware(
         && req.method() != Method::OPTIONS
         && AuthRateLimitState::is_rate_limited_path(path)
     {
-        // Strictly key by TCP peer socket address and ignore spoofable X-Forwarded-For.
-        let key = req
-            .extensions()
-            .get::<ConnectInfo<SocketAddr>>()
-            .map(|ci| ci.0.ip().to_string())
+        let forwarded_ip = if state.trust_proxy_headers {
+            req.headers()
+                .get("x-forwarded-for")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|raw| {
+                    raw.split(',')
+                        .rev()
+                        .map(str::trim)
+                        .find_map(|part| part.parse::<std::net::IpAddr>().ok())
+                        .map(|ip| ip.to_string())
+                })
+        } else {
+            None
+        };
+        let key = forwarded_ip
+            .or_else(|| {
+                req.extensions()
+                    .get::<ConnectInfo<SocketAddr>>()
+                    .map(|ci| ci.0.ip().to_string())
+            })
             .or_else(|| {
                 req.extensions()
                     .get::<MockConnectInfo<SocketAddr>>()
@@ -205,28 +223,34 @@ async fn session_auth_middleware(
     mut req: Request<Body>,
     next: Next,
 ) -> Response {
-    let mut via_cookie = false;
-    let mut token = extract_cookie(req.headers(), &state.session_cookie_name);
-    if token.is_some() {
-        via_cookie = true;
-    } else if let Some(auth_val) = req
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-    {
-        if let Some(bearer) = auth_val.strip_prefix("Bearer ") {
-            let trimmed = bearer.trim();
-            if !trimmed.is_empty() {
-                token = Some(trimmed.to_string());
+    let mut resolved: Option<(AuthenticatedPrincipal, bool)> = None;
+
+    if let Some(cookie_tok) = extract_cookie(req.headers(), &state.session_cookie_name) {
+        if let Some(principal) = state.jwt_service.verify_token(&cookie_tok) {
+            resolved = Some((principal, true));
+        }
+    }
+
+    if resolved.is_none() {
+        if let Some(auth_val) = req
+            .headers()
+            .get(header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+        {
+            if let Some(bearer) = auth_val.strip_prefix("Bearer ") {
+                let trimmed = bearer.trim();
+                if !trimmed.is_empty() {
+                    if let Some(principal) = state.jwt_service.verify_token(trimmed) {
+                        resolved = Some((principal, false));
+                    }
+                }
             }
         }
     }
 
-    if let Some(tok) = token {
-        if let Some(principal) = state.jwt_service.verify_token(&tok) {
-            req.extensions_mut().insert(principal);
-            req.extensions_mut().insert(AuthSessionMeta { via_cookie });
-        }
+    if let Some((principal, via_cookie)) = resolved {
+        req.extensions_mut().insert(principal);
+        req.extensions_mut().insert(AuthSessionMeta { via_cookie });
     }
 
     next.run(req).await
@@ -237,10 +261,12 @@ async fn double_submit_csrf_middleware(
     req: Request<Body>,
     next: Next,
 ) -> Response {
-    if matches!(
-        *req.method(),
-        Method::GET | Method::HEAD | Method::OPTIONS
-    ) {
+    if matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS) {
+        return next.run(req).await;
+    }
+
+    let path = req.uri().path();
+    if path == "/api/v1/auth/nonce" || path == "/api/v1/auth/verify" {
         return next.run(req).await;
     }
 
@@ -512,10 +538,26 @@ mod tests {
 
         // Bearer token auth does not need CSRF -> 200
         let res = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .method(Method::POST)
                     .uri("/api/v1/deals/drafts")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+
+        // Invalid cookie with valid Bearer falls back to Bearer without CSRF failure -> 200
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/v1/deals/drafts")
+                    .header(header::COOKIE, "safedeal_session=expired.or.invalid")
                     .header(header::AUTHORIZATION, format!("Bearer {token}"))
                     .body(Body::empty())
                     .unwrap(),

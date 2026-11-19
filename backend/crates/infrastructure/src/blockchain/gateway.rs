@@ -35,17 +35,16 @@ pub struct AlloyBlockchainGateway {
 impl AlloyBlockchainGateway {
     pub fn new(config: &BlockchainConfig) -> Result<Self, String> {
         let contract_address = config.escrow_contract_address.trim().to_ascii_lowercase();
-        let parsed_contract = if contract_address.is_empty()
-            || contract_address.eq_ignore_ascii_case(ZERO_ADDRESS)
-        {
-            None
-        } else {
-            Some(
-                contract_address
-                    .parse::<Address>()
-                    .map_err(|e| format!("Invalid ESCROW_CONTRACT_ADDRESS: {e}"))?,
-            )
-        };
+        let parsed_contract =
+            if contract_address.is_empty() || contract_address.eq_ignore_ascii_case(ZERO_ADDRESS) {
+                None
+            } else {
+                Some(
+                    contract_address
+                        .parse::<Address>()
+                        .map_err(|e| format!("Invalid ESCROW_CONTRACT_ADDRESS: {e}"))?,
+                )
+            };
 
         let provider = if config.enabled {
             let url = Url::parse(config.rpc_url.trim())
@@ -193,6 +192,12 @@ impl BlockchainGateway for AlloyBlockchainGateway {
         })?;
         let block_number = i64::try_from(block_number_u64)
             .map_err(|_| DomainError::external_service("Receipt blockNumber exceeds i64 range"))?;
+        if self.confirmations_required > 1 {
+            let latest_block = self.fetch_latest_block_number().await?;
+            if latest_block - block_number + 1 < i64::from(self.confirmations_required) {
+                return Ok(None);
+            }
+        }
         let block_timestamp = self
             .fetch_block_timestamp_epoch(provider, block_number_u64)
             .await?;
@@ -250,12 +255,10 @@ impl BlockchainGateway for AlloyBlockchainGateway {
             return Ok(Vec::new());
         }
 
-        let from_u64 = u64::try_from(from_block).map_err(|_| {
-            DomainError::validation("fromBlock must be non-negative")
-        })?;
-        let to_u64 = u64::try_from(to_block).map_err(|_| {
-            DomainError::validation("toBlock must be non-negative")
-        })?;
+        let from_u64 = u64::try_from(from_block)
+            .map_err(|_| DomainError::validation("fromBlock must be non-negative"))?;
+        let to_u64 = u64::try_from(to_block)
+            .map_err(|_| DomainError::validation("toBlock must be non-negative"))?;
 
         let filter = Filter::new()
             .address(contract)
@@ -296,9 +299,7 @@ impl BlockchainGateway for AlloyBlockchainGateway {
                 DomainError::external_service("RPC log missing blockNumber during decode")
             })?;
             let ts = block_timestamps.get(&bn).copied().ok_or_else(|| {
-                DomainError::external_service(format!(
-                    "Missing resolved timestamp for block {bn}"
-                ))
+                DomainError::external_service(format!("Missing resolved timestamp for block {bn}"))
             })?;
             if let Some(ev) = SafeDealContractCodec::decode_rpc_log(entry, ts)? {
                 decoded.push(ev);

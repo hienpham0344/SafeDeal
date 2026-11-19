@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -6,8 +5,8 @@ use safedeal_domain::blockchain::OnChainEventType;
 use safedeal_domain::deal::{Deal, DealStatus};
 use safedeal_domain::dispute::{AuditLogEntry, Dispute, DisputeEvidence, DisputeStatus};
 use safedeal_domain::ports::{
-    in_tx, AuditLogRepository, BlockchainGateway, DisputeEvidenceRepository, EvidenceStoragePort,
-    UnitOfWork,
+    in_tx, AuditLogRepository, BlockchainGateway, DisputeEvidenceRepository,
+    EvidenceDownloadPayload, EvidenceStoragePort, UnitOfWork,
 };
 use safedeal_shared::{CorrelationIdContext, DomainError, EthFormatValidator};
 
@@ -22,7 +21,7 @@ pub struct DisputeWithDeal {
 #[derive(Debug, Clone)]
 pub struct EvidenceDownloadTarget {
     pub metadata: DisputeEvidence,
-    pub path: PathBuf,
+    pub payload: EvidenceDownloadPayload,
 }
 
 #[derive(Debug, Clone)]
@@ -125,9 +124,7 @@ impl DisputeUseCase {
                             "Dispute transaction receipt not found or pending: {hash}"
                         ))
                     })?;
-                let configured_contract = self.blockchain_gateway.contract_address();
                 let has_dispute_opened = receipt.succeeded
-                    && receipt.to_address.eq_ignore_ascii_case(configured_contract)
                     && receipt.decoded_events.iter().any(|ev| {
                         ev.event_type == OnChainEventType::DisputeOpened
                             && ev
@@ -158,12 +155,23 @@ impl DisputeUseCase {
         let correlation_id = CorrelationIdContext::get_or_default("n/a");
         in_tx(self.uow.as_ref(), move |repos| {
             Box::pin(async move {
-                repos
+                let current_deal = repos
                     .deals()
                     .find_by_trade_id_for_update(&trade_id)
                     .await?
                     .ok_or_else(|| DomainError::not_found(format!("Deal not found: {trade_id}")))?;
-                if repos.disputes().find_by_trade_id(&trade_id).await?.is_some() {
+                if current_deal.status != DealStatus::Disputed {
+                    return Err(DomainError::conflict(format!(
+                        "On-chain trade status must be DISPUTED before recording dispute metadata (current: {}).",
+                        current_deal.status
+                    )));
+                }
+                if repos
+                    .disputes()
+                    .find_by_trade_id(&trade_id)
+                    .await?
+                    .is_some()
+                {
                     return Err(DomainError::conflict(format!(
                         "A dispute case already exists for trade {trade_id}"
                     )));
@@ -204,7 +212,7 @@ impl DisputeUseCase {
                     .await?;
                 Ok(DisputeWithDeal {
                     dispute: created,
-                    deal,
+                    deal: current_deal,
                 })
             })
         })
@@ -302,23 +310,41 @@ impl DisputeUseCase {
 
         let now = Utc::now();
         let correlation_id = CorrelationIdContext::get_or_default("n/a");
-        let cleanup_storage_key = attachment
-            .as_ref()
-            .map(|att| att.storage_key.clone());
+        let cleanup_storage_key = attachment.as_ref().map(|att| att.storage_key.clone());
+        let trade_id_for_lock = ctx.deal.trade_id.clone();
 
         let result = in_tx(self.uow.as_ref(), move |repos| {
             Box::pin(async move {
-                let (file_name, mime_type, size_bytes, sha256_hex, storage_key) =
-                    match attachment {
-                        Some(att) => (
-                            Some(att.sanitized_file_name),
-                            Some(att.mime_type),
-                            Some(att.size_bytes),
-                            Some(att.sha256_hex),
-                            Some(att.storage_key),
-                        ),
-                        None => (None, None, None, None, None),
-                    };
+                repos
+                    .deals()
+                    .find_by_trade_id_for_update(&trade_id_for_lock)
+                    .await?
+                    .ok_or_else(|| {
+                        DomainError::not_found(format!("Deal not found: {trade_id_for_lock}"))
+                    })?;
+                let current_dispute =
+                    repos
+                        .disputes()
+                        .find_by_id(dispute_id)
+                        .await?
+                        .ok_or_else(|| {
+                            DomainError::not_found(format!("Dispute not found: {dispute_id}"))
+                        })?;
+                if current_dispute.status != DisputeStatus::Open {
+                    return Err(DomainError::conflict(
+                        "Evidence can only be added while the dispute is OPEN.",
+                    ));
+                }
+                let (file_name, mime_type, size_bytes, sha256_hex, storage_key) = match attachment {
+                    Some(att) => (
+                        Some(att.sanitized_file_name),
+                        Some(att.mime_type),
+                        Some(att.size_bytes),
+                        Some(att.sha256_hex),
+                        Some(att.storage_key),
+                    ),
+                    None => (None, None, None, None, None),
+                };
                 let saved = repos
                     .dispute_evidence()
                     .save(&DisputeEvidence {
@@ -361,9 +387,7 @@ impl DisputeUseCase {
 
         if result.is_err() {
             if let Some(storage_key) = cleanup_storage_key {
-                self.evidence_storage
-                    .delete_best_effort(&storage_key)
-                    .await;
+                self.evidence_storage.delete_best_effort(&storage_key).await;
             }
         }
 
@@ -392,7 +416,10 @@ impl DisputeUseCase {
                 DomainError::not_found("Evidence item does not include a downloadable file.")
             })?;
 
-        let path = self.evidence_storage.resolve_attachment_path(storage_key)?;
+        let payload = self.evidence_storage.open_download(storage_key).await?;
+        if let EvidenceDownloadPayload::Bytes(ref bytes) = payload {
+            evidence.verify_bytes_integrity(bytes)?;
+        }
         let correlation_id = CorrelationIdContext::get_or_default("n/a");
         self.audit_log_repo
             .append(&AuditLogEntry {
@@ -409,7 +436,7 @@ impl DisputeUseCase {
 
         Ok(EvidenceDownloadTarget {
             metadata: evidence,
-            path,
+            payload,
         })
     }
 }

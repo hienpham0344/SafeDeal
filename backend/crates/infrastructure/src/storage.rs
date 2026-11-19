@@ -1,12 +1,123 @@
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 
 use async_trait::async_trait;
-use safedeal_domain::ports::{EvidenceStoragePort, StoredAttachment};
+use safedeal_domain::ports::{EvidenceDownloadPayload, EvidenceStoragePort, StoredAttachment};
 use safedeal_shared::DomainError;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::config::EvidenceConfig;
+use crate::config::{EvidenceConfig, EvidenceStorageBackend};
+pub use crate::storage_s3::S3EvidenceStorageAdapter;
+
+/// Builds the configured evidence storage backend (`local` filesystem or `s3`-compatible object storage).
+pub fn build_evidence_storage(
+    config: &EvidenceConfig,
+) -> Result<Arc<dyn EvidenceStoragePort>, String> {
+    match config.backend {
+        EvidenceStorageBackend::Local => {
+            let adapter = LocalEvidenceStorageAdapter::new(config)
+                .map_err(|e| format!("Cannot initialize local evidence storage: {e}"))?;
+            Ok(Arc::new(adapter))
+        }
+        EvidenceStorageBackend::S3 => {
+            let s3_cfg = config.s3.as_ref().ok_or_else(|| {
+                "S3 configuration missing while EVIDENCE_STORAGE_BACKEND=s3".to_string()
+            })?;
+            let adapter = S3EvidenceStorageAdapter::new(s3_cfg, config.max_bytes)?;
+            Ok(Arc::new(adapter))
+        }
+    }
+}
+
+pub(crate) struct ValidatedEvidencePayload {
+    pub sanitized_file_name: String,
+    pub mime_type: String,
+    pub sha256_hex: String,
+    pub storage_key: String,
+    pub size_bytes: i64,
+}
+
+pub(crate) fn validate_evidence_payload(
+    dispute_id: i64,
+    original_filename: &str,
+    declared_mime_type: Option<&str>,
+    bytes: &[u8],
+    max_bytes: usize,
+) -> Result<ValidatedEvidencePayload, DomainError> {
+    if bytes.is_empty() {
+        return Err(DomainError::validation("Evidence file is empty."));
+    }
+    if bytes.len() > max_bytes {
+        return Err(DomainError::validation(format!(
+            "Evidence attachment exceeds max allowed bytes ({max_bytes})."
+        )));
+    }
+
+    let mime = declared_mime_type
+        .unwrap_or("")
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    let extension = extension_for_mime(&mime).ok_or_else(|| {
+        DomainError::validation(
+            "Unsupported evidence MIME type. Allowed: image/png, image/jpeg, application/pdf, text/plain.",
+        )
+    })?;
+
+    if !matches_magic_signature(&mime, bytes) {
+        return Err(DomainError::validation(format!(
+            "File contents do not match declared MIME type ({mime})."
+        )));
+    }
+
+    let sanitized_file_name = sanitize_filename(original_filename, extension);
+    let storage_key = format!("{dispute_id}/{}{}", Uuid::new_v4(), extension);
+    let sha256_hex = hex::encode(Sha256::digest(bytes));
+
+    Ok(ValidatedEvidencePayload {
+        sanitized_file_name,
+        mime_type: mime,
+        sha256_hex,
+        storage_key,
+        size_bytes: bytes.len() as i64,
+    })
+}
+
+pub(crate) fn validate_storage_key(storage_key: &str) -> Result<Vec<String>, DomainError> {
+    let trimmed = storage_key.trim();
+    if trimmed.is_empty() || trimmed.contains("..") || trimmed.contains('\\') {
+        return Err(DomainError::validation("Invalid evidence storage key."));
+    }
+    let rel = Path::new(trimmed);
+    if rel.is_absolute() {
+        return Err(DomainError::validation(
+            "Storage path traversal attempt rejected.",
+        ));
+    }
+    let mut segments = Vec::new();
+    for comp in rel.components() {
+        match comp {
+            Component::Normal(seg) => {
+                let s = seg.to_str().ok_or_else(|| {
+                    DomainError::validation("Invalid UTF-8 in evidence storage key.")
+                })?;
+                segments.push(s.to_string());
+            }
+            _ => {
+                return Err(DomainError::validation(
+                    "Storage path traversal attempt rejected.",
+                ));
+            }
+        }
+    }
+    if segments.is_empty() {
+        return Err(DomainError::validation("Invalid evidence storage key."));
+    }
+    Ok(segments)
+}
 
 pub struct LocalEvidenceStorageAdapter {
     root_dir: PathBuf,
@@ -37,26 +148,10 @@ impl LocalEvidenceStorageAdapter {
     }
 
     fn resolve_within_root(&self, storage_key: &str) -> Result<PathBuf, DomainError> {
-        let trimmed = storage_key.trim();
-        if trimmed.is_empty() || trimmed.contains("..") || trimmed.contains('\\') {
-            return Err(DomainError::validation("Invalid evidence storage key."));
-        }
-        let rel = Path::new(trimmed);
-        if rel.is_absolute() {
-            return Err(DomainError::validation(
-                "Storage path traversal attempt rejected.",
-            ));
-        }
+        let segments = validate_storage_key(storage_key)?;
         let mut target = self.root_dir.clone();
-        for comp in rel.components() {
-            match comp {
-                Component::Normal(seg) => target.push(seg),
-                _ => {
-                    return Err(DomainError::validation(
-                        "Storage path traversal attempt rejected.",
-                    ))
-                }
-            }
+        for seg in segments {
+            target.push(seg);
         }
         if !target.starts_with(&self.root_dir) {
             return Err(DomainError::validation(
@@ -65,100 +160,18 @@ impl LocalEvidenceStorageAdapter {
         }
         Ok(target)
     }
-}
 
-#[async_trait]
-impl EvidenceStoragePort for LocalEvidenceStorageAdapter {
-    async fn store(
-        &self,
-        dispute_id: i64,
-        original_filename: &str,
-        declared_mime_type: Option<&str>,
-        bytes: &[u8],
-    ) -> Result<StoredAttachment, DomainError> {
-        if bytes.is_empty() {
-            return Err(DomainError::validation("Evidence file is empty."));
-        }
-        if bytes.len() > self.max_bytes {
-            return Err(DomainError::validation(format!(
-                "Evidence attachment exceeds max allowed bytes ({}).",
-                self.max_bytes
-            )));
-        }
-
-        let mime = declared_mime_type
-            .unwrap_or("")
-            .trim()
-            .to_ascii_lowercase();
-        let extension = extension_for_mime(&mime).ok_or_else(|| {
-            DomainError::validation(
-                "Unsupported evidence MIME type. Allowed: image/png, image/jpeg, application/pdf, text/plain.",
-            )
-        })?;
-
-        if !matches_magic_signature(&mime, bytes) {
-            return Err(DomainError::validation(format!(
-                "File contents do not match declared MIME type ({mime})."
-            )));
-        }
-
-        let safe_original = sanitize_filename(original_filename, extension);
-        let key = format!("{dispute_id}/{}{}", Uuid::new_v4(), extension);
-        let target = self.resolve_within_root(&key)?;
-        let canonical_root = std::fs::canonicalize(&self.root_dir)
-            .map_err(|e| DomainError::internal(format!("Evidence storage root unavailable: {e}")))?;
-
-        if let Some(parent) = target.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .map_err(|e| DomainError::internal(format!("Failed to prepare evidence dir: {e}")))?;
-            let canonical_parent = std::fs::canonicalize(parent)
-                .map_err(|e| DomainError::internal(format!("Failed to verify evidence dir: {e}")))?;
-            if !canonical_parent.starts_with(&canonical_root) {
-                return Err(DomainError::validation(
-                    "Storage path traversal attempt rejected.",
-                ));
-            }
-        }
-        tokio::fs::write(&target, bytes)
-            .await
-            .map_err(|e| DomainError::internal(format!("Failed to persist dispute evidence file: {e}")))?;
-
-        let sha256_hex = hex::encode(Sha256::digest(bytes));
-        Ok(StoredAttachment {
-            sanitized_file_name: safe_original,
-            mime_type: mime,
-            size_bytes: bytes.len() as i64,
-            sha256_hex,
-            storage_key: key,
-        })
-    }
-
-    async fn load(&self, storage_key: &str) -> Result<Vec<u8>, DomainError> {
-        let target = self.resolve_attachment_path(storage_key)?;
-        tokio::fs::read(&target)
-            .await
-            .map_err(|e| DomainError::internal(format!("Unable to read stored evidence file: {e}")))
-    }
-
-    async fn delete_best_effort(&self, storage_key: &str) {
-        if let Ok(target) = self.resolve_within_root(storage_key) {
-            if let Ok(meta) = tokio::fs::symlink_metadata(&target).await {
-                if !meta.file_type().is_symlink() {
-                    let _ = tokio::fs::remove_file(&target).await;
-                }
-            }
-        }
-    }
-
-    fn resolve_attachment_path(&self, storage_key: &str) -> Result<PathBuf, DomainError> {
+    pub fn resolve_attachment_path(&self, storage_key: &str) -> Result<PathBuf, DomainError> {
         let target = self.resolve_within_root(storage_key)?;
-        let canonical_root = std::fs::canonicalize(&self.root_dir)
-            .map_err(|e| DomainError::internal(format!("Evidence storage root unavailable: {e}")))?;
+        let canonical_root = std::fs::canonicalize(&self.root_dir).map_err(|e| {
+            DomainError::internal(format!("Evidence storage root unavailable: {e}"))
+        })?;
         match std::fs::symlink_metadata(&target) {
             Ok(_) => {}
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                return Err(DomainError::not_found("Evidence file missing from storage."));
+                return Err(DomainError::not_found(
+                    "Evidence file missing from storage.",
+                ));
             }
             Err(err) => {
                 return Err(DomainError::internal(format!(
@@ -180,14 +193,103 @@ impl EvidenceStoragePort for LocalEvidenceStorageAdapter {
         }
         match std::fs::metadata(&canonical_target) {
             Ok(meta) if meta.is_file() => Ok(canonical_target),
-            _ => Err(DomainError::not_found("Evidence file missing from storage.")),
+            _ => Err(DomainError::not_found(
+                "Evidence file missing from storage.",
+            )),
+        }
+    }
+}
+
+#[async_trait]
+impl EvidenceStoragePort for LocalEvidenceStorageAdapter {
+    async fn store(
+        &self,
+        dispute_id: i64,
+        original_filename: &str,
+        declared_mime_type: Option<&str>,
+        bytes: &[u8],
+    ) -> Result<StoredAttachment, DomainError> {
+        let validated = validate_evidence_payload(
+            dispute_id,
+            original_filename,
+            declared_mime_type,
+            bytes,
+            self.max_bytes,
+        )?;
+        let target = self.resolve_within_root(&validated.storage_key)?;
+        let canonical_root = std::fs::canonicalize(&self.root_dir).map_err(|e| {
+            DomainError::internal(format!("Evidence storage root unavailable: {e}"))
+        })?;
+
+        if let Some(parent) = target.parent() {
+            tokio::fs::create_dir_all(parent).await.map_err(|e| {
+                DomainError::internal(format!("Failed to prepare evidence dir: {e}"))
+            })?;
+            let canonical_parent = std::fs::canonicalize(parent).map_err(|e| {
+                DomainError::internal(format!("Failed to verify evidence dir: {e}"))
+            })?;
+            if !canonical_parent.starts_with(&canonical_root) {
+                return Err(DomainError::validation(
+                    "Storage path traversal attempt rejected.",
+                ));
+            }
+        }
+        tokio::fs::write(&target, bytes).await.map_err(|e| {
+            DomainError::internal(format!("Failed to persist dispute evidence file: {e}"))
+        })?;
+
+        Ok(StoredAttachment {
+            sanitized_file_name: validated.sanitized_file_name,
+            mime_type: validated.mime_type,
+            size_bytes: validated.size_bytes,
+            sha256_hex: validated.sha256_hex,
+            storage_key: validated.storage_key,
+        })
+    }
+
+    async fn load(&self, storage_key: &str) -> Result<Vec<u8>, DomainError> {
+        let target = self.resolve_attachment_path(storage_key)?;
+        tokio::fs::read(&target)
+            .await
+            .map_err(|e| DomainError::internal(format!("Unable to read stored evidence file: {e}")))
+    }
+
+    async fn open_download(
+        &self,
+        storage_key: &str,
+    ) -> Result<EvidenceDownloadPayload, DomainError> {
+        let path = self.resolve_attachment_path(storage_key)?;
+        Ok(EvidenceDownloadPayload::LocalFile(path))
+    }
+
+    async fn delete_best_effort(&self, storage_key: &str) {
+        if let Ok(target) = self.resolve_within_root(storage_key) {
+            if let Ok(meta) = tokio::fs::symlink_metadata(&target).await {
+                if !meta.file_type().is_symlink() {
+                    let _ = tokio::fs::remove_file(&target).await;
+                }
+            }
         }
     }
 
-    fn is_storage_ready(&self) -> bool {
-        match std::fs::metadata(&self.root_dir) {
-            Ok(meta) => meta.is_dir() && !meta.permissions().readonly(),
-            Err(_) => false,
+    async fn is_storage_ready(&self) -> bool {
+        match tokio::fs::metadata(&self.root_dir).await {
+            Ok(meta) if meta.is_dir() && !meta.permissions().readonly() => {
+                let probe = self.root_dir.join(format!(".ready_{}", Uuid::new_v4()));
+                match tokio::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&probe)
+                    .await
+                {
+                    Ok(_) => {
+                        let _ = tokio::fs::remove_file(&probe).await;
+                        true
+                    }
+                    Err(_) => false,
+                }
+            }
+            _ => false,
         }
     }
 }
@@ -227,11 +329,7 @@ fn sanitize_filename(original: &str, fallback_ext: &str) -> String {
         return format!("evidence{fallback_ext}");
     }
     let normalized_slashes = original.replace('\\', "/");
-    let file_name = normalized_slashes
-        .rsplit('/')
-        .next()
-        .unwrap_or("")
-        .trim();
+    let file_name = normalized_slashes.rsplit('/').next().unwrap_or("").trim();
     let sanitized: String = file_name
         .chars()
         .map(|c| {
@@ -259,7 +357,9 @@ mod tests {
 
     fn adapter(dir: &Path, max_bytes: usize) -> LocalEvidenceStorageAdapter {
         LocalEvidenceStorageAdapter::new(&EvidenceConfig {
+            backend: EvidenceStorageBackend::Local,
             storage_dir: dir.to_string_lossy().into_owned(),
+            s3: None,
             max_bytes,
             max_request_bytes: max_bytes + 1024,
         })
@@ -286,7 +386,11 @@ mod tests {
 
         let loaded = storage.load(&stored.storage_key).await.unwrap();
         assert_eq!(loaded, png_bytes);
-        assert!(storage.is_storage_ready());
+        assert!(matches!(
+            storage.open_download(&stored.storage_key).await.unwrap(),
+            EvidenceDownloadPayload::LocalFile(_)
+        ));
+        assert!(storage.is_storage_ready().await);
     }
 
     #[tokio::test]

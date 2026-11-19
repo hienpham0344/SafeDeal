@@ -32,4 +32,5 @@ if [ -z "${JWT_SECRET:-}" ]; then
 fi
 
 echo "Starting SafeDeal Rust API (env=${PROFILE})..."
+cd "$ROOT_DIR/backend"
 exec cargo run --manifest-path "$ROOT_DIR/backend/Cargo.toml" --bin safedeal-api

@@ -27,13 +27,7 @@ impl HttpSessionCookieAdapter {
         }
     }
 
-    fn format_cookie(
-        &self,
-        name: &str,
-        value: &str,
-        max_age: i64,
-        http_only: bool,
-    ) -> String {
+    fn format_cookie(&self, name: &str, value: &str, max_age: i64, http_only: bool) -> String {
         let mut parts = vec![
             format!("{name}={value}"),
             "Path=/".to_string(),

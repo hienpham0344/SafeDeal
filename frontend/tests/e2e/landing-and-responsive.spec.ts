@@ -148,7 +148,30 @@ test.describe("Foldcraft Landing Preservation & Responsive Layout", () => {
     expect(pageErrors).toEqual([]);
   });
 
-  test("exhibits zero horizontal overflow across all core routes at the active viewport", async ({ page }) => {
+  test("exhibits zero horizontal overflow across all core routes at the active viewport", async ({
+    page,
+  }, testInfo) => {
+    const pageErrors: string[] = [];
+    const consoleErrors: string[] = [];
+    page.on("pageerror", (err) => pageErrors.push(err.message));
+    page.on("console", (msg) => {
+      if (msg.type() === "error") {
+        consoleErrors.push(msg.text());
+      }
+    });
+
+    await page.route("**/api/v1/auth/me", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          address: "0x0000000000000000000000000000000000000000",
+          chainId: 31337,
+          authenticatedAt: "2026-01-01T00:00:00Z",
+        }),
+      });
+    });
+
     await page.route("**/api/v1/health", async (route) => {
       await route.fulfill({
         status: 200,
@@ -166,6 +189,11 @@ test.describe("Foldcraft Landing Preservation & Responsive Layout", () => {
     for (const routePath of ROUTES_TO_AUDIT) {
       await page.goto(routePath);
       await page.waitForLoadState("domcontentloaded");
+      await expect(page.locator("h1")).toBeVisible();
+      if (routePath === "/support") {
+        await expect(page.getByText("Operational")).toBeVisible();
+      }
+
       const overflow = await page.evaluate(() => ({
         scrollWidth: document.documentElement.scrollWidth,
         innerWidth: window.innerWidth,
@@ -174,7 +202,24 @@ test.describe("Foldcraft Landing Preservation & Responsive Layout", () => {
         overflow.scrollWidth,
         `Horizontal overflow detected on ${routePath}: scrollWidth=${overflow.scrollWidth}, innerWidth=${overflow.innerWidth}`
       ).toBeLessThanOrEqual(overflow.innerWidth);
+
+      if (routePath !== "/") {
+        if (testInfo.project.name === "mobile") {
+          const mobileToggleBox = await page.getByRole("button", { name: "Open menu" }).boundingBox();
+          expect(mobileToggleBox).not.toBeNull();
+          expect(mobileToggleBox!.height).toBeGreaterThanOrEqual(44);
+          expect(mobileToggleBox!.width).toBeGreaterThanOrEqual(44);
+        }
+
+        const routeSlug = routePath.slice(1);
+        const screenshotPath = `test-results/visual-audit/${routeSlug}-${testInfo.project.name}.png`;
+        const bytes = await page.screenshot({ path: screenshotPath, fullPage: false });
+        assertValidPngScreenshot(bytes, screenshotPath);
+      }
     }
+
+    expect(pageErrors).toEqual([]);
+    expect(consoleErrors).toEqual([]);
   });
 
   test("mobile navigation drawer toggles open and closes smoothly via Close button and navigation", async ({
@@ -209,5 +254,22 @@ test.describe("Foldcraft Landing Preservation & Responsive Layout", () => {
     await expect(page).toHaveURL(/\/how-it-works$/);
     await expect(page.getByRole("heading", { name: "How SafeDeal Works" })).toBeVisible();
     await expect(page.locator("nav[aria-label='Mobile']")).toHaveCount(0);
+
+    const appShellMenuButton = page.getByRole("button", { name: "Open menu" });
+    const appShellToggleBox = await appShellMenuButton.boundingBox();
+    expect(appShellToggleBox).not.toBeNull();
+    expect(appShellToggleBox!.height).toBeGreaterThanOrEqual(44);
+    expect(appShellToggleBox!.width).toBeGreaterThanOrEqual(44);
+
+    await appShellMenuButton.click();
+    const appShellMobileNav = page.locator("nav[aria-label='Mobile']");
+    await expect(appShellMobileNav).toBeVisible();
+    const mobileNavItems = await appShellMobileNav.locator("a, button").all();
+    expect(mobileNavItems.length).toBeGreaterThanOrEqual(5);
+    for (const item of mobileNavItems) {
+      const box = await item.boundingBox();
+      expect(box).not.toBeNull();
+      expect(box!.height).toBeGreaterThanOrEqual(44);
+    }
   });
 });

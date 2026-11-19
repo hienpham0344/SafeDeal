@@ -410,6 +410,7 @@ export function SeamlessHeroVideo({
         const onSwapError = () => {
           cleanupSwapListeners();
           swapInFlight = false;
+          if (disposed) return;
           video.src = src;
           video.load();
         };
@@ -562,6 +563,7 @@ export function SeamlessHeroVideo({
       rafId = requestAnimationFrame(tick);
     };
 
+    let endedMetaHandler: (() => void) | null = null;
     const handleEnded = () => {
       if (disposed) return;
       if (phase === "native") {
@@ -569,11 +571,17 @@ export function SeamlessHeroVideo({
           finishCapture();
         }
         if (resolvedBlobUrl && video.getAttribute("src") !== resolvedBlobUrl) {
+          if (endedMetaHandler) {
+            video.removeEventListener("loadedmetadata", endedMetaHandler);
+          }
           const onMeta = () => {
             video.removeEventListener("loadedmetadata", onMeta);
+            endedMetaHandler = null;
+            if (disposed) return;
             video.currentTime = 0;
             void safePlay();
           };
+          endedMetaHandler = onMeta;
           video.addEventListener("loadedmetadata", onMeta);
           video.src = resolvedBlobUrl;
           video.load();
@@ -627,6 +635,10 @@ export function SeamlessHeroVideo({
       resizeObserver?.disconnect();
       video.removeEventListener("canplay", handleCanPlay);
       video.removeEventListener("ended", handleEnded);
+      if (endedMetaHandler) {
+        video.removeEventListener("loadedmetadata", endedMetaHandler);
+        endedMetaHandler = null;
+      }
       document.removeEventListener("visibilitychange", handleVisibilityChange);
       releaseDecodedBitmaps();
       frames.length = 0;

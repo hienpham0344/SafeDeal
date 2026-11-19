@@ -10,10 +10,7 @@ async fn append_audit_conn(
     conn: &mut PgConnection,
     entry: &AuditLogEntry,
 ) -> Result<(), DomainError> {
-    let actor = entry
-        .actor_address
-        .as_deref()
-        .map(str::to_ascii_lowercase);
+    let actor = entry.actor_address.as_deref().map(str::to_ascii_lowercase);
     sqlx::query(
         r#"
         INSERT INTO audit_logs (

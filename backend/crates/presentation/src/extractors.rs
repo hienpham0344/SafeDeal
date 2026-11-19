@@ -25,9 +25,7 @@ where
             .cloned()
             .map(Self)
             .ok_or_else(|| {
-                ApiError::from(DomainError::unauthorized(
-                    "Wallet authentication required.",
-                ))
+                ApiError::from(DomainError::unauthorized("Wallet authentication required."))
             })
     }
 }
@@ -59,9 +57,7 @@ where
             return Err(ApiError::malformed_json());
         }
         let parsed: T = serde_json::from_slice(&bytes).map_err(|_| ApiError::malformed_json())?;
-        parsed
-            .validate()
-            .map_err(ApiError::validation_fields)?;
+        parsed.validate().map_err(ApiError::validation_fields)?;
         Ok(Self(parsed))
     }
 }

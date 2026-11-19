@@ -1,3 +1,5 @@
+pub use safedeal_shared::validation::trim_js_whitespace;
+use safedeal_shared::ZERO_ADDRESS;
 use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,31 +24,6 @@ pub struct CanonicalResult {
     pub terms_hash_hex: String,
 }
 
-/// Matches ECMAScript `String.prototype.trim()` whitespace code points (excluding `U+0085` NEL,
-/// which Rust's `char::is_whitespace` strips by default).
-pub fn trim_js_whitespace(value: &str) -> &str {
-    value.trim_matches(|c: char| {
-        matches!(
-            c,
-            '\u{0009}'
-                | '\u{000A}'
-                | '\u{000B}'
-                | '\u{000C}'
-                | '\u{000D}'
-                | '\u{0020}'
-                | '\u{00A0}'
-                | '\u{1680}'
-                | '\u{2000}'..='\u{200A}'
-                | '\u{2028}'
-                | '\u{2029}'
-                | '\u{202F}'
-                | '\u{205F}'
-                | '\u{3000}'
-                | '\u{FEFF}'
-        )
-    })
-}
-
 /// Deterministic RFC 8785 / ECMAScript `JSON.stringify`-compatible canonical JSON serializer
 /// matching frontend `canonical-terms.ts` and legacy Java `CanonicalTermsHasher` byte-for-byte.
 pub struct CanonicalTermsHasher;
@@ -67,9 +44,21 @@ impl CanonicalTermsHasher {
             .buyer
             .map(trim_js_whitespace)
             .filter(|b| !b.is_empty())
-            .map(|b| b.to_ascii_lowercase());
+            .map(|b| b.to_ascii_lowercase())
+            .filter(|b| b != ZERO_ADDRESS);
         let normalized_arbiter = trim_js_whitespace(input.arbiter).to_ascii_lowercase();
-        let normalized_amount_wei = trim_js_whitespace(input.amount_wei);
+        let raw_amount_wei = trim_js_whitespace(input.amount_wei);
+        let normalized_amount_wei =
+            if !raw_amount_wei.is_empty() && raw_amount_wei.bytes().all(|b| b.is_ascii_digit()) {
+                let stripped = raw_amount_wei.trim_start_matches('0');
+                if stripped.is_empty() {
+                    "0"
+                } else {
+                    stripped
+                }
+            } else {
+                raw_amount_wei
+            };
         let normalized_title = trim_js_whitespace(input.title);
         let normalized_description = trim_js_whitespace(input.description);
         let normalized_terms = trim_js_whitespace(input.terms);
@@ -272,5 +261,39 @@ mod tests {
         assert!(json.contains("\"title\":\"Trimmed Like JS\""));
         assert!(json.contains("\"description\":\"\u{0085}NEL kept like ECMAScript\""));
         assert!(json.contains("\"terms\":\"Standard\""));
+    }
+
+    #[test]
+    fn normalizes_zero_buyer_address_to_null_and_strips_leading_zeros_from_amount_wei() {
+        let with_zero_buyer_and_padded_amount = CanonicalInput {
+            version: 1,
+            chain_id: 43113,
+            seller: "0x70997970c51812dc3a010c7d01b50e0d17dc79c8",
+            buyer: Some("0x0000000000000000000000000000000000000000"),
+            arbiter: "0x90f79bf6eb2c4f870365e785982e1f101e93b906",
+            amount_wei: "0001500000000000000000",
+            funding_deadline: 1800000000,
+            delivery_deadline: 1800086400,
+            inspection_window_seconds: 259200,
+            title: "Hardware Wallet Sale",
+            description: "Sealed device with tracking",
+            terms: "Shipped within 24 hours",
+        };
+        let canonical_none = CanonicalInput {
+            buyer: None,
+            amount_wei: "1500000000000000000",
+            ..with_zero_buyer_and_padded_amount.clone()
+        };
+        let r1 = CanonicalTermsHasher::compute(&with_zero_buyer_and_padded_amount);
+        let r2 = CanonicalTermsHasher::compute(&canonical_none);
+        assert_eq!(r1.canonical_json, r2.canonical_json);
+        assert_eq!(r1.terms_hash_hex, r2.terms_hash_hex);
+
+        let all_zeros = CanonicalInput {
+            amount_wei: "0000",
+            ..canonical_none
+        };
+        assert!(CanonicalTermsHasher::serialize_canonical_json(&all_zeros)
+            .contains("\"amountWei\":\"0\""));
     }
 }

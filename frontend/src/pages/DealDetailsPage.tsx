@@ -5,8 +5,10 @@ import { zeroAddress } from "viem";
 import { AppShell } from "@/components/layout/AppShell";
 import { AlertBanner, EmptyState, LoadingState, Panel, StatusBadge } from "@/components/ui/Primitives";
 import { Button } from "@/components/ui/Button";
+import { CopyableHash } from "@/components/ui/CopyableHash";
+import { DealLifecycleStepper } from "@/components/ui/DealLifecycleStepper";
 import { getExplorerAddressUrl, getExplorerTxUrl } from "@/config/network.config";
-import { disputePath } from "@/config/routes";
+import { disputePath, ROUTES } from "@/config/routes";
 import { useAuthSession } from "@/features/authentication/hooks/useAuthSession";
 import {
   useBindDealTxMutation,
@@ -51,7 +53,7 @@ export function DealDetailsPage() {
   const navigate = useNavigate();
   const tradeId = id as `0x${string}` | undefined;
 
-  const { address, isConnected, isAuthenticated, openWalletModal, signInWithWallet } = useAuthSession();
+  const { address, isConnected, isWrongNetwork, isAuthenticated, openWalletModal, signInWithWallet } = useAuthSession();
   const dealQuery = useDealQuery(tradeId, isAuthenticated);
   const historyQuery = useDealHistoryQuery(tradeId, isAuthenticated);
   const syncMutation = useSyncDealMutation();
@@ -66,13 +68,16 @@ export function DealDetailsPage() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionSuccess, setActionSuccess] = useState<string | null>(null);
   const [verifiedTermsHash, setVerifiedTermsHash] = useState<string | null>(null);
+  const [termsHashError, setTermsHashError] = useState(false);
+  const [isRecoveringPending, setIsRecoveringPending] = useState(false);
+  const [nowSeconds, setNowSeconds] = useState(() => Math.floor(Date.now() / 1000));
   const [disputeReason, setDisputeReason] = useState("");
   const [disputeSummary, setDisputeSummary] = useState("");
   const [showDisputeForm, setShowDisputeForm] = useState(false);
 
   const deal = dealQuery.data;
 
-  const { waitForHash } = executor;
+  const { waitForHash, clearTxError } = executor;
   const { mutateAsync: bindDealTxAsync } = bindTxMutation;
   const { mutateAsync: syncDealAsync } = syncMutation;
 
@@ -92,28 +97,43 @@ export function DealDetailsPage() {
   }, []);
 
   useEffect(() => {
+    const timer = window.setInterval(() => {
+      setNowSeconds(Math.floor(Date.now() / 1000));
+    }, 5_000);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  useEffect(() => {
     recoveredPendingHashRef.current = null;
     setActionError(null);
     setActionSuccess(null);
-  }, [tradeId]);
+    clearTxError();
+  }, [address, clearTxError, tradeId]);
+
+  const pendingTxHash = pendingTx?.txHash ?? null;
+  const pendingTxAction = pendingTx?.action ?? null;
 
   // Resume pending tx waiting only after browser reload (never duplicate active in-mount submissions)
   useEffect(() => {
-    if (!pendingTx) {
+    if (!pendingTxHash || !pendingTxAction) {
       recoveredPendingHashRef.current = null;
       return;
     }
-    if (!tradeId || !isAuthenticated) return;
-    if (inFlightActionRef.current || recoveredPendingHashRef.current === pendingTx.txHash) return;
+    if (!tradeId || !isConnected || isWrongNetwork || !isAuthenticated) return;
+    if (inFlightActionRef.current || recoveredPendingHashRef.current === pendingTxHash) return;
 
-    recoveredPendingHashRef.current = pendingTx.txHash;
-    const targetTxHash = pendingTx.txHash;
-    const targetAction = pendingTx.action;
+    let cancelled = false;
+    recoveredPendingHashRef.current = pendingTxHash;
+    const targetTxHash = pendingTxHash;
+    const targetAction = pendingTxAction;
+    setIsRecoveringPending(true);
 
     void (async () => {
       try {
         const result = await waitForHash(targetTxHash);
-        if (!mountedRef.current) return;
+        if (cancelled || !mountedRef.current) return;
 
         if (targetAction === "createTrade") {
           await bindDealTxAsync({ tradeId, txHash: result.txHash });
@@ -121,28 +141,41 @@ export function DealDetailsPage() {
           await syncDealAsync({ tradeId, txHash: result.txHash });
         }
 
-        if (!mountedRef.current) return;
+        if (cancelled || !mountedRef.current) return;
         await Promise.all([refetchOnChainRef.current(), refetchClaimableRef.current()]);
         clearPending();
         recoveredPendingHashRef.current = null;
-        if (mountedRef.current) {
+        if (!cancelled && mountedRef.current) {
           setActionSuccess(`Pending ${targetAction} transaction confirmed (${result.txHash}).`);
         }
       } catch (err) {
-        if (!mountedRef.current) return;
+        if (cancelled || !mountedRef.current) return;
         const message = err instanceof Error ? err.message : "Pending transaction failed.";
         if (shouldClearFailedPendingTx(message)) {
           clearPending();
           recoveredPendingHashRef.current = null;
+        } else {
+          recoveredPendingHashRef.current = null;
         }
         setActionError(message);
+      } finally {
+        if (!cancelled && mountedRef.current) {
+          setIsRecoveringPending(false);
+        }
       }
     })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [
     bindDealTxAsync,
     clearPending,
     isAuthenticated,
-    pendingTx,
+    isConnected,
+    isWrongNetwork,
+    pendingTxAction,
+    pendingTxHash,
     syncDealAsync,
     tradeId,
     waitForHash,
@@ -152,11 +185,26 @@ export function DealDetailsPage() {
   useEffect(() => {
     if (!deal) return;
     let active = true;
+    setVerifiedTermsHash(null);
+    setTermsHashError(false);
+
+    let canonicalBuyer = deal.buyer;
+    if (deal.canonicalTermsJson) {
+      try {
+        const parsed = JSON.parse(deal.canonicalTermsJson) as { buyer?: string | null };
+        if (parsed && parsed.buyer === null) {
+          canonicalBuyer = null;
+        }
+      } catch {
+        // Fallback to deal.buyer if canonicalTermsJson is not valid JSON
+      }
+    }
+
     void computeCanonicalTermsHash({
       version: 1,
       chainId: deal.chainId,
       seller: deal.seller,
-      buyer: deal.buyer,
+      buyer: canonicalBuyer,
       arbiter: deal.arbiter,
       amountWei: deal.amountWei,
       fundingDeadline: Math.floor(Date.parse(deal.fundingDeadline) / 1000),
@@ -165,9 +213,13 @@ export function DealDetailsPage() {
       title: deal.title,
       description: deal.description,
       terms: deal.terms,
-    }).then((res) => {
-      if (active) setVerifiedTermsHash(res.termsHash);
-    });
+    })
+      .then((res) => {
+        if (active) setVerifiedTermsHash(res.termsHash);
+      })
+      .catch(() => {
+        if (active) setTermsHashError(true);
+      });
     return () => {
       active = false;
     };
@@ -181,30 +233,42 @@ export function DealDetailsPage() {
 
   const effectiveStatus = onChainStatus && onChainStatus !== "NONE" ? onChainStatus : deal?.status;
 
+  const onChainBuyer =
+    onChainQuery.data?.buyer && onChainQuery.data.buyer.toLowerCase() !== zeroAddress
+      ? onChainQuery.data.buyer
+      : null;
+  const effectiveBuyer = deal?.buyer ?? onChainBuyer;
+
   const me = address?.toLowerCase();
   const isSeller = Boolean(me && deal && deal.seller.toLowerCase() === me);
-  const isBuyer = Boolean(me && deal?.buyer && deal.buyer.toLowerCase() === me);
+  const isBuyer = Boolean(me && effectiveBuyer && effectiveBuyer.toLowerCase() === me);
   const isArbiter = Boolean(me && deal && deal.arbiter.toLowerCase() === me);
   const isOpenBuyerEligible = Boolean(
-    me && deal && !deal.buyer && !isSeller && !isArbiter
+    me && deal && !effectiveBuyer && !isSeller && !isArbiter
   );
 
-  const nowSeconds = Math.floor(Date.now() / 1000);
   const fundingDeadlineEpoch = deal ? Math.floor(Date.parse(deal.fundingDeadline) / 1000) : 0;
   const deliveryDeadlineEpoch = deal ? Math.floor(Date.parse(deal.deliveryDeadline) / 1000) : 0;
-  const deliveredAtEpoch = deal?.deliveredAt ? Math.floor(Date.parse(deal.deliveredAt) / 1000) : 0;
+  const onChainDeliveredAtEpoch = onChainQuery.data ? Number(onChainQuery.data.deliveredAt) : 0;
+  const deliveredAtEpoch =
+    onChainDeliveredAtEpoch > 0
+      ? onChainDeliveredAtEpoch
+      : deal?.deliveredAt
+        ? Math.floor(Date.parse(deal.deliveredAt) / 1000)
+        : 0;
   const sellerDisputeUnlockEpoch = deal ? deliveredAtEpoch + deal.inspectionWindowSeconds : 0;
 
   const termsHashVerified = useMemo(() => {
     if (!deal || !verifiedTermsHash) return false;
     return verifiedTermsHash.toLowerCase() === deal.termsHash.toLowerCase();
   }, [deal, verifiedTermsHash]);
+  const termsHashMismatch = Boolean((verifiedTermsHash && !termsHashVerified) || termsHashError);
 
   async function runAndSync(
     actionName: string,
     fn: (onHash: (hash: `0x${string}`) => void) => Promise<{ txHash: `0x${string}` }>
   ) {
-    if (!tradeId) return;
+    if (!tradeId || inFlightActionRef.current) return;
     setActionError(null);
     setActionSuccess(null);
     inFlightActionRef.current = true;
@@ -243,6 +307,7 @@ export function DealDetailsPage() {
   }
 
   async function handleWithdraw() {
+    if (inFlightActionRef.current) return;
     setActionError(null);
     setActionSuccess(null);
     inFlightActionRef.current = true;
@@ -279,6 +344,7 @@ export function DealDetailsPage() {
     if (!deal) return;
     setActionError(null);
     setActionSuccess(null);
+    clearTxError();
     try {
       if (pendingTx?.action === "createTrade" && !deal.onChainBound) {
         await bindDealTxAsync({ tradeId: deal.tradeId, txHash: pendingTx.txHash });
@@ -305,8 +371,15 @@ export function DealDetailsPage() {
     e.preventDefault();
     if (!tradeId || !deal || inFlightActionRef.current) return;
     setActionError(null);
-    if (disputeReason.trim().length < 5 || disputeSummary.trim().length < 10) {
+    clearTxError();
+    const trimmedReason = disputeReason.trim();
+    const trimmedSummary = disputeSummary.trim();
+    if (trimmedReason.length < 5 || trimmedSummary.length < 10) {
       setActionError("Enter a clear dispute reason (5+ chars) and summary (10+ chars).");
+      return;
+    }
+    if (trimmedReason.length > 200 || trimmedSummary.length > 4000) {
+      setActionError("Dispute reason (max 200 chars) or summary (max 4,000 chars) is too long.");
       return;
     }
 
@@ -330,20 +403,18 @@ export function DealDetailsPage() {
         txHash = res.txHash;
         confirmedTxHash = txHash;
         await syncDealAsync({ tradeId, txHash });
-        clearPending();
-        recoveredPendingHashRef.current = null;
       }
       const dispute = await createDisputeMutation.mutateAsync({
         tradeId,
-        reason: disputeReason.trim(),
-        summary: disputeSummary.trim(),
+        reason: trimmedReason,
+        summary: trimmedSummary,
         txHash,
       });
-      if (pendingTx?.action === "openDispute") {
-        clearPending();
-        recoveredPendingHashRef.current = null;
+      clearPending();
+      recoveredPendingHashRef.current = null;
+      if (mountedRef.current) {
+        navigate(disputePath(String(dispute.id)));
       }
-      navigate(disputePath(String(dispute.id)));
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to open dispute.";
       if (!confirmedTxHash && (!submittedTxHash || shouldClearFailedPendingTx(message))) {
@@ -364,6 +435,7 @@ export function DealDetailsPage() {
     <AppShell
       title={deal ? deal.title : "Deal Details"}
       subtitle={tradeId ? `Trade ID: ${tradeId}` : undefined}
+      breadcrumb={{ label: "My Deals", to: ROUTES.dashboard }}
     >
       {!isConnected ? (
         <EmptyState
@@ -416,11 +488,16 @@ export function DealDetailsPage() {
             />
           )}
 
+          <DealLifecycleStepper
+            status={effectiveStatus ?? deal.status}
+            deliveredAt={deal.deliveredAt}
+          />
+
           <div className="grid gap-6 lg:grid-cols-3">
             <Panel className="lg:col-span-2 space-y-6">
-              <div className="flex flex-wrap items-start justify-between gap-4 border-b border-white/10 pb-4">
-                <div>
-                  <div className="flex flex-wrap items-center gap-2">
+              <div className="flex flex-wrap items-start justify-between gap-4 border-b border-sd-line pb-4">
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2.5">
                     <StatusBadge status={deal.status} />
                     {onChainStatus && onChainStatus !== deal.status && (
                       <span className="text-xs text-amber-300">
@@ -428,7 +505,11 @@ export function DealDetailsPage() {
                       </span>
                     )}
                   </div>
-                  <p className="mt-3 text-sm leading-relaxed text-white/80">{deal.description}</p>
+                  <div className="mt-2.5 flex flex-wrap items-center gap-2 text-xs text-sd-inkSubtle">
+                    <span>Trade ID:</span>
+                    <CopyableHash value={deal.tradeId} label="Trade ID" className="text-xs" />
+                  </div>
+                  <p className="mt-3 text-sm leading-relaxed text-sd-inkMuted">{deal.description}</p>
                 </div>
 
                 <Button
@@ -437,28 +518,30 @@ export function DealDetailsPage() {
                   disabled={syncMutation.isPending}
                   onClick={() => void handleManualSync()}
                 >
-                  <RefreshCw size={14} />
+                  <RefreshCw size={14} className={syncMutation.isPending ? "animate-spin" : ""} aria-hidden="true" />
                   <span>{syncMutation.isPending ? "Syncing..." : "Sync On-Chain"}</span>
                 </Button>
               </div>
 
               <div>
-                <h2 className="text-sm font-medium text-white">Agreed Terms & Acceptance Criteria</h2>
-                <pre className="mt-2 whitespace-pre-wrap rounded-xl border border-white/10 bg-black p-4 font-geist text-sm text-white/80">
+                <h2 className="text-sm font-medium text-white">Agreed Terms &amp; Acceptance Criteria</h2>
+                <pre className="mt-2 whitespace-pre-wrap rounded-xl border border-sd-line bg-sd-inset p-4 font-geist text-sm leading-relaxed text-sd-ink">
                   {deal.terms}
                 </pre>
-                <p className="mt-2 text-xs text-white/50">
-                  Canonical Terms Hash:{" "}
-                  <code className="font-mono text-white/80">{deal.termsHash}</code>{" "}
+                <div className="mt-2.5 flex flex-wrap items-center gap-2 text-xs text-sd-inkMuted">
+                  <span>Canonical Terms Hash:</span>
+                  <CopyableHash value={deal.termsHash} label="Terms Hash" className="text-xs" />
                   {termsHashVerified ? (
                     <span className="text-emerald-300">(client SHA-256 verified)</span>
+                  ) : termsHashMismatch ? (
+                    <span className="text-rose-300">(terms hash mismatch!)</span>
                   ) : (
                     <span className="text-amber-300">(verifying...)</span>
                   )}
-                </p>
+                </div>
               </div>
 
-              <div className="space-y-3 border-t border-white/10 pt-5">
+              <div className="space-y-3 border-t border-sd-line pt-5">
                 <h2 className="text-sm font-medium text-white">Available Actions</h2>
 
                 <div className="flex flex-wrap gap-3">
@@ -489,7 +572,13 @@ export function DealDetailsPage() {
 
                   {effectiveStatus === "CREATED" && (isBuyer || isOpenBuyerEligible) && nowSeconds <= fundingDeadlineEpoch && (
                     <Button
-                      disabled={Boolean(executor.activeAction) || syncMutation.isPending || bindTxMutation.isPending}
+                      disabled={
+                        Boolean(executor.activeAction) ||
+                        isRecoveringPending ||
+                        syncMutation.isPending ||
+                        bindTxMutation.isPending ||
+                        termsHashMismatch
+                      }
                       onClick={() =>
                         void runAndSync("fundTrade", (onHash) =>
                           executor.fundTrade(deal.tradeId, BigInt(deal.amountWei), onHash)
@@ -516,19 +605,31 @@ export function DealDetailsPage() {
 
                   {effectiveStatus === "FUNDED" && isSeller && (
                     <>
-                      <Button
-                        disabled={Boolean(executor.activeAction) || syncMutation.isPending || bindTxMutation.isPending}
-                        onClick={() =>
-                          void runAndSync("markDelivered", (onHash) =>
-                            executor.markDelivered(deal.tradeId, onHash)
-                          )
-                        }
-                      >
-                        Mark Delivered
-                      </Button>
+                      {nowSeconds <= deliveryDeadlineEpoch && (
+                        <Button
+                          disabled={
+                            Boolean(executor.activeAction) ||
+                            isRecoveringPending ||
+                            syncMutation.isPending ||
+                            bindTxMutation.isPending
+                          }
+                          onClick={() =>
+                            void runAndSync("markDelivered", (onHash) =>
+                              executor.markDelivered(deal.tradeId, onHash)
+                            )
+                          }
+                        >
+                          Mark Delivered
+                        </Button>
+                      )}
                       <Button
                         variant="secondary"
-                        disabled={Boolean(executor.activeAction) || syncMutation.isPending || bindTxMutation.isPending}
+                        disabled={
+                          Boolean(executor.activeAction) ||
+                          isRecoveringPending ||
+                          syncMutation.isPending ||
+                          bindTxMutation.isPending
+                        }
                         onClick={() =>
                           void runAndSync("refundBySeller", (onHash) =>
                             executor.refundBySeller(deal.tradeId, onHash)
@@ -562,13 +663,13 @@ export function DealDetailsPage() {
                         )
                       }
                     >
-                      Approve & Release Funds
+                      Approve &amp; Release Funds
                     </Button>
                   )}
 
                   {((effectiveStatus === "FUNDED" && (isBuyer || isSeller)) ||
                     (effectiveStatus === "DELIVERED" &&
-                      (isBuyer || (isSeller && nowSeconds > sellerDisputeUnlockEpoch)))) && (
+                      (isBuyer || (isSeller && deliveredAtEpoch > 0 && nowSeconds > sellerDisputeUnlockEpoch)))) && (
                     <Button
                       variant="danger"
                       disabled={Boolean(executor.activeAction) || syncMutation.isPending || createDisputeMutation.isPending}
@@ -582,7 +683,7 @@ export function DealDetailsPage() {
                   {deal.disputeId && (
                     <Link
                       to={disputePath(String(deal.disputeId))}
-                      className="inline-flex items-center rounded-lg border border-white/25 px-4 py-2 text-sm font-medium text-white hover:bg-white/10"
+                      className="inline-flex min-h-[40px] items-center rounded-lg border border-sd-lineStrong px-4 py-2 text-sm font-medium text-white transition-colors hover:border-white/30 hover:bg-white/10"
                     >
                       Open Dispute Center
                     </Link>
@@ -610,14 +711,14 @@ export function DealDetailsPage() {
                       value={disputeReason}
                       onChange={(e) => setDisputeReason(e.target.value)}
                       placeholder="Short reason (e.g. Deliverable incomplete)"
-                      className="w-full rounded-lg border border-white/20 bg-black px-3 py-2 text-sm text-white"
+                      className="w-full rounded-lg border border-sd-lineStrong bg-sd-inset px-3 py-2 text-sm text-white placeholder:text-sd-inkSubtle focus:border-sd-accent focus:outline-none focus:ring-1 focus:ring-sd-accent/40"
                     />
                     <textarea
                       rows={3}
                       value={disputeSummary}
                       onChange={(e) => setDisputeSummary(e.target.value)}
                       placeholder="Explain the dispute facts for the arbiter"
-                      className="w-full rounded-lg border border-white/20 bg-black px-3 py-2 text-sm text-white"
+                      className="w-full rounded-lg border border-sd-lineStrong bg-sd-inset px-3 py-2 text-sm text-white placeholder:text-sd-inkSubtle focus:border-sd-accent focus:outline-none focus:ring-1 focus:ring-sd-accent/40"
                     />
                     <div className="flex gap-2">
                       <Button
@@ -641,99 +742,120 @@ export function DealDetailsPage() {
               </div>
             </Panel>
 
-            <Panel className="space-y-4">
+            <Panel variant="inset" className="space-y-4">
               <h2 className="text-base font-medium text-white">Escrow Parameters</h2>
               <dl className="space-y-3 text-xs">
-                <div className="border-b border-white/10 pb-2">
-                  <dt className="text-white/45">Escrow Value</dt>
-                  <dd className="mt-1 font-mono text-base font-medium text-white">{formatAvax(deal.amountWei)}</dd>
+                <div className="border-b border-sd-line pb-2.5">
+                  <dt className="text-sd-inkSubtle">Escrow Value</dt>
+                  <dd className="mt-1 font-mono text-base font-semibold tabular-nums text-white">
+                    {formatAvax(deal.amountWei)}
+                  </dd>
                 </div>
-                <div className="border-b border-white/10 pb-2">
-                  <dt className="text-white/45">Seller</dt>
-                  <dd className="mt-1 font-mono break-all text-white/90">{deal.seller}</dd>
+                <div className="border-b border-sd-line pb-2.5">
+                  <dt className="text-sd-inkSubtle">Seller</dt>
+                  <dd className="mt-1 font-mono break-all text-sd-ink">{deal.seller}</dd>
                 </div>
-                <div className="border-b border-white/10 pb-2">
-                  <dt className="text-white/45">Buyer</dt>
-                  <dd className="mt-1 font-mono break-all text-white/90">
+                <div className="border-b border-sd-line pb-2.5">
+                  <dt className="text-sd-inkSubtle">Buyer</dt>
+                  <dd className="mt-1 font-mono break-all text-sd-ink">
                     {deal.buyer ?? "Open (any eligible buyer)"}
                   </dd>
                 </div>
-                <div className="border-b border-white/10 pb-2">
-                  <dt className="text-white/45">Human Arbiter</dt>
-                  <dd className="mt-1 font-mono break-all text-white/90">{deal.arbiter}</dd>
+                <div className="border-b border-sd-line pb-2.5">
+                  <dt className="text-sd-inkSubtle">Human Arbiter</dt>
+                  <dd className="mt-1 font-mono break-all text-sd-ink">{deal.arbiter}</dd>
                 </div>
-                <div className="border-b border-white/10 pb-2">
-                  <dt className="text-white/45">Funding Deadline</dt>
-                  <dd className="mt-1 text-white/85">{formatTimestamp(deal.fundingDeadline)}</dd>
+                <div className="border-b border-sd-line pb-2.5">
+                  <dt className="text-sd-inkSubtle">Funding Deadline</dt>
+                  <dd className="mt-1 tabular-nums text-sd-ink">{formatTimestamp(deal.fundingDeadline)}</dd>
                 </div>
-                <div className="border-b border-white/10 pb-2">
-                  <dt className="text-white/45">Delivery Deadline</dt>
-                  <dd className="mt-1 text-white/85">{formatTimestamp(deal.deliveryDeadline)}</dd>
+                <div className="border-b border-sd-line pb-2.5">
+                  <dt className="text-sd-inkSubtle">Delivery Deadline</dt>
+                  <dd className="mt-1 tabular-nums text-sd-ink">{formatTimestamp(deal.deliveryDeadline)}</dd>
                 </div>
                 <div>
-                  <dt className="text-white/45">Inspection Window</dt>
-                  <dd className="mt-1 text-white/85">{formatDurationSeconds(deal.inspectionWindowSeconds)}</dd>
+                  <dt className="text-sd-inkSubtle">Inspection Window</dt>
+                  <dd className="mt-1 tabular-nums text-sd-ink">
+                    {formatDurationSeconds(deal.inspectionWindowSeconds)}
+                  </dd>
                 </div>
               </dl>
 
               {deal.contractAddress && (
-                <div className="border-t border-white/10 pt-3 text-xs">
-                  <p className="text-white/45">Contract Address</p>
-                  {getExplorerAddressUrl(deal.contractAddress) ? (
-                    <a
-                      href={getExplorerAddressUrl(deal.contractAddress)!}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="mt-1 inline-flex items-center gap-1 font-mono text-white underline break-all"
-                    >
-                      <span>{deal.contractAddress}</span>
-                      <ExternalLink size={11} />
-                    </a>
-                  ) : (
-                    <p className="mt-1 font-mono break-all text-white/75">{deal.contractAddress}</p>
-                  )}
+                <div className="border-t border-sd-line pt-3 text-xs">
+                  <p className="text-sd-inkSubtle">Contract Address</p>
+                  <div className="mt-1 flex flex-wrap items-center gap-2">
+                    <CopyableHash
+                      value={deal.contractAddress}
+                      label="Contract Address"
+                      className="max-w-full text-xs"
+                    />
+                    {getExplorerAddressUrl(deal.contractAddress) && (
+                      <a
+                        href={getExplorerAddressUrl(deal.contractAddress)!}
+                        target="_blank"
+                        rel="noreferrer"
+                        aria-label="View contract on block explorer"
+                        className="inline-flex items-center gap-1 text-sd-inkMuted underline hover:text-white"
+                      >
+                        <span>Explorer</span>
+                        <ExternalLink size={11} aria-hidden="true" />
+                      </a>
+                    )}
+                  </div>
                 </div>
               )}
             </Panel>
           </div>
 
           <Panel className="space-y-4">
-            <h2 className="text-base font-medium text-white">Verified Timeline & Transactions</h2>
+            <h2 className="text-base font-medium text-white">Verified Timeline &amp; Transactions</h2>
             {historyQuery.isLoading ? (
-              <p className="text-sm text-white/50">Loading timeline...</p>
+              <p className="text-sm text-sd-inkMuted">Loading timeline...</p>
+            ) : historyQuery.isError ? (
+              <p className="text-sm text-rose-300">Failed to load timeline events.</p>
             ) : !historyQuery.data || historyQuery.data.events.length === 0 ? (
-              <p className="text-sm text-white/50">No verified events recorded yet.</p>
+              <p className="text-sm text-sd-inkMuted">No verified events recorded yet.</p>
             ) : (
-              <div className="space-y-3">
+              <ol className="relative ml-2 border-l border-sd-lineStrong pl-5 space-y-4">
                 {historyQuery.data.events.map((event) => {
                   const txUrl = event.txHash ? getExplorerTxUrl(event.txHash) : null;
                   return (
-                    <div
-                      key={event.id}
-                      className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-white/10 bg-black p-3.5 text-xs"
-                    >
-                      <div>
-                        <p className="font-medium text-white">{event.eventType}</p>
-                        <p className="mt-0.5 text-white/60">{event.details}</p>
+                    <li key={event.id} className="relative">
+                      <span
+                        className="absolute -left-[25px] top-4 h-2.5 w-2.5 rounded-full border border-emerald-400/70 bg-sd-canvas ring-4 ring-sd-surface"
+                        aria-hidden="true"
+                      />
+                      <div className="flex flex-wrap items-start justify-between gap-3 rounded-lg border border-sd-line bg-sd-inset p-3.5 text-xs">
+                        <div className="space-y-1">
+                          <p className="font-mono font-medium text-white">{event.eventType}</p>
+                          <p className="text-sd-inkMuted">{event.details}</p>
+                        </div>
+                        <div className="text-left sm:text-right text-sd-inkMuted">
+                          <p className="tabular-nums">{formatTimestamp(event.createdAt)}</p>
+                          {event.txHash && (
+                            <p className="mt-1 font-mono tabular-nums">
+                              {txUrl ? (
+                                <a
+                                  href={txUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="inline-flex items-center gap-1 underline hover:text-white"
+                                >
+                                  <span>{event.txHash.slice(0, 12)}...</span>
+                                  <ExternalLink size={10} aria-hidden="true" />
+                                </a>
+                              ) : (
+                                `${event.txHash.slice(0, 14)}...`
+                              )}
+                            </p>
+                          )}
+                        </div>
                       </div>
-                      <div className="text-right text-white/50">
-                        <p>{formatTimestamp(event.createdAt)}</p>
-                        {event.txHash && (
-                          <p className="mt-0.5 font-mono">
-                            {txUrl ? (
-                              <a href={txUrl} target="_blank" rel="noreferrer" className="underline hover:text-white">
-                                {event.txHash.slice(0, 12)}...
-                              </a>
-                            ) : (
-                              `${event.txHash.slice(0, 14)}...`
-                            )}
-                          </p>
-                        )}
-                      </div>
-                    </div>
+                    </li>
                   );
                 })}
-              </div>
+              </ol>
             )}
           </Panel>
         </div>

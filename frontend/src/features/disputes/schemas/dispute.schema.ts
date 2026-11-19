@@ -20,7 +20,8 @@ export function validateEvidenceFile(file: File | null | undefined): string | nu
     return `Attachment exceeds maximum size of ${Math.round(appConfig.evidence.maxBytes / (1024 * 1024))} MB.`;
   }
   const allowed: readonly string[] = appConfig.evidence.allowedMimeTypes;
-  if (!allowed.includes(file.type)) {
+  const isFallbackTxt = file.type === "" && file.name.toLowerCase().endsWith(".txt");
+  if (!allowed.includes(file.type) && !isFallbackTxt) {
     return "Unsupported file type. Allowed: PNG, JPEG, PDF, or plain text.";
   }
   return null;

@@ -1,12 +1,14 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { WalletModal } from "@/components/wallet/WalletModal";
 import { ArbiterPage } from "@/pages/ArbiterPage";
 import { CreateDealPage } from "@/pages/CreateDealPage";
 import { DashboardPage } from "@/pages/DashboardPage";
 import { DealDetailsPage } from "@/pages/DealDetailsPage";
+import { SupportPage } from "@/pages/SupportPage";
 import type { DealDetail, DealSummary, DisputeDetail } from "@/types/api";
 import { computeCanonicalTermsHash } from "@/utils/canonical-terms";
 
@@ -191,6 +193,7 @@ describe("SafeDeal Dashboard, DealDetails & Arbiter Pages", () => {
       isConnected: true,
       isWrongNetwork: false,
       isAuthenticated: true,
+      walletModalOpen: false,
     };
   });
 
@@ -563,11 +566,88 @@ describe("SafeDeal Dashboard, DealDetails & Arbiter Pages", () => {
     expect(window.sessionStorage.getItem(`safedeal:create-draft:${SELLER.toLowerCase()}`)).toBeNull();
   });
 
+  it("automatically expires and purges abandoned drafts older than 24 hours on CreateDealPage load", async () => {
+    const expiredTimestamp = new Date(Date.now() - 25 * 3600 * 1000).toISOString();
+    const { termsHash, canonicalJson } = await computeCanonicalTermsHash({
+      version: 1,
+      chainId: 31337,
+      seller: SELLER,
+      buyer: BUYER,
+      arbiter: ARBITER,
+      amountWei: "1000000000000000000",
+      fundingDeadline: 1893499200,
+      deliveryDeadline: 1894104000,
+      inspectionWindowSeconds: 72 * 3600,
+      title: "Stale Abandoned Deal Draft",
+      description: "This draft has exceeded the 24h retention window.",
+      terms: "Terms text.",
+    });
+
+    const draftPayload = {
+      tradeId: TRADE_ID,
+      termsHash,
+      contractAddress: CONTRACT_ADDR,
+      chainId: 31337,
+      deal: {
+        ...sampleDealDetail,
+        title: "Stale Abandoned Deal Draft",
+        description: "This draft has exceeded the 24h retention window.",
+        terms: "Terms text.",
+        canonicalTermsJson: canonicalJson,
+        amountWei: "1000000000000000000",
+        fundingDeadline: new Date(1893499200 * 1000).toISOString(),
+        deliveryDeadline: new Date(1894104000 * 1000).toISOString(),
+        inspectionWindowSeconds: 72 * 3600,
+        status: "DRAFT",
+        onChainBound: false,
+        createTxHash: null,
+      },
+    };
+
+    window.sessionStorage.setItem(
+      `safedeal:create-draft:${SELLER.toLowerCase()}`,
+      JSON.stringify({
+        sellerAddress: SELLER,
+        previewDraft: draftPayload,
+        clientTermsHash: termsHash,
+        submittedCreateTxHash: null,
+        updatedAt: expiredTimestamp,
+      })
+    );
+
+    renderWithQuery(<CreateDealPage />);
+
+    // Should NOT restore the draft, should render Step 1 form instead of Step 2 preview
+    expect(await screen.findByRole("button", { name: "Preview On-Chain Transaction" })).toBeInTheDocument();
+    expect(screen.queryByText("Stale Abandoned Deal Draft")).toBeNull();
+    // Storage should be cleared
+    expect(window.sessionStorage.getItem(`safedeal:create-draft:${SELLER.toLowerCase()}`)).toBeNull();
+  });
+
   it("synchronizes DealDetailsPage fundTrade exactly once without duplicate waitForHash and retains txHash across transient 503 failure", async () => {
     const user = userEvent.setup();
     const fundTxHash = "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" as const;
+    const { termsHash: verifiedTermsHash, canonicalJson } = await computeCanonicalTermsHash({
+      version: 1,
+      chainId: sampleDealDetail.chainId,
+      seller: sampleDealDetail.seller,
+      buyer: sampleDealDetail.buyer,
+      arbiter: sampleDealDetail.arbiter,
+      amountWei: sampleDealDetail.amountWei,
+      fundingDeadline: Math.floor(Date.parse(sampleDealDetail.fundingDeadline) / 1000),
+      deliveryDeadline: Math.floor(Date.parse(sampleDealDetail.deliveryDeadline) / 1000),
+      inspectionWindowSeconds: sampleDealDetail.inspectionWindowSeconds,
+      title: sampleDealDetail.title,
+      description: sampleDealDetail.description,
+      terms: sampleDealDetail.terms,
+    });
+    const verifiedDeal = {
+      ...sampleDealDetail,
+      termsHash: verifiedTermsHash,
+      canonicalTermsJson: canonicalJson,
+    };
     mockSessionState.address = BUYER;
-    getDealMock.mockResolvedValue({ ...sampleDealDetail, status: "CREATED" });
+    getDealMock.mockResolvedValue({ ...verifiedDeal, status: "CREATED" });
     getDealHistoryMock.mockResolvedValue({ events: [], transactions: [] });
     mockOnChainTrade = { data: { status: 1 }, refetch: vi.fn().mockResolvedValue(undefined) };
 
@@ -582,7 +662,7 @@ describe("SafeDeal Dashboard, DealDetails & Arbiter Pages", () => {
     // First sync attempt fails transiently (503); second sync succeeds via Sync On-Chain button
     syncDealMock
       .mockRejectedValueOnce(new Error("Backend temporarily unavailable (503)"))
-      .mockResolvedValueOnce({ ...sampleDealDetail, status: "FUNDED" });
+      .mockResolvedValueOnce({ ...verifiedDeal, status: "FUNDED" });
 
     renderWithQuery(
       <Routes>
@@ -1013,6 +1093,207 @@ describe("SafeDeal Dashboard, DealDetails & Arbiter Pages", () => {
 
     expect(screen.queryByText("Instant Switch Seller A Draft")).not.toBeInTheDocument();
     expect(await screen.findByRole("button", { name: "Preview On-Chain Transaction" })).toBeInTheDocument();
+  });
+
+  it("renders Dashboard Ledger Summary Strip with total deals count from totalItems and Active Escrow sum including disputed", async () => {
+    listDealsMock.mockResolvedValue({
+      items: [
+        sampleDealSummary, // 2 AVAX (FUNDED)
+        {
+          ...sampleDealSummary,
+          tradeId: "0x3333333333333333333333333333333333333333333333333333333333333333",
+          title: "Disputed Escrow Deal",
+          seller: BUYER,
+          buyer: SELLER,
+          status: "DISPUTED",
+          amountWei: "1000000000000000000", // 1 AVAX (DISPUTED locked escrow)
+        },
+      ],
+      page: 0,
+      size: 50,
+      totalItems: 12, // More deals across all pages than the 2 in current page
+      totalPages: 1,
+    });
+
+    renderWithQuery(<DashboardPage />);
+
+    const ledgerSummary = await screen.findByLabelText("Ledger summary");
+    expect(within(ledgerSummary).getByText("Total Deals")).toBeInTheDocument();
+    expect(within(ledgerSummary).getByText("12")).toBeInTheDocument();
+    expect(within(ledgerSummary).getByText("Active Escrow")).toBeInTheDocument();
+    expect(within(ledgerSummary).getByText("3 AVAX")).toBeInTheDocument();
+    expect(within(ledgerSummary).getByText("Attention Required")).toBeInTheDocument();
+    expect(within(ledgerSummary).getByText("1")).toBeInTheDocument();
+  });
+
+  it("renders Escrow lifecycle progress stepper with completed Resolved stage for RESOLVED deal", async () => {
+    getDealMock.mockResolvedValue({
+      ...sampleDealDetail,
+      status: "RESOLVED",
+      settled: true,
+      deliveredAt: "2026-12-05T00:00:00Z",
+    });
+    getDealHistoryMock.mockResolvedValue({ events: [], transactions: [] });
+
+    renderWithQuery(
+      <Routes>
+        <Route path="/deals/:id" element={<DealDetailsPage />} />
+      </Routes>,
+      `/deals/${TRADE_ID}`
+    );
+
+    const stepper = await screen.findByRole("list", { name: "Escrow lifecycle progress" });
+    expect(stepper).toBeInTheDocument();
+    expect(within(stepper).getByText("Created")).toBeInTheDocument();
+    expect(within(stepper).getByText("Funded")).toBeInTheDocument();
+    expect(within(stepper).getByText("Delivered")).toBeInTheDocument();
+    expect(within(stepper).getByText("Resolved")).toBeInTheDocument();
+    expect(screen.getByText(/Arbitration Resolved/i)).toBeInTheDocument();
+  });
+
+  it("does not falsely report copied when navigator.clipboard.writeText rejects", async () => {
+    const user = userEvent.setup();
+    const writeTextSpy = vi.spyOn(navigator.clipboard, "writeText").mockRejectedValue(new Error("Permission denied"));
+    try {
+      getDealMock.mockResolvedValue(sampleDealDetail);
+      getDealHistoryMock.mockResolvedValue({ events: [], transactions: [] });
+
+      renderWithQuery(
+        <Routes>
+          <Route path="/deals/:id" element={<DealDetailsPage />} />
+        </Routes>,
+        `/deals/${TRADE_ID}`
+      );
+
+      const copyTradeButton = await screen.findByRole("button", { name: "Copy Trade ID" });
+      await user.click(copyTradeButton);
+
+      expect(writeTextSpy).toHaveBeenCalledWith(TRADE_ID);
+      expect(copyTradeButton).toHaveAttribute("title", "Copy Trade ID");
+      expect(copyTradeButton).not.toHaveAttribute("title", "Copied");
+    } finally {
+      writeTextSpy.mockRestore();
+    }
+  });
+
+  it("renders Escrow lifecycle progress stepper and copies Trade ID via CopyableHash on DealDetailsPage", async () => {
+    const user = userEvent.setup();
+    const writeTextSpy = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined);
+    try {
+      getDealMock.mockResolvedValue(sampleDealDetail);
+      getDealHistoryMock.mockResolvedValue({ events: [], transactions: [] });
+
+      renderWithQuery(
+        <Routes>
+          <Route path="/deals/:id" element={<DealDetailsPage />} />
+        </Routes>,
+        `/deals/${TRADE_ID}`
+      );
+
+      const stepper = await screen.findByRole("list", { name: "Escrow lifecycle progress" });
+      expect(stepper).toBeInTheDocument();
+      expect(within(stepper).getByText("Created")).toBeInTheDocument();
+      expect(within(stepper).getByText("Funded")).toBeInTheDocument();
+      expect(within(stepper).getByText("Delivered")).toBeInTheDocument();
+      expect(within(stepper).getByText("Released")).toBeInTheDocument();
+
+      const copyTradeButton = screen.getByRole("button", { name: "Copy Trade ID" });
+      await user.click(copyTradeButton);
+
+      expect(writeTextSpy).toHaveBeenCalledWith(TRADE_ID);
+      expect(copyTradeButton).toHaveAttribute("title", "Copied");
+    } finally {
+      writeTextSpy.mockRestore();
+    }
+  });
+
+  it("updates buyer and seller allocations to 0.5 each when clicking 50 / 50 quick split preset", async () => {
+    const user = userEvent.setup();
+    mockSessionState.address = ARBITER;
+    listAssignedDisputesMock.mockResolvedValue([sampleDispute]);
+
+    renderWithQuery(<ArbiterPage />);
+
+    const presetButton = await screen.findByRole("button", { name: "50 / 50" });
+    await user.click(presetButton);
+
+    const buyerInput = document.getElementById("buyer-alloc-7") as HTMLInputElement;
+    const sellerInput = document.getElementById("seller-alloc-7") as HTMLInputElement;
+    expect(buyerInput).toHaveValue("0.5");
+    expect(sellerInput).toHaveValue("0.5");
+  });
+
+  it("renders Operational and not CREATED on SupportPage when /api/v1/health resolves cleanly", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          status: "UP",
+          service: "safedeal-api",
+          chainId: 31337,
+          chainName: "Anvil Local",
+          escrowContractConfigured: true,
+        }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }
+      )
+    );
+
+    try {
+      renderWithQuery(<SupportPage />);
+
+      expect(await screen.findByText("Operational")).toBeInTheDocument();
+      expect(screen.queryByText("CREATED")).not.toBeInTheDocument();
+      expect(fetchSpy).toHaveBeenCalledWith(
+        expect.stringContaining("/api/v1/health"),
+        expect.objectContaining({ method: "GET" })
+      );
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("renders Degraded (Contract Unconfigured) on SupportPage when escrow contract is not configured", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          status: "UP",
+          service: "safedeal-api",
+          chainId: 31337,
+          chainName: "Anvil Local",
+          escrowContractConfigured: false,
+        }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }
+      )
+    );
+
+    try {
+      renderWithQuery(<SupportPage />);
+
+      expect(await screen.findByText("Degraded (Contract Unconfigured)")).toBeInTheDocument();
+      expect(screen.queryByText("Operational")).not.toBeInTheDocument();
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("calls closeWalletModal when Escape key is pressed while WalletModal is open", async () => {
+    const user = userEvent.setup();
+    mockSessionState = {
+      ...mockSessionState,
+      walletModalOpen: true,
+    };
+
+    renderWithQuery(<WalletModal />);
+
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+
+    expect(mockSessionState.closeWalletModal).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -101,10 +101,7 @@ async fn record_chain_event_conn(
         .as_deref()
         .map(str::to_ascii_lowercase)
         .unwrap_or_else(|| ZERO_BYTES32.to_string());
-    let actor_address = event
-        .actor_address
-        .as_deref()
-        .map(str::to_ascii_lowercase);
+    let actor_address = event.actor_address.as_deref().map(str::to_ascii_lowercase);
     let terms_hash = event.terms_hash.as_deref().map(str::to_ascii_lowercase);
 
     let res = sqlx::query(
@@ -315,7 +312,12 @@ async fn save_sync_state_conn(
         ON CONFLICT (id) DO UPDATE SET
             chain_id = EXCLUDED.chain_id,
             contract_address = EXCLUDED.contract_address,
-            last_synced_block = EXCLUDED.last_synced_block,
+            last_synced_block = CASE
+                WHEN chain_sync_state.chain_id = EXCLUDED.chain_id
+                 AND chain_sync_state.contract_address = EXCLUDED.contract_address
+                THEN GREATEST(chain_sync_state.last_synced_block, EXCLUDED.last_synced_block)
+                ELSE EXCLUDED.last_synced_block
+            END,
             updated_at = EXCLUDED.updated_at
         RETURNING id, chain_id, contract_address, last_synced_block, updated_at
         "#,
