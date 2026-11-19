@@ -8,12 +8,22 @@ if ! command -v docker >/dev/null 2>&1; then
   exit 1
 fi
 
+if [ -f "$ROOT_DIR/.env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$ROOT_DIR/.env"
+  set +a
+  COMPOSE_ENV_ARGS=(--env-file "$ROOT_DIR/.env")
+else
+  COMPOSE_ENV_ARGS=()
+fi
+
 echo "Starting PostgreSQL container..."
-docker compose -f "$ROOT_DIR/infra/docker-compose.yml" up -d postgres
+docker compose ${COMPOSE_ENV_ARGS[@]+"${COMPOSE_ENV_ARGS[@]}"} -f "$ROOT_DIR/infra/docker-compose.yml" up -d postgres
 
 echo "Waiting for PostgreSQL readiness..."
 for _ in $(seq 1 30); do
-  if docker compose -f "$ROOT_DIR/infra/docker-compose.yml" exec -T postgres \
+  if docker compose ${COMPOSE_ENV_ARGS[@]+"${COMPOSE_ENV_ARGS[@]}"} -f "$ROOT_DIR/infra/docker-compose.yml" exec -T postgres \
     pg_isready -U "${DB_USERNAME:-safedeal}" -d "${DB_NAME:-safedeal}" >/dev/null 2>&1; then
     echo "PostgreSQL is ready on localhost:${DB_PORT:-5432}."
     exit 0

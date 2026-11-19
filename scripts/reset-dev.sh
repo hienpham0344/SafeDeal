@@ -6,7 +6,11 @@ cd "$ROOT_DIR"
 
 echo "Stopping local docker compose services and resetting DB/evidence volumes..."
 if command -v docker >/dev/null 2>&1; then
-  docker compose -f "$ROOT_DIR/infra/docker-compose.yml" down -v || true
+  if [ -f "$ROOT_DIR/.env" ]; then
+    docker compose --env-file "$ROOT_DIR/.env" -f "$ROOT_DIR/infra/docker-compose.yml" down -v || true
+  else
+    docker compose -f "$ROOT_DIR/infra/docker-compose.yml" down -v || true
+  fi
 fi
 
 rm -rf "$ROOT_DIR/backend/storage/evidence"

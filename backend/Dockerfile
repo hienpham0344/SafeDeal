@@ -35,6 +35,6 @@ USER safedeal
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD sh -c 'curl -fsS "http://127.0.0.1:${SERVER_PORT:-${PORT:-8080}}/api/v1/health" || exit 1'
+  CMD sh -c 'curl -fsS "http://127.0.0.1:${SERVER_PORT:-${PORT:-8080}}/api/v1/health/ready" || exit 1'
 
 ENTRYPOINT ["/app/safedeal-api"]

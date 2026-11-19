@@ -24,7 +24,10 @@ Use Railway for the Rust `safedeal-api` service (`backend/`) and managed Postgre
    - `ESCROW_CONTRACT_ADDRESS=<deployed-fuji-SafeDealEscrow-address>`
    - `ESCROW_DEPLOYMENT_BLOCK=<deployment-block-number>`
    - `BLOCKCHAIN_CONFIRMATIONS_REQUIRED=2`
-   - Attach a persistent Railway Volume at `/app/storage/evidence` and set `EVIDENCE_STORAGE_DIR=/app/storage/evidence`.
+   - `AUTH_TRUST_PROXY_HEADERS=true`
+   - `DEAL_DRAFT_TTL_SECONDS=86400` and `DEAL_CLEANUP_INTERVAL_SECONDS=3600` (automatic background cleanup of abandoned unbound drafts).
+   - **Evidence storage (recommended for multi-replica / stateless deploys)**: set `EVIDENCE_STORAGE_BACKEND=s3` with `EVIDENCE_S3_ENDPOINT`, `EVIDENCE_S3_BUCKET`, `EVIDENCE_S3_REGION=auto`, `EVIDENCE_S3_ACCESS_KEY_ID`, and `EVIDENCE_S3_SECRET_ACCESS_KEY` (Cloudflare R2 / AWS S3).
+   - **Alternative single-instance volume**: keep `EVIDENCE_STORAGE_BACKEND=local`, attach a persistent Railway Volume at `/app/storage/evidence`, set `EVIDENCE_STORAGE_DIR=/app/storage/evidence`, and set `RAILWAY_RUN_UID=0` (or ensure the mounted volume is writable by UID `safedeal`).
 
 ## Security Notes
 
