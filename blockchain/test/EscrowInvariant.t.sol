@@ -33,6 +33,7 @@ contract EscrowInvariantHandler is Test {
     function createAndMaybeFund(uint256 seed, uint96 rawAmount, bool fundNow) external {
         address seller = sellers[seed % sellers.length];
         address buyer = buyers[(seed / 3) % buyers.length];
+        address preassignedBuyer = (seed % 4 == 0) ? address(0) : buyer;
         address arbiter = arbiters[(seed / 9) % arbiters.length];
         uint256 amount = bound(uint256(rawAmount), 1, 10 ether);
         bytes32 tradeId = keccak256(abi.encodePacked("inv", ghostNonce++));
@@ -42,7 +43,7 @@ contract EscrowInvariantHandler is Test {
         uint64 deliveryDeadline = uint64(block.timestamp + 5 days);
 
         vm.prank(seller);
-        escrow.createTrade(tradeId, buyer, arbiter, amount, termsHash, fundingDeadline, deliveryDeadline, 1 days);
+        escrow.createTrade(tradeId, preassignedBuyer, arbiter, amount, termsHash, fundingDeadline, deliveryDeadline, 1 days);
         tradeIds.push(tradeId);
 
         if (fundNow) {
@@ -51,14 +52,38 @@ contract EscrowInvariantHandler is Test {
         }
     }
 
+    function cancelUnfunded(uint256 indexSeed) external {
+        if (tradeIds.length == 0) return;
+        bytes32 tradeId = tradeIds[indexSeed % tradeIds.length];
+        ISafeDealEscrow.Trade memory t = escrow.getTrade(tradeId);
+        if (t.status != ISafeDealEscrow.TradeStatus.CREATED) return;
+
+        vm.prank(t.seller);
+        escrow.cancelUnfundedTrade(tradeId);
+    }
+
     function deliver(uint256 indexSeed) external {
         if (tradeIds.length == 0) return;
         bytes32 tradeId = tradeIds[indexSeed % tradeIds.length];
         ISafeDealEscrow.Trade memory t = escrow.getTrade(tradeId);
         if (t.status != ISafeDealEscrow.TradeStatus.FUNDED) return;
+        if (block.timestamp > t.deliveryDeadline) return;
 
         vm.prank(t.seller);
         escrow.markDelivered(tradeId);
+    }
+
+    function refundAfterDeadline(uint256 indexSeed) external {
+        if (tradeIds.length == 0) return;
+        bytes32 tradeId = tradeIds[indexSeed % tradeIds.length];
+        ISafeDealEscrow.Trade memory t = escrow.getTrade(tradeId);
+        if (t.status != ISafeDealEscrow.TradeStatus.FUNDED) return;
+
+        if (block.timestamp <= t.deliveryDeadline) {
+            vm.warp(uint256(t.deliveryDeadline) + 1);
+        }
+        vm.prank(t.buyer);
+        escrow.refundAfterDeadline(tradeId);
     }
 
     function release(uint256 indexSeed) external {
@@ -85,7 +110,10 @@ contract EscrowInvariantHandler is Test {
         if (tradeIds.length == 0) return;
         bytes32 tradeId = tradeIds[indexSeed % tradeIds.length];
         ISafeDealEscrow.Trade memory t = escrow.getTrade(tradeId);
-        if (t.status != ISafeDealEscrow.TradeStatus.FUNDED) return;
+        if (
+            t.status != ISafeDealEscrow.TradeStatus.FUNDED
+                && t.status != ISafeDealEscrow.TradeStatus.DELIVERED
+        ) return;
 
         vm.prank(t.buyer);
         escrow.openDispute(tradeId);

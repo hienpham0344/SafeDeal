@@ -179,6 +179,42 @@ contract SafeDealEscrowTest is Test {
         escrow.refundAfterDeadline(TRADE_ID);
     }
 
+    function testCannotMarkDeliveredOrSellerDisputeAfterDeliveryDeadline() public {
+        (, uint64 deliveryDeadline) = _createDefaultTrade(TRADE_ID, buyer);
+        vm.prank(buyer);
+        escrow.fundTrade{value: AMOUNT}(TRADE_ID);
+
+        vm.warp(deliveryDeadline + 1);
+
+        // Seller cannot markDelivered after deliveryDeadline to block buyer refundAfterDeadline
+        vm.prank(seller);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                SafeDealEscrow.DeliveryDeadlinePassed.selector,
+                deliveryDeadline,
+                uint64(block.timestamp)
+            )
+        );
+        escrow.markDelivered(TRADE_ID);
+
+        // Seller cannot openDispute in FUNDED state after deliveryDeadline to block buyer refundAfterDeadline
+        vm.prank(seller);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                SafeDealEscrow.DeliveryDeadlinePassed.selector,
+                deliveryDeadline,
+                uint64(block.timestamp)
+            )
+        );
+        escrow.openDispute(TRADE_ID);
+
+        // Buyer can still reclaim funds via refundAfterDeadline
+        vm.prank(buyer);
+        escrow.refundAfterDeadline(TRADE_ID);
+        assertEq(uint8(escrow.getTrade(TRADE_ID).status), uint8(ISafeDealEscrow.TradeStatus.REFUNDED));
+        assertEq(escrow.claimableBalances(buyer), AMOUNT);
+    }
+
     function testDisputeFromDeliveredSellerWaitsInspectionWindow() public {
         _createDefaultTrade(TRADE_ID, buyer);
         vm.prank(buyer);

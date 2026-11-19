@@ -38,6 +38,7 @@ contract SafeDealEscrow is ISafeDealEscrow, ReentrancyGuard {
     error InvalidState(TradeStatus current, TradeStatus expected);
     error UnauthorizedCaller(address caller);
     error FundingDeadlinePassed(uint64 fundingDeadline, uint64 currentTimestamp);
+    error DeliveryDeadlinePassed(uint64 deliveryDeadline, uint64 currentTimestamp);
     error DeliveryDeadlineNotReached(uint64 deliveryDeadline, uint64 currentTimestamp);
     error InspectionWindowActive(uint64 unlocksAt, uint64 currentTimestamp);
     error IncorrectPaymentAmount(uint256 expected, uint256 actual);
@@ -154,6 +155,9 @@ contract SafeDealEscrow is ISafeDealEscrow, ReentrancyGuard {
             revert InvalidState(trade.status, TradeStatus.FUNDED);
         }
         if (msg.sender != trade.seller) revert UnauthorizedCaller(msg.sender);
+        if (block.timestamp > trade.deliveryDeadline) {
+            revert DeliveryDeadlinePassed(trade.deliveryDeadline, uint64(block.timestamp));
+        }
 
         trade.status = TradeStatus.DELIVERED;
         trade.deliveredAt = uint64(block.timestamp);
@@ -221,6 +225,9 @@ contract SafeDealEscrow is ISafeDealEscrow, ReentrancyGuard {
         if (trade.status == TradeStatus.FUNDED) {
             if (msg.sender != trade.buyer && msg.sender != trade.seller) {
                 revert UnauthorizedCaller(msg.sender);
+            }
+            if (msg.sender == trade.seller && block.timestamp > trade.deliveryDeadline) {
+                revert DeliveryDeadlinePassed(trade.deliveryDeadline, uint64(block.timestamp));
             }
         } else if (trade.status == TradeStatus.DELIVERED) {
             if (msg.sender == trade.buyer) {
