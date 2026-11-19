@@ -597,3 +597,75 @@ async fn concurrent_bind_tx_and_indexer_poll_do_not_violate_unique_constraints()
         assert_eq!(created_events_count, 1);
     }
 }
+
+#[tokio::test]
+async fn indexer_ignores_mismatched_trade_created_event_for_unbound_draft_deal() {
+    let harness = TestAppHarness::start().await;
+    let seller = "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266";
+    let attacker = "0x9999999999999999999999999999999999999999";
+    let arbiter = "0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc";
+    let now = Utc::now().timestamp();
+
+    let draft = harness
+        .components
+        .create_deal_draft
+        .execute(CreateDealCommand {
+            seller_address: seller.to_string(),
+            buyer_address: None,
+            arbiter_address: arbiter.to_string(),
+            amount_wei: "10000000000000000000".to_string(),
+            funding_deadline_epoch_seconds: now + 3600,
+            delivery_deadline_epoch_seconds: now + 7200,
+            inspection_window_seconds: 86_400,
+            title: "10 AVAX Draft".to_string(),
+            description: "Should not be hijacked by 1-wei front-run TradeCreated".to_string(),
+            terms: "Verified canonical terms".to_string(),
+        })
+        .await
+        .expect("create draft");
+
+    let spoofed_created = VerifiedChainEvent {
+        tx_hash: format!("0x{}", "a".repeat(64)),
+        log_index: 0,
+        block_number: 10,
+        block_timestamp_epoch: now,
+        contract_address: DEFAULT_CONTRACT.to_string(),
+        event_type: OnChainEventType::TradeCreated,
+        trade_id: Some(draft.trade_id.clone()),
+        actor_address: Some(attacker.to_string()),
+        buyer_address: None,
+        amount_wei: Some("1".to_string()),
+        buyer_award_wei: None,
+        seller_award_wei: None,
+        terms_hash: Some(format!("0x{}", "b".repeat(64))),
+    };
+
+    harness
+        .gateway
+        .inner
+        .update(|s| {
+            s.deployment_block = 1;
+            s.latest_block = 15;
+            s.logs = vec![spoofed_created];
+        })
+        .await;
+
+    harness
+        .components
+        .indexer
+        .poll_and_index()
+        .await
+        .expect("poll");
+
+    let stored = harness
+        .components
+        .repos
+        .deals
+        .find_by_trade_id(&draft.trade_id)
+        .await
+        .unwrap()
+        .expect("stored deal");
+    assert_eq!(stored.status, DealStatus::Draft);
+    assert!(!stored.on_chain_bound);
+    assert!(stored.create_tx_hash.is_none());
+}
