@@ -51,6 +51,11 @@ docs/         Complete 20-document engineering, setup, demo specification, and o
    bash scripts/e2e-live.sh     # self-contained unmocked Browser -> Vite -> safedeal-api -> Anvil E2E
    ```
 
+> **Fast Local Dev Tips**:
+> - Avoid `docker compose up --build` for daily development (the backend Dockerfile compiles Rust in `--release` with LTO). Use `bash scripts/dev-db.sh` for PostgreSQL and run `dev-anvil.sh`, `dev-backend.sh`, and `dev-frontend.sh` natively.
+> - `backend/Cargo.toml` uses `[profile.dev]` with `debug = "line-tables-only"` to keep `target/debug` smaller and linking faster.
+> - For quick checks without Playwright E2E, run `RUN_E2E=0 bash scripts/verify.sh`, or run targeted `cargo test` / `npm --prefix frontend test`.
+
 ## Core Commands
 
 | Area | Command | Purpose |
