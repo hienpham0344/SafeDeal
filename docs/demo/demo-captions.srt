@@ -1,82 +1,55 @@
 1
-00:00:00,000 --> 00:00:06,500
-Every P2P crypto deal has a trust paradox:
-pay upfront and risk getting scammed,
+00:00:00,000 --> 00:00:09,500
+Every P2P crypto deal has a trust paradox: pay upfront and risk getting scammed, deliver work first and risk getting ghosted, or use centralized escrow and accept custody risk.
 
 2
-00:00:06,500 --> 00:00:12,500
-deliver work first and risk getting ghosted,
-or use centralized escrow with custody risk.
+00:00:09,800 --> 00:00:19,500
+Meet SafeDeal — non-custodial P2P escrow on Avalanche, where smart contracts hold the funds, RFC 8785 locks the terms, and no admin can ever touch your AVAX.
 
 3
-00:00:12,500 --> 00:00:20,000
-Meet SafeDeal — non-custodial P2P escrow on Avalanche.
-Smart contracts hold the funds, RFC 8785 locks the terms.
+00:00:20,000 --> 00:00:31,000
+Flow 1: Cooperative Trade. The seller drafts deal terms and SafeDeal hashes them deterministically with RFC 8785 in both TypeScript and Rust, anchoring termsHash on Avalanche Fuji.
 
 4
-00:00:20,000 --> 00:00:29,000
-Flow 1: Cooperative Trade.
-The seller drafts deal terms and computes an RFC 8785 hash.
+00:00:31,500 --> 00:00:43,000
+The buyer funds the vault, the seller marks delivery, and the buyer approves and releases payment on-chain.
 
 5
-00:00:29,000 --> 00:00:38,000
-Both TypeScript and our Rust backend produce the exact
-termsHash, anchored on Avalanche Fuji via createTrade.
+00:00:43,500 --> 00:00:57,000
+Notice SafeDeal uses Pull-Payment withdraw instead of inline pushes, crediting claimable balances to eliminate reentrancy and reverting-recipient denial-of-service attacks.
 
 6
-00:00:38,000 --> 00:00:48,000
-The buyer funds the escrow, the seller marks delivery,
-and the buyer approves and releases payment on-chain.
+00:00:57,500 --> 00:01:09,000
+The seller simply withdraws their settled AVAX directly from the contract.
 
 7
-00:00:48,000 --> 00:01:00,000
-SafeDeal uses Pull-Payment withdraw() instead of inline pushes,
-preventing reentrancy and reverting-recipient DoS attacks.
+00:01:10,000 --> 00:01:22,500
+Flow 2: Open-Buyer and Refund Protection. Leave the buyer address blank to create a shareable payment link, and the first wallet to fund locks in as the buyer.
 
 8
-00:01:00,000 --> 00:01:10,000
-The seller claims their AVAX directly from the contract.
+00:01:23,000 --> 00:01:36,500
+If the seller misses the delivery deadline or issues a voluntary refund, the buyer reclaims one hundred percent of their AVAX directly on-chain without needing admin permission.
 
 9
-00:01:10,000 --> 00:01:21,000
-Flow 2: Open-Buyer & Refund Protection.
-Leave the buyer blank to create a shareable payment link.
+00:01:37,000 --> 00:01:51,000
+Flow 3: Dispute and 2-of-3 Consensus. When a deal goes wrong, participants upload private evidence validated by binary magic-bytes and gated by Sign-In with Ethereum.
 
 10
-00:01:21,000 --> 00:01:32,000
-The first wallet to call fundTrade locks in as the buyer.
-If delivery misses the deadline, or the seller refunds,
+00:01:51,500 --> 00:02:02,000
+Outsiders receive a strict 403 error, ensuring private dispute files stay visible only to the buyer, seller, and arbiter.
 
 11
-00:01:32,000 --> 00:01:45,000
-the buyer reclaims 100% of their AVAX directly on-chain
-without needing permission from any admin.
+00:02:02,500 --> 00:02:16,500
+Unlike traditional escrows where a single arbiter has god-mode, SafeDeal requires 2-of-3 matching votes across Buyer, Seller, and Arbiter to settle.
 
 12
-00:01:45,000 --> 00:01:58,000
-Flow 3: Dispute & 2-of-3 Consensus.
-Participants upload private evidence verified by magic-bytes.
+00:02:17,000 --> 00:02:32,000
+And if everyone ghosts, a 14-day timeout fallback unlocks a deterministic 50/50 split so funds are never trapped.
 
 13
-00:01:58,000 --> 00:02:10,000
-SIWE authentication and role checks enforce strict 403
-isolation so outsiders can never view dispute files.
+00:02:32,500 --> 00:02:48,000
+Built with Solidity and Foundry invariant fuzzing, a Clean Architecture Rust backend on Railway, and a reload-safe React UI live on Avalanche Fuji.
 
 14
-00:02:10,000 --> 00:02:24,000
-Unlike god-mode arbiters, SafeDeal requires 2-of-3 matching
-votes across Buyer, Seller, and Arbiter to settle.
-
-15
-00:02:24,000 --> 00:02:40,000
-And if anyone ghosts, a 14-day timeout fallback unlocks
-a deterministic 50/50 split so funds are never trapped.
-
-16
-00:02:40,000 --> 00:02:51,000
-Built with Foundry invariant fuzzing, a Clean Architecture
-Rust backend on Railway, and a reload-safe React UI.
-
-17
-00:02:51,000 --> 00:03:00,000
-Live now on Avalanche Fuji Testnet at avalanche-9b099.web.app.
+00:02:48,500 --> 00:02:58,000
+Try SafeDeal today at avalanche-9b099.web.app.
