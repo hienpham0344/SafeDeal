@@ -2,6 +2,11 @@
 
 > Non-Custodial Peer-to-Peer Escrow on Avalanche C-Chain
 
+- **Live Web App (Firebase Hosting)**: [https://avalanche-9b099.web.app](https://avalanche-9b099.web.app/)
+- **Live Backend API (Railway)**: [https://safedeal-production.up.railway.app/api/v1/health/ready](https://safedeal-production.up.railway.app/api/v1/health/ready)
+- **Avalanche Fuji C-Chain Contract (`43113`)**: [`0xF30E863b0Cfe8fBFE05E65c21878F8B621B3FE29`](https://testnet.snowtrace.io/address/0xF30E863b0Cfe8fBFE05E65c21878F8B621B3FE29)
+- **GitHub Repository**: [https://github.com/hienpham0344/SafeDeal](https://github.com/hienpham0344/SafeDeal)
+
 SafeDeal is a non-custodial P2P escrow platform for digital transactions, freelance deliverables, and OTC settlements on the Avalanche C-Chain (Fuji testnet & Anvil local). It pairs an immutable Solidity smart contract (`SafeDealEscrow.sol`) implementing pull-payment settlement and 2-of-3 dispute consensus with a Clean Architecture Rust backend (Axum, Tokio, SQLx, Alloy) and a React 18 SPA (TypeScript, Vite, Tailwind CSS, wagmi, viem).
 
 By anchoring RFC 8785 canonical agreement hashes on-chain, enforcing deterministic state transitions, and providing a 14-day stalemate timeout fallback, SafeDeal guarantees that neither the backend service, deployer keys, nor unresponsive counterparties can alter terms, divert balances, or trap funds in escrow.
