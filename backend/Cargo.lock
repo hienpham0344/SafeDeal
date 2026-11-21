@@ -3982,7 +3982,6 @@ dependencies = [
  "rand 0.8.8",
  "safedeal-domain",
  "safedeal-shared",
- "serde_json",
  "tokio",
  "tracing",
 ]
