@@ -6,9 +6,10 @@ use utoipa::{Modify, OpenApi};
 use crate::dto::{
     BindTxRequest, BlockchainTransactionResponse, CreateDraftRequest, CreateDraftResponse,
     DealDetailResponse, DealEventResponse, DealHistoryResponse, DealSummaryResponse,
-    DisputeDetailResponse, DisputeEvidenceResponse, HealthStatusResponse, NonceRequest,
-    NonceResponse, OpenDisputeRequest, PaginatedDealSummaryResponse, ReadinessStatusResponse,
-    ResolveDisputeRequest, SessionUserResponse, SyncRequest, VerifyRequest,
+    DisputeDetailResponse, DisputeEvidenceResponse, DisputeVoteResponse, HealthStatusResponse,
+    NonceRequest, NonceResponse, OpenDisputeRequest, PaginatedDealSummaryResponse,
+    ReadinessStatusResponse, RecordTimeoutRequest, ResolveDisputeRequest, SessionUserResponse,
+    SubmitVoteRequest, SyncRequest, VerifyRequest,
 };
 
 #[derive(OpenApi)]
@@ -27,6 +28,8 @@ use crate::dto::{
         crate::handlers::health::health,
         crate::handlers::health::ready,
         crate::handlers::disputes::get_dispute,
+        crate::handlers::disputes::submit_vote,
+        crate::handlers::disputes::record_timeout,
         crate::handlers::disputes::download_evidence,
         crate::handlers::deals::list_deals,
         crate::handlers::deals::get_deal,
@@ -40,6 +43,7 @@ use crate::dto::{
         DealDetailResponse,
         OpenDisputeRequest,
         DisputeDetailResponse,
+        DisputeVoteResponse,
         BindTxRequest,
         CreateDraftRequest,
         CreateDraftResponse,
@@ -48,6 +52,8 @@ use crate::dto::{
         NonceRequest,
         NonceResponse,
         ResolveDisputeRequest,
+        SubmitVoteRequest,
+        RecordTimeoutRequest,
         HealthStatusResponse,
         ReadinessStatusResponse,
         DealSummaryResponse,
@@ -231,6 +237,9 @@ fn normalize_json_value(root: &mut Value) {
                     "ResolveDisputeRequest" => {
                         obj.insert("required".to_string(), json!(["rationale", "txHash"]));
                     }
+                    "SubmitVoteRequest" | "RecordTimeoutRequest" => {
+                        obj.insert("required".to_string(), json!(["txHash"]));
+                    }
                     "SyncRequest" => {
                         obj.remove("required");
                     }
@@ -282,5 +291,28 @@ fn strip_null_types(val: &mut Value) {
             }
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn openapi_spec_matches_committed_docs_openapi_json() {
+        let live = openapi_json_value();
+        let spec_path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../docs/openapi.json");
+        if std::env::var("UPDATE_OPENAPI").as_deref() == Ok("1") {
+            let formatted = serde_json::to_string_pretty(&live).expect("serialize openapi");
+            std::fs::write(&spec_path, format!("{formatted}\n")).expect("write openapi.json");
+        }
+        let committed_raw = std::fs::read_to_string(&spec_path).expect("read docs/openapi.json");
+        let committed: Value =
+            serde_json::from_str(&committed_raw).expect("parse docs/openapi.json");
+        assert_eq!(
+            live, committed,
+            "docs/openapi.json is out of sync with ApiDoc"
+        );
     }
 }

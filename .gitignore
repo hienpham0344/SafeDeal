@@ -45,3 +45,7 @@ blockchain/deployments/local-*.json
 
 # Firebase CLI local cache
 .firebase/
+.neon
+neon.ts
+package.json
+package-lock.json

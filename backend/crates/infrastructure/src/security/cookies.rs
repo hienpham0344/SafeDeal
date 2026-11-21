@@ -75,4 +75,10 @@ impl SessionCookiePort for HttpSessionCookieAdapter {
             self.format_cookie(&self.csrf_cookie_name, "", 0, false),
         ]
     }
+
+    fn issue_token(&self, principal: &AuthenticatedPrincipal) -> Result<String, DomainError> {
+        self.jwt_service
+            .create_token(principal)
+            .map_err(|e| DomainError::internal(format!("Failed to issue session JWT: {e}")))
+    }
 }

@@ -15,7 +15,9 @@ pub enum OnChainEventType {
     FundsReleased,
     RefundExecuted,
     DisputeOpened,
+    DisputeVoteSubmitted,
     DisputeResolved,
+    DisputeResolvedByTimeout,
     FundsWithdrawn,
     TradeCancelled,
 }
@@ -29,7 +31,9 @@ impl OnChainEventType {
             Self::FundsReleased => "FUNDS_RELEASED",
             Self::RefundExecuted => "REFUND_EXECUTED",
             Self::DisputeOpened => "DISPUTE_OPENED",
+            Self::DisputeVoteSubmitted => "DISPUTE_VOTE_SUBMITTED",
             Self::DisputeResolved => "DISPUTE_RESOLVED",
+            Self::DisputeResolvedByTimeout => "DISPUTE_RESOLVED_BY_TIMEOUT",
             Self::FundsWithdrawn => "FUNDS_WITHDRAWN",
             Self::TradeCancelled => "TRADE_CANCELLED",
         }
@@ -63,6 +67,7 @@ pub struct OnChainTradeSnapshot {
     pub delivery_deadline_epoch: i64,
     pub inspection_window_seconds: i64,
     pub delivered_at_epoch: i64,
+    pub disputed_at_epoch: i64,
     pub chain_status_ordinal: i32,
     pub settled: bool,
     pub buyer_award_wei: String,
@@ -90,6 +95,7 @@ pub struct VerifiedChainEvent {
     pub buyer_award_wei: Option<String>,
     pub seller_award_wei: Option<String>,
     pub terms_hash: Option<String>,
+    pub proposal_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

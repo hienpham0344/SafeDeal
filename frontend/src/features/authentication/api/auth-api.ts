@@ -1,4 +1,4 @@
-import { apiRequest, setCsrfToken } from "@/services/http/api-client";
+import { apiRequest, setBearerToken, setCsrfToken } from "@/services/http/api-client";
 import type { AuthNonceResponse, AuthSessionUser } from "@/types/api";
 
 export async function requestAuthNonce(address: `0x${string}`, chainId: number): Promise<AuthNonceResponse> {
@@ -19,6 +19,9 @@ export async function verifyWalletSignature(
   if (user.csrfToken) {
     setCsrfToken(user.csrfToken);
   }
+  if (user.token) {
+    setBearerToken(user.token);
+  }
   return user;
 }
 
@@ -27,6 +30,9 @@ export async function fetchCurrentSession(): Promise<AuthSessionUser | null> {
     const user = await apiRequest<AuthSessionUser>("/api/v1/auth/me");
     if (user.csrfToken) {
       setCsrfToken(user.csrfToken);
+    }
+    if (user.token) {
+      setBearerToken(user.token);
     }
     return user;
   } catch {
@@ -39,5 +45,6 @@ export async function logoutSession(): Promise<void> {
     await apiRequest<void>("/api/v1/auth/logout", { method: "POST" });
   } finally {
     setCsrfToken(null);
+    setBearerToken(null);
   }
 }

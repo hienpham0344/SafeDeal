@@ -403,7 +403,7 @@ test.describe("Live Unmocked 3-Tier Browser -> Backend -> Anvil E2E", () => {
       await outsider.page.goto(`/disputes/${disputeId}`);
       await expect(outsider.page.getByText("Access Denied or Not Found")).toBeVisible({ timeout: 15_000 });
 
-      // Arbiter inspects assigned disputes and resolves 0.2 Buyer / 0.4 Seller split
+      // Arbiter casts 1/3 vote for 0.2 Buyer / 0.4 Seller split, then Buyer co-signs for 2/3 consensus
       await arbiter.page.goto("/arbiter");
       await expect(arbiter.page.getByText(new RegExp(`Dispute #${disputeId}`))).toBeVisible({ timeout: 15_000 });
       await arbiter.page.fill(`#buyer-alloc-${disputeId}`, "0.2");
@@ -412,13 +412,20 @@ test.describe("Live Unmocked 3-Tier Browser -> Backend -> Anvil E2E", () => {
         "Partial milestone verified from proof-evidence.png; splitting 0.2 AVAX to buyer and 0.4 AVAX to seller.";
       await arbiter.page.fill(`#rationale-${disputeId}`, settlementRationale);
       await arbiter.page.getByRole("button", { name: "Sign & Submit Settlement On-Chain" }).click();
-      await expect(arbiter.page.getByText(/Dispute settled on-chain/i)).toBeVisible({ timeout: 25_000 });
+      await expect(arbiter.page.getByText(/Vote recorded on-chain/i)).toBeVisible({ timeout: 25_000 });
 
       await buyer.page.reload();
+      await expect(buyer.page.getByText(settlementRationale).first()).toBeVisible({ timeout: 15_000 });
+      await buyer.page.getByRole("button", { name: "Co-sign to Finalize (2/3)" }).click();
+      await expect(buyer.page.getByText(/2-of-3 consensus reached and settled on-chain/i)).toBeVisible({
+        timeout: 25_000,
+      });
       await expect(buyer.page.getByText("RESOLVED", { exact: true }).first()).toBeVisible({ timeout: 15_000 });
-      await expect(buyer.page.getByText(/Buyer Award:.*0\.2 AVAX/i)).toBeVisible({ timeout: 15_000 });
-      await expect(buyer.page.getByText(/Seller Award:.*0\.4 AVAX/i)).toBeVisible({ timeout: 15_000 });
-      await expect(buyer.page.getByText(`Rationale: ${settlementRationale}`)).toBeVisible({ timeout: 15_000 });
+      await expect(buyer.page.getByText(/Buyer Award:.*0\.2 AVAX/i).first()).toBeVisible({ timeout: 15_000 });
+      await expect(buyer.page.getByText(/Seller Award:.*0\.4 AVAX/i).first()).toBeVisible({ timeout: 15_000 });
+      await expect(buyer.page.getByText(`Rationale: ${settlementRationale}`).first()).toBeVisible({
+        timeout: 15_000,
+      });
 
       // Both Buyer (0.2 AVAX) and Seller (0.4 AVAX) withdraw on DealDetailsPage -> contract claimable 0 wei
       await buyer.page.goto(`/deals/${tradeId3}`);

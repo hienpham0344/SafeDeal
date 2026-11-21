@@ -11,7 +11,7 @@ use crate::blockchain::{
     ChainSyncState, OnChainTradeSnapshot, TransactionVerificationResult, VerifiedChainEvent,
 };
 use crate::deal::{BlockchainTransaction, Deal, DealEvent, DealStatus};
-use crate::dispute::{AuditLogEntry, Dispute, DisputeEvidence};
+use crate::dispute::{AuditLogEntry, Dispute, DisputeEvidence, DisputeVote};
 use safedeal_shared::DomainError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -185,6 +185,16 @@ pub trait DisputeRepository: Send + Sync {
 }
 
 #[async_trait]
+pub trait DisputeVoteRepository: Send + Sync {
+    async fn upsert_vote(&self, vote: &DisputeVote) -> Result<DisputeVote, DomainError>;
+    async fn find_by_dispute_id(&self, dispute_id: i64) -> Result<Vec<DisputeVote>, DomainError>;
+    async fn find_by_dispute_ids(
+        &self,
+        dispute_ids: &[i64],
+    ) -> Result<HashMap<i64, Vec<DisputeVote>>, DomainError>;
+}
+
+#[async_trait]
 pub trait EvidenceStoragePort: Send + Sync {
     async fn store(
         &self,
@@ -227,6 +237,7 @@ pub trait UserRepository: Send + Sync {
 pub trait TxRepos: Send + Sync {
     fn deals(&self) -> &dyn DealRepository;
     fn disputes(&self) -> &dyn DisputeRepository;
+    fn dispute_votes(&self) -> &dyn DisputeVoteRepository;
     fn auth_nonces(&self) -> &dyn AuthNonceRepository;
     fn users(&self) -> &dyn UserRepository;
     fn deal_events(&self) -> &dyn DealEventRepository;

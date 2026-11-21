@@ -12,7 +12,10 @@ use utoipa::ToSchema;
 
 use safedeal_application::disputes::UploadEvidenceCommand;
 
-use crate::dto::{DisputeDetailResponse, DisputeEvidenceResponse, OpenDisputeRequest};
+use crate::dto::{
+    DisputeDetailResponse, DisputeEvidenceResponse, OpenDisputeRequest, RecordTimeoutRequest,
+    SubmitVoteRequest,
+};
 use crate::error::{parse_path_i64, ApiError};
 use crate::extractors::{CurrentPrincipal, ValidatedJson};
 use crate::mapper::{to_dispute_detail, to_evidence_response};
@@ -86,6 +89,69 @@ pub async fn get_dispute(
         .get_dispute(dispute_id, &principal.address)
         .await?;
     Ok(Json(to_dispute_detail(res)))
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/disputes/{disputeId}/votes",
+    tag = "dispute-controller",
+    operation_id = "submitVote",
+    params(
+        ("disputeId" = i64, Path, description = "")
+    ),
+    request_body(content = SubmitVoteRequest),
+    responses(
+        (status = 200, description = "OK", body = DisputeDetailResponse, content_type = "*/*")
+    )
+)]
+pub async fn submit_vote(
+    State(state): State<AppState>,
+    CurrentPrincipal(principal): CurrentPrincipal,
+    Path(raw_dispute_id): Path<String>,
+    ValidatedJson(request): ValidatedJson<SubmitVoteRequest>,
+) -> Result<Json<DisputeDetailResponse>, ApiError> {
+    let dispute_id = parse_path_i64(&raw_dispute_id, "disputeId")?;
+    let updated = state
+        .arbitration_use_case
+        .record_vote(
+            dispute_id,
+            &principal.address,
+            request.tx_hash.as_deref().unwrap_or(""),
+            request.rationale.as_deref(),
+        )
+        .await?;
+    Ok(Json(to_dispute_detail(updated)))
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/disputes/{disputeId}/timeout",
+    tag = "dispute-controller",
+    operation_id = "recordTimeoutResolution",
+    params(
+        ("disputeId" = i64, Path, description = "")
+    ),
+    request_body(content = RecordTimeoutRequest),
+    responses(
+        (status = 200, description = "OK", body = DisputeDetailResponse, content_type = "*/*")
+    )
+)]
+pub async fn record_timeout(
+    State(state): State<AppState>,
+    CurrentPrincipal(principal): CurrentPrincipal,
+    Path(raw_dispute_id): Path<String>,
+    ValidatedJson(request): ValidatedJson<RecordTimeoutRequest>,
+) -> Result<Json<DisputeDetailResponse>, ApiError> {
+    let dispute_id = parse_path_i64(&raw_dispute_id, "disputeId")?;
+    let updated = state
+        .arbitration_use_case
+        .record_timeout_resolution(
+            dispute_id,
+            &principal.address,
+            request.tx_hash.as_deref().unwrap_or(""),
+        )
+        .await?;
+    Ok(Json(to_dispute_detail(updated)))
 }
 
 #[utoipa::path(

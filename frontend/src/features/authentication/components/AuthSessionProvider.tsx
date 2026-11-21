@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useAccount, useChainId, useConnect, useDisconnect, useSignMessage, useSwitchChain } from "wagmi";
+import { type Connector, useAccount, useChainId, useConnect, useDisconnect, useSignMessage, useSwitchChain } from "wagmi";
 import { env } from "@/config/env";
-import { setUnauthorizedHandler } from "@/services/http/api-client";
+import { BEARER_TOKEN_KEY, setUnauthorizedHandler } from "@/services/http/api-client";
 import {
   fetchCurrentSession,
   logoutSession,
@@ -19,7 +19,13 @@ import type { AuthSessionUser } from "@/types/api";
 
 export function AuthSessionProvider({ children }: { readonly children: ReactNode }) {
   const queryClient = useQueryClient();
-  const { address, isConnected, chainId: accountChainId } = useAccount();
+  const {
+    address,
+    isConnected,
+    isReconnecting,
+    chainId: accountChainId,
+    connector: activeConnector,
+  } = useAccount();
   const wagmiChainId = useChainId();
   const { connectors, connectAsync } = useConnect();
   const { disconnectAsync } = useDisconnect();
@@ -57,6 +63,27 @@ export function AuthSessionProvider({ children }: { readonly children: ReactNode
     };
   }, [queryClient]);
 
+  useEffect(() => {
+    function handleStorageChange(event: StorageEvent) {
+      if (event.key !== BEARER_TOKEN_KEY && event.key !== null) {
+        return;
+      }
+      if (!event.newValue) {
+        queryClient.setQueryData(["auth", "session"], null);
+        queryClient.removeQueries({ queryKey: ["deals"] });
+        queryClient.removeQueries({ queryKey: ["disputes"] });
+        queryClient.removeQueries({ queryKey: ["arbitration"] });
+      } else {
+        void queryClient.invalidateQueries({ queryKey: ["auth", "session"] });
+      }
+    }
+
+    window.addEventListener("storage", handleStorageChange);
+    return () => {
+      window.removeEventListener("storage", handleStorageChange);
+    };
+  }, [queryClient]);
+
   // If the connected wallet changes to a different address than the backend session, clear stale session cleanly
   useEffect(() => {
     if (
@@ -85,6 +112,19 @@ export function AuthSessionProvider({ children }: { readonly children: ReactNode
       cancelled = true;
     };
   }, [address, isAuthenticating, isConnected, queryClient, sessionUser]);
+
+  // Clear stale persisted wagmi connections that failed to rehydrate a live connector instance
+  useEffect(() => {
+    if (
+      !isConnected ||
+      isReconnecting ||
+      !activeConnector ||
+      typeof (activeConnector as { getChainId?: unknown }).getChainId === "function"
+    ) {
+      return;
+    }
+    void disconnectAsync().catch(() => undefined);
+  }, [activeConnector, disconnectAsync, isConnected, isReconnecting]);
 
   const connectInjectedWallet = useCallback(async () => {
     setAuthError(null);
@@ -127,7 +167,22 @@ export function AuthSessionProvider({ children }: { readonly children: ReactNode
     try {
       await queryClient.cancelQueries({ queryKey: ["auth", "session"] });
       const challenge = await requestAuthNonce(address, env.chainId);
-      const signature = await signMessageAsync({ message: challenge.message });
+      const isLiveActiveConnector =
+        activeConnector && typeof (activeConnector as { getChainId?: unknown }).getChainId === "function";
+      let overrideConnector: Connector | undefined;
+      if (activeConnector && !isLiveActiveConnector) {
+        const meta = activeConnector as { uid?: string; id?: string };
+        overrideConnector =
+          connectors.find(
+            (c) =>
+              typeof (c as { getChainId?: unknown }).getChainId === "function" &&
+              ((meta.uid && c.uid === meta.uid) || (meta.id && c.id === meta.id))
+          ) ?? connectors.find((c) => typeof (c as { getChainId?: unknown }).getChainId === "function");
+      }
+      const signature = await signMessageAsync({
+        message: challenge.message,
+        ...(overrideConnector ? { connector: overrideConnector } : {}),
+      });
       const user = await verifyWalletSignature(challenge.message, signature);
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["deals"] }),
@@ -143,7 +198,7 @@ export function AuthSessionProvider({ children }: { readonly children: ReactNode
     } finally {
       setIsAuthenticating(false);
     }
-  }, [address, isConnected, isWrongNetwork, queryClient, signMessageAsync]);
+  }, [activeConnector, address, connectors, isConnected, isWrongNetwork, queryClient, signMessageAsync]);
 
   const disconnectAndSignOut = useCallback(async () => {
     setAuthError(null);

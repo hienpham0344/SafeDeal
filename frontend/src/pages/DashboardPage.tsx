@@ -23,7 +23,7 @@ function parseSafeWei(wei: string): bigint {
 
 export function DashboardPage() {
   const [activeTab, setActiveTab] = useState<DashboardTab>("ALL");
-  const { address, isConnected, isAuthenticated, openWalletModal, signInWithWallet } = useAuthSession();
+  const { address, isConnected, isAuthenticated, isSessionLoading, openWalletModal, signInWithWallet } = useAuthSession();
   const dealsQuery = useDealsQuery({ page: 0, size: 50 }, isAuthenticated);
   const claimableQuery = useClaimableBalance(address);
   const { withdraw, activeAction, txError } = useEscrowContractExecutor();
@@ -168,6 +168,8 @@ export function DashboardPage() {
           description="Connect an Avalanche-compatible wallet to view deals you created, funded, or arbitrate."
           action={<Button onClick={openWalletModal}>Connect Wallet</Button>}
         />
+      ) : isSessionLoading ? (
+        <LoadingState label="Restoring wallet session..." />
       ) : !isAuthenticated ? (
         <EmptyState
           title="Authenticate wallet session"

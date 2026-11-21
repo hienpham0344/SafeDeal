@@ -27,6 +27,33 @@ impl fmt::Display for DisputeStatus {
     }
 }
 
+pub const DEFAULT_EVIDENCE_SLA_SECONDS: i64 = 7 * 86_400;
+pub const DEFAULT_DISPUTE_TIMEOUT_SECONDS: i64 = 14 * 86_400;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum VoterRole {
+    Buyer,
+    Seller,
+    Arbiter,
+}
+
+impl VoterRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Buyer => "BUYER",
+            Self::Seller => "SELLER",
+            Self::Arbiter => "ARBITER",
+        }
+    }
+}
+
+impl fmt::Display for VoterRole {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Dispute {
     pub id: Option<i64>,
@@ -40,8 +67,25 @@ pub struct Dispute {
     pub resolution_rationale: Option<String>,
     pub open_tx_hash: Option<String>,
     pub resolve_tx_hash: Option<String>,
+    pub disputed_at: Option<DateTime<Utc>>,
+    pub dispute_timeout_seconds: i64,
     pub created_at: DateTime<Utc>,
     pub resolved_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DisputeVote {
+    pub id: Option<i64>,
+    pub dispute_id: i64,
+    pub trade_id: String,
+    pub voter_address: String,
+    pub voter_role: VoterRole,
+    pub buyer_award_wei: String,
+    pub seller_award_wei: String,
+    pub proposal_hash: String,
+    pub rationale: Option<String>,
+    pub tx_hash: String,
+    pub updated_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

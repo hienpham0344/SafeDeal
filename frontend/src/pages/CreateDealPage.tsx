@@ -743,6 +743,9 @@ export function CreateDealPage() {
                       {errors.arbiterAddress.message}
                     </p>
                   )}
+                  <p className="mt-1.5 text-xs text-sd-inkSubtle">
+                    Disputes use 2-of-3 voting across Buyer, Seller, and this Arbiter, with a 14-day 50/50 timeout fallback.
+                  </p>
                 </div>
 
                 <div>

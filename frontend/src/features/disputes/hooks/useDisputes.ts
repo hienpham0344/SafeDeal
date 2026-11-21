@@ -3,9 +3,12 @@ import {
   createDisputeMetadata,
   getDispute,
   listDisputeEvidence,
+  recordDisputeTimeoutResolution,
   submitDisputeEvidence,
+  submitDisputeVoteRecord,
 } from "@/features/disputes/api/disputes-api";
 import { dealKeys } from "@/features/deals/hooks/useDeals";
+import type { DisputeDetail } from "@/types/api";
 
 export const disputeKeys = {
   detail: (id: string) => ["disputes", "detail", id] as const,
@@ -58,5 +61,43 @@ export function useSubmitEvidenceMutation(disputeId: string) {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: disputeKeys.evidence(disputeId) });
     },
+  });
+}
+
+function syncDisputeCaches(
+  queryClient: ReturnType<typeof useQueryClient>,
+  dispute: DisputeDetail
+): void {
+  queryClient.setQueryData(disputeKeys.detail(String(dispute.id)), dispute);
+  queryClient.setQueryData<readonly DisputeDetail[]>(["arbitration", "assigned"], (old) =>
+    old ? old.map((item) => (item.id === dispute.id ? dispute : item)) : old
+  );
+  void queryClient.invalidateQueries({ queryKey: ["arbitration", "assigned"] });
+  void queryClient.invalidateQueries({ queryKey: dealKeys.detail(dispute.tradeId) });
+  void queryClient.invalidateQueries({ queryKey: dealKeys.all });
+}
+
+export function useSubmitDisputeVoteMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      disputeId,
+      txHash,
+      rationale,
+    }: {
+      disputeId: number;
+      txHash: `0x${string}`;
+      rationale?: string;
+    }) => submitDisputeVoteRecord(disputeId, { txHash, rationale }),
+    onSuccess: (dispute) => syncDisputeCaches(queryClient, dispute),
+  });
+}
+
+export function useRecordTimeoutResolutionMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ disputeId, txHash }: { disputeId: number; txHash: `0x${string}` }) =>
+      recordDisputeTimeoutResolution(disputeId, { txHash }),
+    onSuccess: (dispute) => syncDisputeCaches(queryClient, dispute),
   });
 }

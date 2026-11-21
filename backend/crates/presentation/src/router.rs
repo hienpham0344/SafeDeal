@@ -77,6 +77,14 @@ pub fn build_api_router(state: AppState) -> Router {
         )
         .route("/api/v1/disputes/{disputeId}", get(disputes::get_dispute))
         .route(
+            "/api/v1/disputes/{disputeId}/votes",
+            post(disputes::submit_vote),
+        )
+        .route(
+            "/api/v1/disputes/{disputeId}/timeout",
+            post(disputes::record_timeout),
+        )
+        .route(
             "/api/v1/disputes/{disputeId}/evidence",
             get(disputes::list_evidence).merge(evidence_upload_route),
         )

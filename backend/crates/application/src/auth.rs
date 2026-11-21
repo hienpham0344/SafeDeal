@@ -45,6 +45,7 @@ pub trait SessionCookiePort: Send + Sync {
         principal: &AuthenticatedPrincipal,
     ) -> Result<Vec<String>, DomainError>;
     fn clear_cookie_headers(&self) -> Vec<String>;
+    fn issue_token(&self, principal: &AuthenticatedPrincipal) -> Result<String, DomainError>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

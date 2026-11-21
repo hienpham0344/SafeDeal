@@ -1,4 +1,4 @@
-import { apiRequest } from "@/services/http/api-client";
+import { apiRequest, retryOnPendingReceipt } from "@/services/http/api-client";
 import type {
   CreateDealDraftRequest,
   CreateDealDraftResponse,
@@ -23,17 +23,21 @@ export async function createDealDraft(payload: CreateDealDraftRequest): Promise<
 }
 
 export async function bindDealTransaction(tradeId: string, txHash: `0x${string}`): Promise<DealDetail> {
-  return apiRequest<DealDetail>(`/api/v1/deals/${encodeURIComponent(tradeId)}/bind-tx`, {
-    method: "POST",
-    body: { txHash },
-  });
+  return retryOnPendingReceipt(() =>
+    apiRequest<DealDetail>(`/api/v1/deals/${encodeURIComponent(tradeId)}/bind-tx`, {
+      method: "POST",
+      body: { txHash },
+    })
+  );
 }
 
 export async function syncDealState(tradeId: string, txHash?: `0x${string}`): Promise<DealDetail> {
-  return apiRequest<DealDetail>(`/api/v1/deals/${encodeURIComponent(tradeId)}/sync`, {
-    method: "POST",
-    body: txHash ? { txHash } : {},
-  });
+  const run = () =>
+    apiRequest<DealDetail>(`/api/v1/deals/${encodeURIComponent(tradeId)}/sync`, {
+      method: "POST",
+      body: txHash ? { txHash } : {},
+    });
+  return txHash ? retryOnPendingReceipt(run) : run();
 }
 
 export async function listDeals(filters: ListDealsFilters = {}): Promise<PaginatedResponse<DealSummary>> {

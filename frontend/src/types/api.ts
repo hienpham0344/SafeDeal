@@ -40,6 +40,7 @@ export interface AuthSessionUser {
   readonly chainId: number;
   readonly authenticatedAt: string;
   readonly csrfToken?: string;
+  readonly token?: string;
 }
 
 export interface DealSummary {
@@ -126,13 +127,26 @@ export interface CreateDealDraftResponse {
   readonly contractAddress: `0x${string}`;
 }
 
+export type VoterRole = "BUYER" | "SELLER" | "ARBITER";
+
+export interface DisputeVote {
+  readonly voterAddress: `0x${string}`;
+  readonly voterRole: VoterRole;
+  readonly buyerAwardWei: string;
+  readonly sellerAwardWei: string;
+  readonly proposalHash: `0x${string}`;
+  readonly rationale: string | null;
+  readonly txHash: `0x${string}`;
+  readonly updatedAt: string;
+}
+
 export interface DisputeDetail {
   readonly id: number;
   readonly tradeId: `0x${string}`;
   readonly dealTitle: string;
   readonly dealAmountWei: string;
   readonly seller: `0x${string}`;
-  readonly buyer: `0x${string}`;
+  readonly buyer: `0x${string}` | null;
   readonly arbiter: `0x${string}`;
   readonly openedBy: `0x${string}`;
   readonly reason: string;
@@ -143,6 +157,10 @@ export interface DisputeDetail {
   readonly resolutionRationale: string | null;
   readonly openTxHash: `0x${string}` | null;
   readonly resolveTxHash: `0x${string}` | null;
+  readonly disputedAt: string | null;
+  readonly evidenceDeadlineAt: string | null;
+  readonly timeoutAt: string | null;
+  readonly votes: readonly DisputeVote[];
   readonly createdAt: string;
   readonly resolvedAt: string | null;
 }

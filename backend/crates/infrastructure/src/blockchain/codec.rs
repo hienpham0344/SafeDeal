@@ -27,18 +27,19 @@ mod abi {
             struct Trade {
                 bytes32 tradeId;
                 address seller;
-                address buyer;
-                address arbiter;
-                uint256 amount;
-                bytes32 termsHash;
                 uint64 createdAt;
-                uint64 fundedAt;
-                uint64 deliveredAt;
-                uint64 fundingDeadline;
-                uint64 deliveryDeadline;
-                uint64 inspectionWindow;
                 TradeStatus status;
                 bool settled;
+                address buyer;
+                uint64 fundedAt;
+                address arbiter;
+                uint64 fundingDeadline;
+                uint256 amount;
+                bytes32 termsHash;
+                uint64 deliveredAt;
+                uint64 deliveryDeadline;
+                uint64 inspectionWindow;
+                uint64 disputedAt;
             }
 
             event TradeCreated(
@@ -62,13 +63,27 @@ mod abi {
                 uint256 amount,
                 address indexed initiatedBy
             );
-            event DisputeOpened(bytes32 indexed tradeId, address indexed openedBy);
+            event DisputeOpened(bytes32 indexed tradeId, address indexed openedBy, uint64 disputedAt);
+            event DisputeVoteSubmitted(
+                bytes32 indexed tradeId,
+                address indexed voter,
+                uint256 buyerAmount,
+                uint256 sellerAmount,
+                bytes32 proposalHash,
+                uint8 matchCount
+            );
             event DisputeResolved(
                 bytes32 indexed tradeId,
-                address indexed arbiter,
+                address indexed settledBy,
                 address indexed buyer,
                 uint256 buyerAmount,
                 address seller,
+                uint256 sellerAmount
+            );
+            event DisputeResolvedByTimeout(
+                bytes32 indexed tradeId,
+                address indexed triggeredBy,
+                uint256 buyerAmount,
                 uint256 sellerAmount
             );
             event FundsWithdrawn(address indexed beneficiary, uint256 amount);
@@ -125,6 +140,7 @@ impl SafeDealContractCodec {
             delivery_deadline_epoch: u64_to_i64(trade.deliveryDeadline, "deliveryDeadline")?,
             inspection_window_seconds: u64_to_i64(trade.inspectionWindow, "inspectionWindow")?,
             delivered_at_epoch: u64_to_i64(trade.deliveredAt, "deliveredAt")?,
+            disputed_at_epoch: u64_to_i64(trade.disputedAt, "disputedAt")?,
             chain_status_ordinal,
             settled: trade.settled,
             buyer_award_wei: "0".to_string(),
@@ -185,6 +201,7 @@ impl SafeDealContractCodec {
                 buyer_award_wei: None,
                 seller_award_wei: None,
                 terms_hash: Some(format!("{:#x}", e.termsHash)),
+                proposal_hash: None,
             },
             ISafeDealEscrow::ISafeDealEscrowEvents::TradeFunded(e) => {
                 let buyer_hex = format!("{:#x}", e.buyer);
@@ -202,6 +219,7 @@ impl SafeDealContractCodec {
                     buyer_award_wei: None,
                     seller_award_wei: None,
                     terms_hash: None,
+                    proposal_hash: None,
                 }
             }
             ISafeDealEscrow::ISafeDealEscrowEvents::DeliveryMarked(e) => VerifiedChainEvent {
@@ -218,6 +236,7 @@ impl SafeDealContractCodec {
                 buyer_award_wei: None,
                 seller_award_wei: None,
                 terms_hash: None,
+                proposal_hash: None,
             },
             ISafeDealEscrow::ISafeDealEscrowEvents::FundsReleased(e) => VerifiedChainEvent {
                 tx_hash,
@@ -233,6 +252,7 @@ impl SafeDealContractCodec {
                 buyer_award_wei: None,
                 seller_award_wei: None,
                 terms_hash: None,
+                proposal_hash: None,
             },
             ISafeDealEscrow::ISafeDealEscrowEvents::RefundExecuted(e) => VerifiedChainEvent {
                 tx_hash,
@@ -248,6 +268,7 @@ impl SafeDealContractCodec {
                 buyer_award_wei: None,
                 seller_award_wei: None,
                 terms_hash: None,
+                proposal_hash: None,
             },
             ISafeDealEscrow::ISafeDealEscrowEvents::DisputeOpened(e) => VerifiedChainEvent {
                 tx_hash,
@@ -263,6 +284,23 @@ impl SafeDealContractCodec {
                 buyer_award_wei: None,
                 seller_award_wei: None,
                 terms_hash: None,
+                proposal_hash: None,
+            },
+            ISafeDealEscrow::ISafeDealEscrowEvents::DisputeVoteSubmitted(e) => VerifiedChainEvent {
+                tx_hash,
+                log_index,
+                block_number,
+                block_timestamp_epoch,
+                contract_address,
+                event_type: OnChainEventType::DisputeVoteSubmitted,
+                trade_id: Some(format!("{:#x}", e.tradeId)),
+                actor_address: Some(format!("{:#x}", e.voter)),
+                buyer_address: None,
+                amount_wei: None,
+                buyer_award_wei: Some(e.buyerAmount.to_string()),
+                seller_award_wei: Some(e.sellerAmount.to_string()),
+                terms_hash: None,
+                proposal_hash: Some(format!("{:#x}", e.proposalHash)),
             },
             ISafeDealEscrow::ISafeDealEscrowEvents::DisputeResolved(e) => VerifiedChainEvent {
                 tx_hash,
@@ -272,13 +310,32 @@ impl SafeDealContractCodec {
                 contract_address,
                 event_type: OnChainEventType::DisputeResolved,
                 trade_id: Some(format!("{:#x}", e.tradeId)),
-                actor_address: Some(format!("{:#x}", e.arbiter)),
+                actor_address: Some(format!("{:#x}", e.settledBy)),
                 buyer_address: Some(format!("{:#x}", e.buyer)),
                 amount_wei: None,
                 buyer_award_wei: Some(e.buyerAmount.to_string()),
                 seller_award_wei: Some(e.sellerAmount.to_string()),
                 terms_hash: None,
+                proposal_hash: None,
             },
+            ISafeDealEscrow::ISafeDealEscrowEvents::DisputeResolvedByTimeout(e) => {
+                VerifiedChainEvent {
+                    tx_hash,
+                    log_index,
+                    block_number,
+                    block_timestamp_epoch,
+                    contract_address,
+                    event_type: OnChainEventType::DisputeResolvedByTimeout,
+                    trade_id: Some(format!("{:#x}", e.tradeId)),
+                    actor_address: Some(format!("{:#x}", e.triggeredBy)),
+                    buyer_address: None,
+                    amount_wei: None,
+                    buyer_award_wei: Some(e.buyerAmount.to_string()),
+                    seller_award_wei: Some(e.sellerAmount.to_string()),
+                    terms_hash: None,
+                    proposal_hash: None,
+                }
+            }
             ISafeDealEscrow::ISafeDealEscrowEvents::FundsWithdrawn(e) => VerifiedChainEvent {
                 tx_hash,
                 log_index,
@@ -293,6 +350,7 @@ impl SafeDealContractCodec {
                 buyer_award_wei: None,
                 seller_award_wei: None,
                 terms_hash: None,
+                proposal_hash: None,
             },
             ISafeDealEscrow::ISafeDealEscrowEvents::TradeCancelled(e) => VerifiedChainEvent {
                 tx_hash,
@@ -308,6 +366,7 @@ impl SafeDealContractCodec {
                 buyer_award_wei: None,
                 seller_award_wei: None,
                 terms_hash: None,
+                proposal_hash: None,
             },
         };
 

@@ -68,12 +68,16 @@ jobs:
         with:
           node-version: "22"
       - name: Deploy backend to Railway
-        working-directory: backend
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_SERVICE: ${{ vars.RAILWAY_SERVICE_NAME }}
         run: |
           npm install -g @railway/cli
-          railway up --detach
+          if [ -n "$RAILWAY_SERVICE" ]; then
+            railway up --service "$RAILWAY_SERVICE" --detach
+          else
+            railway up --detach
+          fi
 
       - name: Verify live healthcheck if configured
         env:

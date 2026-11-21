@@ -14,7 +14,6 @@ async-trait = { workspace = true }
 chrono = { workspace = true }
 hex = { workspace = true }
 rand = { workspace = true }
-serde_json = { workspace = true }
 tokio = { version = "1", features = ["sync"] }
 tracing = { workspace = true }
 

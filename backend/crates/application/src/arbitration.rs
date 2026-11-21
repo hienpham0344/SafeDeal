@@ -2,10 +2,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use safedeal_domain::blockchain::OnChainEventType;
+use safedeal_domain::blockchain::{OnChainEventType, VerifiedChainEvent};
 use safedeal_domain::deal::{BlockchainTransaction, Deal, DealEvent, DealStatus};
-use safedeal_domain::dispute::{AuditLogEntry, Dispute, DisputeStatus};
-use safedeal_domain::ports::{in_tx, BlockchainGateway, UnitOfWork};
+use safedeal_domain::dispute::{AuditLogEntry, Dispute, DisputeStatus, DisputeVote, VoterRole};
+use safedeal_domain::ports::{in_tx, BlockchainGateway, TxRepos, UnitOfWork};
 use safedeal_shared::{CorrelationIdContext, DomainError, EthFormatValidator};
 
 use crate::disputes::DisputeWithDeal;
@@ -35,7 +35,12 @@ impl ArbitrationUseCase {
                     return Ok(Vec::new());
                 }
                 let trade_ids: Vec<String> = disputes.iter().map(|d| d.trade_id.clone()).collect();
+                let dispute_ids: Vec<i64> = disputes.iter().filter_map(|d| d.id).collect();
                 let deals = repos.deals().find_by_trade_ids(&trade_ids).await?;
+                let mut votes_by_dispute_id = repos
+                    .dispute_votes()
+                    .find_by_dispute_ids(&dispute_ids)
+                    .await?;
                 let mut deals_by_trade_id: HashMap<String, Deal> = deals
                     .into_iter()
                     .map(|deal| (deal.trade_id.to_ascii_lowercase(), deal))
@@ -51,7 +56,15 @@ impl ArbitrationUseCase {
                                 dispute.id.unwrap_or_default()
                             ))
                         })?;
-                    result.push(DisputeWithDeal { dispute, deal });
+                    let votes = dispute
+                        .id
+                        .and_then(|id| votes_by_dispute_id.remove(&id))
+                        .unwrap_or_default();
+                    result.push(DisputeWithDeal {
+                        dispute,
+                        deal,
+                        votes,
+                    });
                 }
                 Ok(result)
             })
@@ -143,19 +156,37 @@ impl ArbitrationUseCase {
                                     created_at: now_p1,
                                 })
                                 .await?;
+                            let votes = repos.dispute_votes().find_by_dispute_id(dispute_id).await?;
                             return Ok((
                                 true,
                                 DisputeWithDeal {
                                     dispute: saved,
                                     deal,
+                                    votes,
                                 },
                             ));
                         }
-                        return Ok((true, DisputeWithDeal { dispute, deal }));
+                        let votes = repos.dispute_votes().find_by_dispute_id(dispute_id).await?;
+                        return Ok((
+                            true,
+                            DisputeWithDeal {
+                                dispute,
+                                deal,
+                                votes,
+                            },
+                        ));
                     }
                     return Err(DomainError::conflict("Dispute has already been resolved."));
                 }
-                Ok((false, DisputeWithDeal { dispute, deal }))
+                let votes = repos.dispute_votes().find_by_dispute_id(dispute_id).await?;
+                Ok((
+                    false,
+                    DisputeWithDeal {
+                        dispute,
+                        deal,
+                        votes,
+                    },
+                ))
             })
         })
         .await?;
@@ -285,83 +316,276 @@ impl ArbitrationUseCase {
                                 created_at: now,
                             })
                             .await?;
+                        let votes = repos.dispute_votes().find_by_dispute_id(dispute_id).await?;
                         return Ok(DisputeWithDeal {
                             dispute: saved,
                             deal: current_deal,
+                            votes,
                         });
                     }
+                    let votes = repos.dispute_votes().find_by_dispute_id(dispute_id).await?;
                     return Ok(DisputeWithDeal {
                         dispute: current_dispute,
                         deal: current_deal,
+                        votes,
                     });
                 }
 
-                let updated_dispute = repos
+                settle_dispute_in_tx(
+                    repos,
+                    current_deal,
+                    current_dispute,
+                    &resolved_event,
+                    receipt.block_number,
+                    &tx_hash,
+                    &caller,
+                    &buyer_award_str,
+                    &seller_award_str,
+                    trimmed_rationale,
+                    &correlation_id,
+                    now,
+                    "RESOLVE_DISPUTE",
+                    format!(
+                        "Arbiter split resolution recorded: buyer={buyer_award_str} seller={seller_award_str}"
+                    ),
+                )
+                .await
+            })
+        })
+        .await
+    }
+
+    /// Records a 2-of-3 settlement vote submitted on-chain by Buyer, Seller, or Arbiter.
+    /// If the transaction also reached 2-of-3 consensus and emitted `DisputeResolved`, settles atomically.
+    pub async fn record_vote(
+        &self,
+        dispute_id: i64,
+        caller_address: &str,
+        raw_tx_hash: &str,
+        optional_rationale: Option<&str>,
+    ) -> Result<DisputeWithDeal, DomainError> {
+        let caller = EthFormatValidator::require_address(Some(caller_address), "callerAddress")?;
+        let tx_hash = EthFormatValidator::require_bytes32(Some(raw_tx_hash), "txHash")?;
+        let trimmed_rationale = optional_rationale
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        if let Some(ref r) = trimmed_rationale {
+            let char_len = r.chars().count();
+            if char_len > 4000 {
+                return Err(DomainError::validation(
+                    "Vote rationale must not exceed 4000 characters.",
+                ));
+            }
+        }
+
+        // Phase 1: Verify caller role in short tx
+        let caller_p1 = caller.clone();
+        let (ctx, voter_role) = in_tx(self.uow.as_ref(), move |repos| {
+            Box::pin(async move {
+                let dispute = repos
                     .disputes()
-                    .save(&Dispute {
-                        id: current_dispute.id,
-                        trade_id: current_dispute.trade_id,
-                        opened_by: current_dispute.opened_by,
-                        reason: current_dispute.reason,
-                        summary: current_dispute.summary,
-                        status: DisputeStatus::Resolved,
-                        buyer_award_wei: Some(buyer_award_str.clone()),
-                        seller_award_wei: Some(seller_award_str.clone()),
-                        resolution_rationale: Some(trimmed_rationale),
-                        open_tx_hash: current_dispute.open_tx_hash,
-                        resolve_tx_hash: Some(tx_hash.clone()),
-                        created_at: current_dispute.created_at,
-                        resolved_at: Some(now),
+                    .find_by_id(dispute_id)
+                    .await?
+                    .ok_or_else(|| {
+                        DomainError::not_found(format!("Dispute not found: {dispute_id}"))
+                    })?;
+                let deal = repos
+                    .deals()
+                    .find_by_trade_id(&dispute.trade_id)
+                    .await?
+                    .ok_or_else(|| {
+                        DomainError::not_found(format!("Deal not found: {}", dispute.trade_id))
+                    })?;
+                let role = resolve_voter_role(&deal, &caller_p1)?;
+                if role == VoterRole::Arbiter {
+                    if let Some(ref r) = trimmed_rationale {
+                        if r.chars().count() < 10 {
+                            return Err(DomainError::validation(
+                                "Arbitration rationale must be at least 10 characters.",
+                            ));
+                        }
+                    }
+                }
+                let votes = repos.dispute_votes().find_by_dispute_id(dispute_id).await?;
+                Ok((
+                    DisputeWithDeal {
+                        dispute,
+                        deal,
+                        votes,
+                    },
+                    role,
+                ))
+            })
+        })
+        .await?;
+
+        let is_idempotent_resolved_tx = ctx.dispute.status == DisputeStatus::Resolved
+            && (ctx
+                .dispute
+                .resolve_tx_hash
+                .as_deref()
+                .is_some_and(|h| h.eq_ignore_ascii_case(&tx_hash))
+                || ctx.votes.iter().any(|v| {
+                    v.voter_address.eq_ignore_ascii_case(&caller)
+                        && v.tx_hash.eq_ignore_ascii_case(&tx_hash)
+                }));
+        if ctx.dispute.status == DisputeStatus::Resolved && !is_idempotent_resolved_tx {
+            return Err(DomainError::conflict("Dispute has already been resolved."));
+        }
+
+        if !self.blockchain_gateway.is_enabled() {
+            return Err(DomainError::external_service(
+                "Blockchain verification is disabled; cannot verify dispute vote.",
+            ));
+        }
+
+        // Phase 2: Inspect transaction receipt OUTSIDE DB transaction
+        let receipt = self
+            .blockchain_gateway
+            .inspect_transaction(&tx_hash)
+            .await?
+            .ok_or_else(|| {
+                DomainError::validation(format!(
+                    "Vote transaction receipt not found or pending: {tx_hash}"
+                ))
+            })?;
+        if !receipt.succeeded {
+            return Err(DomainError::validation(format!(
+                "Vote transaction reverted on-chain: {tx_hash}"
+            )));
+        }
+
+        let vote_event = receipt
+            .decoded_events
+            .iter()
+            .find(|ev| {
+                ev.event_type == OnChainEventType::DisputeVoteSubmitted
+                    && ev
+                        .trade_id
+                        .as_deref()
+                        .is_some_and(|t| t.eq_ignore_ascii_case(&ctx.deal.trade_id))
+                    && ev
+                        .actor_address
+                        .as_deref()
+                        .is_some_and(|a| a.eq_ignore_ascii_case(&caller))
+            })
+            .cloned()
+            .ok_or_else(|| {
+                DomainError::validation(
+                    "Transaction receipt does not emit DisputeVoteSubmitted for this caller and trade.",
+                )
+            })?;
+
+        let buyer_award = EthFormatValidator::require_non_negative_wei(
+            vote_event.buyer_award_wei.as_deref(),
+            "buyerAwardWei",
+        )?;
+        let seller_award = EthFormatValidator::require_non_negative_wei(
+            vote_event.seller_award_wei.as_deref(),
+            "sellerAwardWei",
+        )?;
+        let expected_total =
+            EthFormatValidator::require_positive_wei(Some(&ctx.deal.amount_wei), "amountWei")?;
+        if buyer_award.checked_add(seller_award) != Some(expected_total) {
+            return Err(DomainError::validation(
+                "On-chain vote allocation does not sum to locked escrow amount.",
+            ));
+        }
+        let proposal_hash = EthFormatValidator::require_bytes32(
+            vote_event.proposal_hash.as_deref(),
+            "proposalHash",
+        )?;
+
+        let resolved_event_opt = receipt
+            .decoded_events
+            .iter()
+            .find(|ev| {
+                ev.event_type == OnChainEventType::DisputeResolved
+                    && ev
+                        .trade_id
+                        .as_deref()
+                        .is_some_and(|t| t.eq_ignore_ascii_case(&ctx.deal.trade_id))
+            })
+            .cloned();
+
+        // Phase 3: Persist vote and (if 2-of-3 reached) settlement atomically
+        let trade_id = ctx.deal.trade_id;
+        let now = Utc::now();
+        let correlation_id = CorrelationIdContext::get_or_default("n/a");
+        let buyer_award_str = buyer_award.to_string();
+        let seller_award_str = seller_award.to_string();
+        let vote_rationale = optional_rationale
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+
+        in_tx(self.uow.as_ref(), move |repos| {
+            Box::pin(async move {
+                let current_deal = repos
+                    .deals()
+                    .find_by_trade_id_for_update(&trade_id)
+                    .await?
+                    .ok_or_else(|| DomainError::not_found(format!("Deal not found: {trade_id}")))?;
+                let current_dispute = repos
+                    .disputes()
+                    .find_by_id(dispute_id)
+                    .await?
+                    .ok_or_else(|| {
+                        DomainError::not_found(format!("Dispute not found: {dispute_id}"))
+                    })?;
+                let prior_votes = repos.dispute_votes().find_by_dispute_id(dispute_id).await?;
+                if current_dispute.status == DisputeStatus::Resolved {
+                    let is_matching_resolved_tx = current_dispute
+                        .resolve_tx_hash
+                        .as_deref()
+                        .is_some_and(|h| h.eq_ignore_ascii_case(&tx_hash))
+                        || prior_votes.iter().any(|v| {
+                            v.voter_address.eq_ignore_ascii_case(&caller)
+                                && v.tx_hash.eq_ignore_ascii_case(&tx_hash)
+                        });
+                    if !is_matching_resolved_tx {
+                        return Err(DomainError::conflict("Dispute has already been resolved."));
+                    }
+                }
+
+                let vote_time = DateTime::from_timestamp(vote_event.block_timestamp_epoch, 0)
+                    .unwrap_or(now);
+                repos
+                    .dispute_votes()
+                    .upsert_vote(&DisputeVote {
+                        id: None,
+                        dispute_id,
+                        trade_id: trade_id.clone(),
+                        voter_address: caller.clone(),
+                        voter_role,
+                        buyer_award_wei: buyer_award_str.clone(),
+                        seller_award_wei: seller_award_str.clone(),
+                        proposal_hash: proposal_hash.clone(),
+                        rationale: vote_rationale.clone(),
+                        tx_hash: tx_hash.clone(),
+                        updated_at: vote_time,
                     })
                     .await?;
 
-                let mut next_deal = current_deal.clone();
-                next_deal.status = DealStatus::Resolved;
-                next_deal.on_chain_bound = true;
-                next_deal.settled = true;
-                next_deal.buyer_award_wei = Some(buyer_award_str.clone());
-                next_deal.seller_award_wei = Some(seller_award_str.clone());
-                next_deal.updated_at = now;
-                let updated_deal = repos.deals().save(&next_deal).await?;
-
-                repos.chain_events().record_if_absent(&resolved_event).await?;
-                let resolved_time = DateTime::from_timestamp(resolved_event.block_timestamp_epoch, 0)
-                    .unwrap_or(current_deal.created_at);
-                let timeline_time = if resolved_time < current_deal.created_at {
-                    current_deal.created_at
-                } else {
-                    resolved_time
-                };
-
+                repos.chain_events().record_if_absent(&vote_event).await?;
                 repos
                     .deal_events()
                     .save_if_absent(&DealEvent {
                         id: None,
                         trade_id: trade_id.clone(),
-                        event_type: OnChainEventType::DisputeResolved.as_str().to_string(),
+                        event_type: OnChainEventType::DisputeVoteSubmitted.as_str().to_string(),
                         actor_address: Some(caller.clone()),
                         tx_hash: Some(tx_hash.clone()),
                         block_number: Some(receipt.block_number),
-                        log_index: Some(resolved_event.log_index),
+                        log_index: Some(vote_event.log_index),
                         details: format!(
-                            "Arbiter split resolution recorded: buyer={buyer_award_str} seller={seller_award_str}"
+                            "{} voted split: buyer={} seller={}",
+                            voter_role.as_str(),
+                            buyer_award_str,
+                            seller_award_str
                         ),
-                        created_at: timeline_time,
-                    })
-                    .await?;
-
-                repos
-                    .blockchain_transactions()
-                    .save_or_update(&BlockchainTransaction {
-                        id: None,
-                        trade_id: trade_id.clone(),
-                        tx_hash: tx_hash.clone(),
-                        operation: "RESOLVE_DISPUTE".to_string(),
-                        status: "CONFIRMED".to_string(),
-                        block_number: Some(receipt.block_number),
-                        submitted_by: Some(caller.clone()),
-                        created_at: now,
-                        confirmed_at: Some(now),
+                        created_at: vote_time.max(current_deal.created_at),
                     })
                     .await?;
 
@@ -369,24 +593,438 @@ impl ArbitrationUseCase {
                     .audit_logs()
                     .append(&AuditLogEntry {
                         id: None,
-                        action: "DISPUTE_RESOLVED".to_string(),
-                        actor_address: Some(caller),
+                        action: "DISPUTE_VOTE_SUBMITTED".to_string(),
+                        actor_address: Some(caller.clone()),
                         resource_type: "DISPUTE".to_string(),
                         resource_id: dispute_id.to_string(),
-                        correlation_id: Some(correlation_id),
+                        correlation_id: Some(correlation_id.clone()),
                         details: format!(
-                            "Verified DisputeResolved txHash={tx_hash} buyerWei={buyer_award_str} sellerWei={seller_award_str}"
+                            "Recorded 2-of-3 vote ({}) txHash={tx_hash} buyerWei={buyer_award_str} sellerWei={seller_award_str}",
+                            voter_role.as_str()
                         ),
                         created_at: now,
                     })
                     .await?;
 
+                let updated_dispute = if let Some(resolved_ev) = resolved_event_opt {
+                    if current_dispute.status == DisputeStatus::Open {
+                        let existing_votes =
+                            repos.dispute_votes().find_by_dispute_id(dispute_id).await?;
+                        let arbiter_proposal_rationale = existing_votes
+                            .iter()
+                            .find(|v| {
+                                v.voter_role == VoterRole::Arbiter
+                                    && v.proposal_hash.eq_ignore_ascii_case(&proposal_hash)
+                            })
+                            .and_then(|v| v.rationale.clone());
+                        let consensus_rationale = if voter_role == VoterRole::Arbiter {
+                            vote_rationale.or(arbiter_proposal_rationale)
+                        } else {
+                            arbiter_proposal_rationale.or(vote_rationale)
+                        }
+                        .unwrap_or_else(|| {
+                            format!(
+                                "2-of-3 multi-party consensus finalized by {} co-signature.",
+                                voter_role.as_str()
+                            )
+                        });
+                        return settle_dispute_in_tx(
+                            repos,
+                            current_deal,
+                            current_dispute,
+                            &resolved_ev,
+                            receipt.block_number,
+                            &tx_hash,
+                            &caller,
+                            &buyer_award_str,
+                            &seller_award_str,
+                            consensus_rationale,
+                            &correlation_id,
+                            now,
+                            "SUBMIT_RESOLUTION_VOTE",
+                            format!(
+                                "2-of-3 consensus reached: buyer={buyer_award_str} seller={seller_award_str}"
+                            ),
+                        )
+                        .await;
+                    } else if current_dispute.status == DisputeStatus::Resolved
+                        && current_dispute
+                            .resolution_rationale
+                            .as_deref()
+                            .is_none_or(|r| r.trim().is_empty())
+                        && current_dispute
+                            .resolve_tx_hash
+                            .as_deref()
+                            .is_some_and(|h| h.eq_ignore_ascii_case(&tx_hash))
+                    {
+                        if let Some(rationale_text) = vote_rationale {
+                            repos
+                                .disputes()
+                                .save(&Dispute {
+                                    resolution_rationale: Some(rationale_text),
+                                    ..current_dispute
+                                })
+                                .await?
+                        } else {
+                            current_dispute
+                        }
+                    } else {
+                        current_dispute
+                    }
+                } else {
+                    current_dispute
+                };
+
+                let votes = repos.dispute_votes().find_by_dispute_id(dispute_id).await?;
                 Ok(DisputeWithDeal {
                     dispute: updated_dispute,
-                    deal: updated_deal,
+                    deal: current_deal,
+                    votes,
                 })
             })
         })
         .await
     }
+
+    /// Verifies and persists a permissionless 14-day stalemate timeout 50/50 resolution.
+    pub async fn record_timeout_resolution(
+        &self,
+        dispute_id: i64,
+        caller_address: &str,
+        raw_tx_hash: &str,
+    ) -> Result<DisputeWithDeal, DomainError> {
+        let caller = EthFormatValidator::require_address(Some(caller_address), "callerAddress")?;
+        let tx_hash = EthFormatValidator::require_bytes32(Some(raw_tx_hash), "txHash")?;
+
+        let caller_p1 = caller.clone();
+        let ctx = in_tx(self.uow.as_ref(), move |repos| {
+            Box::pin(async move {
+                let dispute = repos
+                    .disputes()
+                    .find_by_id(dispute_id)
+                    .await?
+                    .ok_or_else(|| {
+                        DomainError::not_found(format!("Dispute not found: {dispute_id}"))
+                    })?;
+                let deal = repos
+                    .deals()
+                    .find_by_trade_id(&dispute.trade_id)
+                    .await?
+                    .ok_or_else(|| {
+                        DomainError::not_found(format!("Deal not found: {}", dispute.trade_id))
+                    })?;
+                if !deal.is_participant_or_arbiter(Some(&caller_p1)) {
+                    return Err(DomainError::forbidden(
+                        "Only deal parties or the assigned arbiter may record timeout settlement.",
+                    ));
+                }
+                let votes = repos.dispute_votes().find_by_dispute_id(dispute_id).await?;
+                Ok(DisputeWithDeal {
+                    dispute,
+                    deal,
+                    votes,
+                })
+            })
+        })
+        .await?;
+
+        let has_rationale = ctx
+            .dispute
+            .resolution_rationale
+            .as_deref()
+            .is_some_and(|r| !r.trim().is_empty());
+        if ctx.dispute.status == DisputeStatus::Resolved && has_rationale {
+            return Ok(ctx);
+        }
+
+        if !self.blockchain_gateway.is_enabled() {
+            return Err(DomainError::external_service(
+                "Blockchain verification is disabled; cannot verify timeout settlement.",
+            ));
+        }
+
+        let receipt = self
+            .blockchain_gateway
+            .inspect_transaction(&tx_hash)
+            .await?
+            .ok_or_else(|| {
+                DomainError::validation(format!(
+                    "Timeout transaction receipt not found or pending: {tx_hash}"
+                ))
+            })?;
+        if !receipt.succeeded {
+            return Err(DomainError::validation(format!(
+                "Timeout transaction reverted on-chain: {tx_hash}"
+            )));
+        }
+
+        let timeout_ev = receipt
+            .decoded_events
+            .iter()
+            .find(|ev| {
+                ev.event_type == OnChainEventType::DisputeResolvedByTimeout
+                    && ev
+                        .trade_id
+                        .as_deref()
+                        .is_some_and(|t| t.eq_ignore_ascii_case(&ctx.deal.trade_id))
+            })
+            .cloned()
+            .ok_or_else(|| {
+                DomainError::validation(
+                    "Transaction receipt does not emit DisputeResolvedByTimeout for this trade.",
+                )
+            })?;
+
+        let resolved_ev = receipt
+            .decoded_events
+            .iter()
+            .find(|ev| {
+                ev.event_type == OnChainEventType::DisputeResolved
+                    && ev
+                        .trade_id
+                        .as_deref()
+                        .is_some_and(|t| t.eq_ignore_ascii_case(&ctx.deal.trade_id))
+            })
+            .cloned()
+            .ok_or_else(|| {
+                DomainError::validation(
+                    "Transaction receipt does not emit DisputeResolved for this trade.",
+                )
+            })?;
+
+        let buyer_award = EthFormatValidator::require_non_negative_wei(
+            timeout_ev.buyer_award_wei.as_deref(),
+            "buyerAwardWei",
+        )?;
+        let seller_award = EthFormatValidator::require_non_negative_wei(
+            timeout_ev.seller_award_wei.as_deref(),
+            "sellerAwardWei",
+        )?;
+        let expected_total =
+            EthFormatValidator::require_positive_wei(Some(&ctx.deal.amount_wei), "amountWei")?;
+        if buyer_award.checked_add(seller_award) != Some(expected_total) {
+            return Err(DomainError::validation(
+                "On-chain timeout split does not sum to locked escrow amount.",
+            ));
+        }
+
+        let trade_id = ctx.deal.trade_id;
+        let now = Utc::now();
+        let correlation_id = CorrelationIdContext::get_or_default("n/a");
+        let buyer_award_str = buyer_award.to_string();
+        let seller_award_str = seller_award.to_string();
+
+        in_tx(self.uow.as_ref(), move |repos| {
+            Box::pin(async move {
+                let current_deal = repos
+                    .deals()
+                    .find_by_trade_id_for_update(&trade_id)
+                    .await?
+                    .ok_or_else(|| DomainError::not_found(format!("Deal not found: {trade_id}")))?;
+                let current_dispute = repos
+                    .disputes()
+                    .find_by_id(dispute_id)
+                    .await?
+                    .ok_or_else(|| {
+                        DomainError::not_found(format!("Dispute not found: {dispute_id}"))
+                    })?;
+
+                if current_dispute.status == DisputeStatus::Resolved {
+                    const TIMEOUT_RATIONALE: &str =
+                        "Automatic 50/50 stalemate timeout fallback executed after 14-day dispute window.";
+                    let needs_rationale = current_dispute
+                        .resolution_rationale
+                        .as_deref()
+                        .is_none_or(|r| r.trim().is_empty());
+                    let final_dispute = if needs_rationale
+                        && current_dispute
+                            .resolve_tx_hash
+                            .as_deref()
+                            .is_none_or(|h| h.eq_ignore_ascii_case(&tx_hash))
+                    {
+                        let resolve_tx_hash = current_dispute
+                            .resolve_tx_hash
+                            .clone()
+                            .or_else(|| Some(tx_hash.clone()));
+                        repos
+                            .disputes()
+                            .save(&Dispute {
+                                resolution_rationale: Some(TIMEOUT_RATIONALE.to_string()),
+                                resolve_tx_hash,
+                                ..current_dispute
+                            })
+                            .await?
+                    } else {
+                        current_dispute
+                    };
+                    let votes = repos.dispute_votes().find_by_dispute_id(dispute_id).await?;
+                    return Ok(DisputeWithDeal {
+                        dispute: final_dispute,
+                        deal: current_deal,
+                        votes,
+                    });
+                }
+
+                repos.chain_events().record_if_absent(&timeout_ev).await?;
+
+                settle_dispute_in_tx(
+                    repos,
+                    current_deal,
+                    current_dispute,
+                    &resolved_ev,
+                    receipt.block_number,
+                    &tx_hash,
+                    &caller,
+                    &buyer_award_str,
+                    &seller_award_str,
+                    "Automatic 50/50 stalemate timeout fallback executed after 14-day dispute window.".to_string(),
+                    &correlation_id,
+                    now,
+                    "RESOLVE_DISPUTE_TIMEOUT",
+                    format!(
+                        "14-day stalemate timeout 50/50 split executed: buyer={buyer_award_str} seller={seller_award_str}"
+                    ),
+                )
+                .await
+            })
+        })
+        .await
+    }
+}
+
+fn resolve_voter_role(deal: &Deal, caller: &str) -> Result<VoterRole, DomainError> {
+    if deal
+        .buyer
+        .as_deref()
+        .is_some_and(|b| b.eq_ignore_ascii_case(caller))
+    {
+        return Ok(VoterRole::Buyer);
+    }
+    if deal.seller.eq_ignore_ascii_case(caller) {
+        return Ok(VoterRole::Seller);
+    }
+    if deal.arbiter.eq_ignore_ascii_case(caller) {
+        return Ok(VoterRole::Arbiter);
+    }
+    Err(DomainError::forbidden(
+        "Only the deal buyer, seller, or designated arbiter may submit a resolution vote.",
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn settle_dispute_in_tx<'a>(
+    repos: &(dyn TxRepos + 'a),
+    current_deal: Deal,
+    current_dispute: Dispute,
+    resolved_event: &VerifiedChainEvent,
+    block_number: i64,
+    tx_hash: &str,
+    caller: &str,
+    buyer_award_str: &str,
+    seller_award_str: &str,
+    rationale: String,
+    correlation_id: &str,
+    now: DateTime<Utc>,
+    tx_operation: &str,
+    event_details: String,
+) -> Result<DisputeWithDeal, DomainError> {
+    let dispute_id = current_dispute
+        .id
+        .ok_or_else(|| DomainError::internal("Dispute missing id"))?;
+    let trade_id = current_deal.trade_id.clone();
+
+    let updated_dispute = repos
+        .disputes()
+        .save(&Dispute {
+            id: current_dispute.id,
+            trade_id: current_dispute.trade_id,
+            opened_by: current_dispute.opened_by,
+            reason: current_dispute.reason,
+            summary: current_dispute.summary,
+            status: DisputeStatus::Resolved,
+            buyer_award_wei: Some(buyer_award_str.to_string()),
+            seller_award_wei: Some(seller_award_str.to_string()),
+            resolution_rationale: Some(rationale),
+            open_tx_hash: current_dispute.open_tx_hash,
+            resolve_tx_hash: Some(tx_hash.to_string()),
+            disputed_at: current_dispute.disputed_at,
+            dispute_timeout_seconds: current_dispute.dispute_timeout_seconds,
+            created_at: current_dispute.created_at,
+            resolved_at: Some(now),
+        })
+        .await?;
+
+    let mut next_deal = current_deal.clone();
+    next_deal.status = DealStatus::Resolved;
+    next_deal.on_chain_bound = true;
+    next_deal.settled = true;
+    next_deal.buyer_award_wei = Some(buyer_award_str.to_string());
+    next_deal.seller_award_wei = Some(seller_award_str.to_string());
+    next_deal.updated_at = now;
+    let updated_deal = repos.deals().save(&next_deal).await?;
+
+    repos
+        .chain_events()
+        .record_if_absent(resolved_event)
+        .await?;
+    let resolved_time = DateTime::from_timestamp(resolved_event.block_timestamp_epoch, 0)
+        .unwrap_or(current_deal.created_at);
+    let timeline_time = if resolved_time < current_deal.created_at {
+        current_deal.created_at
+    } else {
+        resolved_time
+    };
+
+    repos
+        .deal_events()
+        .save_if_absent(&DealEvent {
+            id: None,
+            trade_id: trade_id.clone(),
+            event_type: OnChainEventType::DisputeResolved.as_str().to_string(),
+            actor_address: Some(caller.to_string()),
+            tx_hash: Some(tx_hash.to_string()),
+            block_number: Some(block_number),
+            log_index: Some(resolved_event.log_index),
+            details: event_details,
+            created_at: timeline_time,
+        })
+        .await?;
+
+    repos
+        .blockchain_transactions()
+        .save_or_update(&BlockchainTransaction {
+            id: None,
+            trade_id,
+            tx_hash: tx_hash.to_string(),
+            operation: tx_operation.to_string(),
+            status: "CONFIRMED".to_string(),
+            block_number: Some(block_number),
+            submitted_by: Some(caller.to_string()),
+            created_at: now,
+            confirmed_at: Some(now),
+        })
+        .await?;
+
+    repos
+        .audit_logs()
+        .append(&AuditLogEntry {
+            id: None,
+            action: "DISPUTE_RESOLVED".to_string(),
+            actor_address: Some(caller.to_string()),
+            resource_type: "DISPUTE".to_string(),
+            resource_id: dispute_id.to_string(),
+            correlation_id: Some(correlation_id.to_string()),
+            details: format!(
+                "Verified DisputeResolved txHash={tx_hash} buyerWei={buyer_award_str} sellerWei={seller_award_str}"
+            ),
+            created_at: now,
+        })
+        .await?;
+
+    let votes = repos.dispute_votes().find_by_dispute_id(dispute_id).await?;
+    Ok(DisputeWithDeal {
+        dispute: updated_dispute,
+        deal: updated_deal,
+        votes,
+    })
 }

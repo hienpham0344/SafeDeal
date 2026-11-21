@@ -43,7 +43,8 @@ sol! {
         function markDelivered(bytes32 tradeId) external;
         function releaseFunds(bytes32 tradeId) external;
         function openDispute(bytes32 tradeId) external;
-        function resolveDispute(bytes32 tradeId, uint256 buyerAmount, uint256 sellerAmount) external;
+        function submitResolutionVote(bytes32 tradeId, uint256 buyerAmount, uint256 sellerAmount) external;
+        function resolveDisputeByTimeout(bytes32 tradeId) external;
         function withdraw() external;
         function claimableBalances(address account) external view returns (uint256);
     }
@@ -710,12 +711,13 @@ async fn runs_full_multi_actor_escrow_dispute_arbitration_and_indexer_flow_on_li
     assert_eq!(arbiter_dl_st, 200);
     assert_eq!(arbiter_dl_bytes.as_slice(), &png_payload);
 
-    let resolve_tx_2 = send_escrow_call(
+    // 1/3 vote by arbiter leaves dispute OPEN
+    let vote_tx_arbiter = send_escrow_call(
         &rpc_provider,
         arbiter.address_typed,
         contract_addr,
         U256::ZERO,
-        ISafeDealEscrowLive::resolveDisputeCall {
+        ISafeDealEscrowLive::submitResolutionVoteCall {
             tradeId: tid2_b256,
             buyerAmount: buyer_split,
             sellerAmount: seller_split,
@@ -723,12 +725,38 @@ async fn runs_full_multi_actor_escrow_dispute_arbitration_and_indexer_flow_on_li
         .abi_encode(),
     )
     .await;
-    let (res_st, res_body) = arbiter
+    let (v1_st, v1_body) = arbiter
         .post_json(
-            &format!("{api_base}/api/v1/arbitration/disputes/{dispute_id}/resolution"),
+            &format!("{api_base}/api/v1/disputes/{dispute_id}/votes"),
             json!({
-                "txHash": resolve_tx_2,
+                "txHash": vote_tx_arbiter,
                 "rationale": "75% refunded to buyer, 25% awarded to seller per inspection evidence."
+            }),
+        )
+        .await;
+    assert_eq!(v1_st, 200);
+    assert_eq!(v1_body["status"], "OPEN");
+    assert_eq!(v1_body["votes"].as_array().unwrap().len(), 1);
+
+    // 2/3 co-sign vote by buyer settles on-chain and updates DB atomically
+    let resolve_tx_2 = send_escrow_call(
+        &rpc_provider,
+        buyer.address_typed,
+        contract_addr,
+        U256::ZERO,
+        ISafeDealEscrowLive::submitResolutionVoteCall {
+            tradeId: tid2_b256,
+            buyerAmount: buyer_split,
+            sellerAmount: seller_split,
+        }
+        .abi_encode(),
+    )
+    .await;
+    let (res_st, res_body) = buyer
+        .post_json(
+            &format!("{api_base}/api/v1/disputes/{dispute_id}/votes"),
+            json!({
+                "txHash": resolve_tx_2
             }),
         )
         .await;
@@ -736,6 +764,7 @@ async fn runs_full_multi_actor_escrow_dispute_arbitration_and_indexer_flow_on_li
     assert_eq!(res_body["status"], "RESOLVED");
     assert_eq!(res_body["buyerAwardWei"], buyer_split.to_string());
     assert_eq!(res_body["sellerAwardWei"], seller_split.to_string());
+    assert_eq!(res_body["votes"].as_array().unwrap().len(), 2);
 
     // Live indexer polling twice against real Anvil must be idempotent with 0 duplicates
     let first_indexed = indexer.poll_and_index().await.expect("first live poll");

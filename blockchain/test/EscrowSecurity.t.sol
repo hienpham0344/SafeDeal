@@ -147,9 +147,11 @@ contract EscrowSecurityTest is Test {
         badBuyer.fund{value: 4 ether}(escrow, tradeId);
         badBuyer.openDispute(escrow, tradeId);
 
-        // Arbiter splits 1 ether to badBuyer and 3 ether to seller
+        // Arbiter and seller reach 2/3 consensus to split 1 ether to badBuyer and 3 ether to seller
         vm.prank(arbiter);
-        escrow.resolveDispute(tradeId, 1 ether, 3 ether);
+        escrow.submitResolutionVote(tradeId, 1 ether, 3 ether);
+        vm.prank(seller);
+        escrow.submitResolutionVote(tradeId, 1 ether, 3 ether);
 
         // badBuyer's withdraw fails, but state remains settled
         vm.expectRevert(SafeDealEscrow.WithdrawalTransferFailed.selector);
@@ -182,12 +184,19 @@ contract EscrowSecurityTest is Test {
         escrow.openDispute(tradeId);
 
         vm.prank(arbiter);
-        escrow.resolveDispute(tradeId, 1 ether, 1 ether);
+        escrow.submitResolutionVote(tradeId, 1 ether, 1 ether);
+        vm.prank(buyer);
+        escrow.submitResolutionVote(tradeId, 1 ether, 1 ether);
 
-        // Cannot resolve again
+        // Cannot vote or trigger timeout again after settlement
         vm.prank(arbiter);
         vm.expectRevert(abi.encodeWithSelector(SafeDealEscrow.AlreadySettled.selector, tradeId));
-        escrow.resolveDispute(tradeId, 1 ether, 1 ether);
+        escrow.submitResolutionVote(tradeId, 1 ether, 1 ether);
+
+        vm.warp(block.timestamp + escrow.DISPUTE_TIMEOUT() + 1);
+        vm.prank(buyer);
+        vm.expectRevert(abi.encodeWithSelector(SafeDealEscrow.AlreadySettled.selector, tradeId));
+        escrow.resolveDisputeByTimeout(tradeId);
 
         // Cannot reopen dispute
         vm.prank(buyer);
@@ -228,7 +237,7 @@ contract EscrowSecurityTest is Test {
                 0.5 ether
             )
         );
-        escrow.resolveDispute(tradeId, 1 ether, 0.5 ether);
+        escrow.submitResolutionVote(tradeId, 1 ether, 0.5 ether);
 
         vm.prank(arbiter);
         vm.expectRevert(
@@ -239,7 +248,7 @@ contract EscrowSecurityTest is Test {
                 0
             )
         );
-        escrow.resolveDispute(tradeId, 2.5 ether, 0);
+        escrow.submitResolutionVote(tradeId, 2.5 ether, 0);
     }
 
     function testRejectsDirectNativeTransfersAndEmptyWithdrawals() public {

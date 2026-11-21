@@ -708,7 +708,11 @@ impl SyncDealUseCase {
                             resolved_funded_at =
                                 DateTime::from_timestamp(ev.block_timestamp_epoch, 0);
                         }
-                        if ev.event_type == OnChainEventType::DisputeResolved {
+                        if matches!(
+                            ev.event_type,
+                            OnChainEventType::DisputeResolved
+                                | OnChainEventType::DisputeResolvedByTimeout
+                        ) {
                             buyer_award = ev.buyer_award_wei.clone();
                             seller_award = ev.seller_award_wei.clone();
                         }

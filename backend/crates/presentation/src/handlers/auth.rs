@@ -65,6 +65,8 @@ pub async fn verify(
         headers.append(header::SET_COOKIE, hv);
     }
 
+    let token = state.session_cookies.issue_token(&principal).ok();
+
     Ok((
         headers,
         Json(SessionUserResponse {
@@ -72,6 +74,7 @@ pub async fn verify(
             chain_id: principal.chain_id,
             authenticated_at: principal.authenticated_at,
             csrf_token: principal.csrf_token,
+            token,
         }),
     ))
 }
@@ -93,6 +96,7 @@ pub async fn current_session(
         chain_id: principal.chain_id,
         authenticated_at: principal.authenticated_at,
         csrf_token: principal.csrf_token,
+        token: None,
     })
 }
 

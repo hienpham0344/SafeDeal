@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { parseEther } from "viem";
-import { apiRequest } from "@/services/http/api-client";
+import { apiRequest, retryOnPendingReceipt } from "@/services/http/api-client";
 import type { DisputeDetail } from "@/types/api";
 
 export const resolveDisputeSchema = z.object({
@@ -40,8 +40,10 @@ export async function recordArbitrationResolution(
   disputeId: number,
   payload: { txHash: `0x${string}`; rationale: string }
 ): Promise<DisputeDetail> {
-  return apiRequest<DisputeDetail>(`/api/v1/arbitration/disputes/${disputeId}/resolution`, {
-    method: "POST",
-    body: payload,
-  });
+  return retryOnPendingReceipt(() =>
+    apiRequest<DisputeDetail>(`/api/v1/arbitration/disputes/${disputeId}/resolution`, {
+      method: "POST",
+      body: payload,
+    })
+  );
 }

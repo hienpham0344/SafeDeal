@@ -164,6 +164,8 @@ pub struct SessionUserResponse {
     #[serde(with = "utc_serde")]
     pub authenticated_at: DateTime<Utc>,
     pub csrf_token: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -448,6 +450,65 @@ impl ValidateRequest for ResolveDisputeRequest {
     }
 }
 
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SubmitVoteRequest {
+    #[schema(min_length = 1)]
+    pub tx_hash: Option<String>,
+    #[schema(max_length = 4000)]
+    pub rationale: Option<String>,
+}
+
+impl ValidateRequest for SubmitVoteRequest {
+    fn validate(&self) -> Result<(), Vec<ApiFieldError>> {
+        let mut errors = Vec::new();
+        check_not_blank(&self.tx_hash, "txHash", "txHash is required", &mut errors);
+        if let Some(ref r) = self.rationale {
+            if !r.trim().is_empty() {
+                check_len_range(&self.rationale, "rationale", 1, 4000, &mut errors);
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordTimeoutRequest {
+    #[schema(min_length = 1)]
+    pub tx_hash: Option<String>,
+}
+
+impl ValidateRequest for RecordTimeoutRequest {
+    fn validate(&self) -> Result<(), Vec<ApiFieldError>> {
+        let mut errors = Vec::new();
+        check_not_blank(&self.tx_hash, "txHash", "txHash is required", &mut errors);
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DisputeVoteResponse {
+    pub voter_address: String,
+    pub voter_role: String,
+    pub buyer_award_wei: String,
+    pub seller_award_wei: String,
+    pub proposal_hash: String,
+    pub rationale: Option<String>,
+    pub tx_hash: String,
+    #[serde(with = "utc_serde")]
+    pub updated_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct DisputeDetailResponse {
@@ -467,6 +528,13 @@ pub struct DisputeDetailResponse {
     pub resolution_rationale: Option<String>,
     pub open_tx_hash: Option<String>,
     pub resolve_tx_hash: Option<String>,
+    #[serde(with = "utc_opt_serde")]
+    pub disputed_at: Option<DateTime<Utc>>,
+    #[serde(with = "utc_opt_serde")]
+    pub evidence_deadline_at: Option<DateTime<Utc>>,
+    #[serde(with = "utc_opt_serde")]
+    pub timeout_at: Option<DateTime<Utc>>,
+    pub votes: Vec<DisputeVoteResponse>,
     #[serde(with = "utc_serde")]
     pub created_at: DateTime<Utc>,
     #[serde(with = "utc_opt_serde")]

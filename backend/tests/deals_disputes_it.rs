@@ -94,6 +94,7 @@ async fn executes_full_deal_bind_dispute_private_evidence_and_arbitration_workfl
         buyer_award_wei: None,
         seller_award_wei: None,
         terms_hash: Some(terms_hash.clone()),
+        proposal_hash: None,
     };
     harness
         .gateway
@@ -123,6 +124,7 @@ async fn executes_full_deal_bind_dispute_private_evidence_and_arbitration_workfl
                     delivery_deadline_epoch: delivery_deadline,
                     inspection_window_seconds: 86400,
                     delivered_at_epoch: 0,
+                    disputed_at_epoch: 0,
                     chain_status_ordinal: 1,
                     settled: false,
                     buyer_award_wei: "0".to_string(),
@@ -171,6 +173,7 @@ async fn executes_full_deal_bind_dispute_private_evidence_and_arbitration_workfl
         buyer_award_wei: None,
         seller_award_wei: None,
         terms_hash: None,
+        proposal_hash: None,
     };
     let tid_tx = trade_id.clone();
     let seller_addr_tx = seller.address.clone();
@@ -281,6 +284,7 @@ async fn executes_full_deal_bind_dispute_private_evidence_and_arbitration_workfl
                         buyer_award_wei: None,
                         seller_award_wei: None,
                         terms_hash: None,
+                        proposal_hash: None,
                     }],
                 },
             );
@@ -297,6 +301,7 @@ async fn executes_full_deal_bind_dispute_private_evidence_and_arbitration_workfl
                     delivery_deadline_epoch: delivery_deadline,
                     inspection_window_seconds: 86400,
                     delivered_at_epoch: 0,
+                    disputed_at_epoch: 0,
                     chain_status_ordinal: 6,
                     settled: false,
                     buyer_award_wei: "0".to_string(),
@@ -463,6 +468,7 @@ async fn executes_full_deal_bind_dispute_private_evidence_and_arbitration_workfl
                         buyer_award_wei: Some(buyer_award.to_string()),
                         seller_award_wei: Some(seller_award.to_string()),
                         terms_hash: None,
+                        proposal_hash: None,
                     }],
                 },
             );
@@ -479,6 +485,7 @@ async fn executes_full_deal_bind_dispute_private_evidence_and_arbitration_workfl
                     delivery_deadline_epoch: delivery_deadline,
                     inspection_window_seconds: 86400,
                     delivered_at_epoch: 0,
+                    disputed_at_epoch: 0,
                     chain_status_ordinal: 7,
                     settled: true,
                     buyer_award_wei: buyer_award.to_string(),
@@ -601,6 +608,7 @@ async fn evidence_upload_returns_413_json_when_exceeding_max_bytes_or_request_li
                         buyer_award_wei: None,
                         seller_award_wei: None,
                         terms_hash: None,
+                        proposal_hash: None,
                     }],
                 },
             );
@@ -617,6 +625,7 @@ async fn evidence_upload_returns_413_json_when_exceeding_max_bytes_or_request_li
                     delivery_deadline_epoch: now + 7200,
                     inspection_window_seconds: 3600,
                     delivered_at_epoch: 0,
+                    disputed_at_epoch: 0,
                     chain_status_ordinal: 6,
                     settled: false,
                     buyer_award_wei: "0".to_string(),
@@ -739,6 +748,7 @@ async fn sync_deal_preserves_create_tx_hash_and_rejects_spoofed_contract_and_cro
                     delivery_deadline_epoch: delivery_deadline,
                     inspection_window_seconds: 3600,
                     delivered_at_epoch: 0,
+                    disputed_at_epoch: 0,
                     chain_status_ordinal: 2,
                     settled: false,
                     buyer_award_wei: "0".to_string(),
@@ -778,6 +788,7 @@ async fn sync_deal_preserves_create_tx_hash_and_rejects_spoofed_contract_and_cro
                         buyer_award_wei: None,
                         seller_award_wei: None,
                         terms_hash: None,
+                        proposal_hash: None,
                     }],
                 },
             );
@@ -803,6 +814,7 @@ async fn sync_deal_preserves_create_tx_hash_and_rejects_spoofed_contract_and_cro
                         buyer_award_wei: None,
                         seller_award_wei: None,
                         terms_hash: None,
+                        proposal_hash: None,
                     }],
                 },
             );

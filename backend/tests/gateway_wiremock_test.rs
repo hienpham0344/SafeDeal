@@ -89,18 +89,19 @@ fn codec_decodes_all_nine_events_and_get_trade_round_trip() {
     let none_trade = ISafeDealEscrow::Trade {
         tradeId: B256::ZERO,
         seller: Address::ZERO,
-        buyer: Address::ZERO,
-        arbiter: Address::ZERO,
-        amount: U256::ZERO,
-        termsHash: B256::ZERO,
         createdAt: 0,
-        fundedAt: 0,
-        deliveredAt: 0,
-        fundingDeadline: 0,
-        deliveryDeadline: 0,
-        inspectionWindow: 0,
         status: ISafeDealEscrow::TradeStatus::NONE,
         settled: false,
+        buyer: Address::ZERO,
+        fundedAt: 0,
+        arbiter: Address::ZERO,
+        fundingDeadline: 0,
+        amount: U256::ZERO,
+        termsHash: B256::ZERO,
+        deliveredAt: 0,
+        deliveryDeadline: 0,
+        inspectionWindow: 0,
+        disputedAt: 0,
     };
     let encoded_none = ISafeDealEscrow::getTradeCall::abi_encode_returns(&none_trade);
     assert_eq!(
@@ -112,18 +113,19 @@ fn codec_decodes_all_nine_events_and_get_trade_round_trip() {
     let active_trade = ISafeDealEscrow::Trade {
         tradeId: trade_id,
         seller,
-        buyer: Address::ZERO,
-        arbiter,
-        amount,
-        termsHash: terms_hash,
         createdAt: 1_700_000_000,
-        fundedAt: 1_700_000_100,
-        deliveredAt: 1_700_000_200,
-        fundingDeadline: 1_700_003_600,
-        deliveryDeadline: 1_700_007_200,
-        inspectionWindow: 86_400,
         status: ISafeDealEscrow::TradeStatus::DELIVERED,
         settled: false,
+        buyer: Address::ZERO,
+        fundedAt: 1_700_000_100,
+        arbiter,
+        fundingDeadline: 1_700_003_600,
+        amount,
+        termsHash: terms_hash,
+        deliveredAt: 1_700_000_200,
+        deliveryDeadline: 1_700_007_200,
+        inspectionWindow: 86_400,
+        disputedAt: 0,
     };
     let encoded_active = active_trade.abi_encode();
     let snap = SafeDealContractCodec::decode_get_trade_response(&encoded_active)
@@ -209,6 +211,7 @@ fn codec_decodes_all_nine_events_and_get_trade_round_trip() {
             &ISafeDealEscrow::DisputeOpened {
                 tradeId: trade_id,
                 openedBy: buyer,
+                disputedAt: 1_700_000_300,
             },
             contract,
             tx_hash,
@@ -216,9 +219,23 @@ fn codec_decodes_all_nine_events_and_get_trade_round_trip() {
             5,
         ),
         mock_rpc_log(
+            &ISafeDealEscrow::DisputeVoteSubmitted {
+                tradeId: trade_id,
+                voter: arbiter,
+                buyerAmount: U256::from(1_000_000_000_000_000_000u128),
+                sellerAmount: U256::from(500_000_000_000_000_000u128),
+                proposalHash: B256::repeat_byte(0x44),
+                matchCount: 1,
+            },
+            contract,
+            tx_hash,
+            16,
+            6,
+        ),
+        mock_rpc_log(
             &ISafeDealEscrow::DisputeResolved {
                 tradeId: trade_id,
-                arbiter,
+                settledBy: arbiter,
                 buyer,
                 buyerAmount: U256::from(1_000_000_000_000_000_000u128),
                 seller,
@@ -226,8 +243,20 @@ fn codec_decodes_all_nine_events_and_get_trade_round_trip() {
             },
             contract,
             tx_hash,
-            16,
-            6,
+            17,
+            7,
+        ),
+        mock_rpc_log(
+            &ISafeDealEscrow::DisputeResolvedByTimeout {
+                tradeId: trade_id,
+                triggeredBy: buyer,
+                buyerAmount: U256::from(750_000_000_000_000_000u128),
+                sellerAmount: U256::from(750_000_000_000_000_000u128),
+            },
+            contract,
+            tx_hash,
+            18,
+            8,
         ),
         mock_rpc_log(
             &ISafeDealEscrow::FundsWithdrawn {
@@ -236,8 +265,8 @@ fn codec_decodes_all_nine_events_and_get_trade_round_trip() {
             },
             contract,
             tx_hash,
-            17,
-            7,
+            19,
+            9,
         ),
         mock_rpc_log(
             &ISafeDealEscrow::TradeCancelled {
@@ -246,8 +275,8 @@ fn codec_decodes_all_nine_events_and_get_trade_round_trip() {
             },
             contract,
             tx_hash,
-            18,
-            8,
+            20,
+            10,
         ),
     ];
 
@@ -259,7 +288,7 @@ fn codec_decodes_all_nine_events_and_get_trade_round_trip() {
                 .unwrap()
         })
         .collect();
-    assert_eq!(decoded.len(), 9);
+    assert_eq!(decoded.len(), 11);
     assert_eq!(decoded[0].event_type, OnChainEventType::TradeCreated);
     assert_eq!(decoded[0].buyer_address, None);
     assert_eq!(decoded[0].terms_hash, Some(format!("{terms_hash:#x}")));
@@ -270,18 +299,26 @@ fn codec_decodes_all_nine_events_and_get_trade_round_trip() {
     assert_eq!(decoded[4].event_type, OnChainEventType::RefundExecuted);
     assert_eq!(decoded[4].actor_address, Some(format!("{seller:#x}")));
     assert_eq!(decoded[5].event_type, OnChainEventType::DisputeOpened);
-    assert_eq!(decoded[6].event_type, OnChainEventType::DisputeResolved);
     assert_eq!(
-        decoded[6].buyer_award_wei.as_deref(),
+        decoded[6].event_type,
+        OnChainEventType::DisputeVoteSubmitted
+    );
+    assert_eq!(decoded[7].event_type, OnChainEventType::DisputeResolved);
+    assert_eq!(
+        decoded[7].buyer_award_wei.as_deref(),
         Some("1000000000000000000")
     );
     assert_eq!(
-        decoded[6].seller_award_wei.as_deref(),
+        decoded[7].seller_award_wei.as_deref(),
         Some("500000000000000000")
     );
-    assert_eq!(decoded[7].event_type, OnChainEventType::FundsWithdrawn);
-    assert_eq!(decoded[7].trade_id, None);
-    assert_eq!(decoded[8].event_type, OnChainEventType::TradeCancelled);
+    assert_eq!(
+        decoded[8].event_type,
+        OnChainEventType::DisputeResolvedByTimeout
+    );
+    assert_eq!(decoded[9].event_type, OnChainEventType::FundsWithdrawn);
+    assert_eq!(decoded[9].trade_id, None);
+    assert_eq!(decoded[10].event_type, OnChainEventType::TradeCancelled);
 }
 
 #[tokio::test]
@@ -472,18 +509,19 @@ async fn gateway_fetch_trade_and_block_number_work_over_json_rpc() {
     let trade = ISafeDealEscrow::Trade {
         tradeId: trade_id,
         seller,
-        buyer: Address::ZERO,
-        arbiter,
-        amount: U256::from(2_000_000_000_000_000_000u128),
-        termsHash: B256::repeat_byte(0x66),
         createdAt: 1_700_000_000,
-        fundedAt: 0,
-        deliveredAt: 0,
-        fundingDeadline: 1_700_003_600,
-        deliveryDeadline: 1_700_007_200,
-        inspectionWindow: 86_400,
         status: ISafeDealEscrow::TradeStatus::CREATED,
         settled: false,
+        buyer: Address::ZERO,
+        fundedAt: 0,
+        arbiter,
+        fundingDeadline: 1_700_003_600,
+        amount: U256::from(2_000_000_000_000_000_000u128),
+        termsHash: B256::repeat_byte(0x66),
+        deliveredAt: 0,
+        deliveryDeadline: 1_700_007_200,
+        inspectionWindow: 86_400,
+        disputedAt: 0,
     };
     let encoded_hex = format!("0x{}", hex::encode(Bytes::from(trade.abi_encode())));
 
