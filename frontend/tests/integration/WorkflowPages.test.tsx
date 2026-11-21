@@ -1342,5 +1342,42 @@ describe("SafeDeal Dashboard, DealDetails & Arbiter Pages", () => {
     ).toBeInTheDocument();
     expect(screen.queryByText("Open On-Chain Dispute & Submit Details")).not.toBeInTheDocument();
   });
+
+  it("updates CreateDealPage deadline via custom DeadlinePicker quick preset and calendar dialog", async () => {
+    const user = userEvent.setup();
+    mockSessionState.address = SELLER;
+
+    renderWithQuery(
+      <Routes>
+        <Route path="/create" element={<CreateDealPage />} />
+      </Routes>,
+      "/create"
+    );
+
+    const fundingInput = screen.getByLabelText("Funding Deadline") as HTMLInputElement;
+    const initialVal = fundingInput.value;
+
+    // Click "+3d" quick preset for Funding Deadline (first "+3d" pill)
+    const [firstThreeDayPill] = screen.getAllByRole("button", { name: "+3d" });
+    if (!firstThreeDayPill) {
+      throw new Error("+3d preset pill not found");
+    }
+    await user.click(firstThreeDayPill);
+    expect(fundingInput.value).not.toBe(initialVal);
+
+    // Open custom dark calendar popover and change hour
+    const triggerBtn = screen.getAllByRole("button", { expanded: false }).find((btn) =>
+      btn.textContent?.includes("·")
+    );
+    if (!triggerBtn) {
+      throw new Error("Deadline trigger button not found");
+    }
+    await user.click(triggerBtn);
+    const dialog = screen.getByRole("dialog", { name: "Funding Deadline picker" });
+    expect(dialog).toBeInTheDocument();
+    const hourSelect = screen.getByLabelText("Funding Deadline hour");
+    await user.selectOptions(hourSelect, "15");
+    expect(fundingInput.value.endsWith("T15:" + fundingInput.value.slice(-2))).toBe(true);
+  });
 });
 

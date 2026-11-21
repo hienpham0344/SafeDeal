@@ -737,7 +737,7 @@ export function DealDetailsPage() {
                   nowSeconds <= sellerDisputeUnlockEpoch && (
                     <p className="text-xs text-sd-inkMuted">
                       Delivered. Waiting for buyer approval or inspection window expiry (
-                      {formatEpochSeconds(sellerDisputeUnlockEpoch)}).
+                      {formatTimestamp(new Date(sellerDisputeUnlockEpoch * 1000).toISOString())}).
                     </p>
                   )}
 

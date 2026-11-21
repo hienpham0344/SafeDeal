@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { useForm } from "react-hook-form";
+import { Controller, useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { zeroAddress } from "viem";
 import { ArrowRight, Check, Copy } from "lucide-react";
@@ -8,6 +8,7 @@ import { AppShell } from "@/components/layout/AppShell";
 import { AlertBanner, Panel } from "@/components/ui/Primitives";
 import { Button } from "@/components/ui/Button";
 import { CopyableHash } from "@/components/ui/CopyableHash";
+import { DeadlinePicker, type DeadlinePreset } from "@/components/ui/DeadlinePicker";
 import { appConfig } from "@/config/app.config";
 import { env } from "@/config/env";
 import { dealPath, ROUTES } from "@/config/routes";
@@ -29,6 +30,22 @@ function toLocalDateTimeInput(offsetHours: number): string {
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
+
+const FUNDING_PRESETS: readonly DeadlinePreset[] = [
+  { label: "+1h", offsetHours: 1 },
+  { label: "+6h", offsetHours: 6 },
+  { label: "+24h", offsetHours: 24 },
+  { label: "+3d", offsetHours: 72 },
+  { label: "+7d", offsetHours: 168 },
+];
+
+const DELIVERY_PRESETS: readonly DeadlinePreset[] = [
+  { label: "+1d", offsetHours: 24 },
+  { label: "+3d", offsetHours: 72 },
+  { label: "+7d", offsetHours: 168 },
+  { label: "+14d", offsetHours: 336 },
+  { label: "+30d", offsetHours: 720 },
+];
 
 export function CreateDealPage() {
   const navigate = useNavigate();
@@ -84,7 +101,9 @@ export function CreateDealPage() {
   const defaultInspectionHours = Math.max(1, Math.round(appConfig.escrow.defaultInspectionWindowSeconds / 3600));
 
   const {
+    control,
     register,
+    watch,
     handleSubmit,
     formState: { errors, isSubmitting },
   } = useForm<CreateDealFormValues>({
@@ -687,43 +706,45 @@ export function CreateDealPage() {
                 Schedule &amp; Counterparties
               </legend>
               <div className="grid gap-5 md:grid-cols-2">
-                <div>
-                  <label htmlFor="deal-funding-deadline" className="block text-sm font-medium text-white">
-                    Funding Deadline
-                  </label>
-                  <input
-                    id="deal-funding-deadline"
-                    type="datetime-local"
-                    aria-invalid={Boolean(errors.fundingDeadline)}
-                    aria-describedby={errors.fundingDeadline ? "deal-funding-deadline-error" : undefined}
-                    {...register("fundingDeadline")}
-                    className={inputBaseClass}
-                  />
-                  {errors.fundingDeadline && (
-                    <p id="deal-funding-deadline-error" className="mt-1 text-xs text-red-300">
-                      {errors.fundingDeadline.message}
-                    </p>
+                <Controller
+                  control={control}
+                  name="fundingDeadline"
+                  render={({ field }) => (
+                    <DeadlinePicker
+                      id="deal-funding-deadline"
+                      label="Funding Deadline"
+                      value={field.value}
+                      onChange={field.onChange}
+                      presets={FUNDING_PRESETS}
+                      error={errors.fundingDeadline?.message}
+                      errorId="deal-funding-deadline-error"
+                      aria-invalid={Boolean(errors.fundingDeadline)}
+                    />
                   )}
-                </div>
+                />
 
-                <div>
-                  <label htmlFor="deal-delivery-deadline" className="block text-sm font-medium text-white">
-                    Delivery Deadline
-                  </label>
-                  <input
-                    id="deal-delivery-deadline"
-                    type="datetime-local"
-                    aria-invalid={Boolean(errors.deliveryDeadline)}
-                    aria-describedby={errors.deliveryDeadline ? "deal-delivery-deadline-error" : undefined}
-                    {...register("deliveryDeadline")}
-                    className={inputBaseClass}
-                  />
-                  {errors.deliveryDeadline && (
-                    <p id="deal-delivery-deadline-error" className="mt-1 text-xs text-red-300">
-                      {errors.deliveryDeadline.message}
-                    </p>
-                  )}
-                </div>
+                <Controller
+                  control={control}
+                  name="deliveryDeadline"
+                  render={({ field }) => {
+                    const fundingMs = Date.parse(watch("fundingDeadline"));
+                    const validFundingMs = Number.isNaN(fundingMs) ? Date.now() : fundingMs;
+                    return (
+                      <DeadlinePicker
+                        id="deal-delivery-deadline"
+                        label="Delivery Deadline"
+                        value={field.value}
+                        onChange={field.onChange}
+                        presets={DELIVERY_PRESETS}
+                        anchorEpochMs={validFundingMs}
+                        minDate={new Date(validFundingMs)}
+                        error={errors.deliveryDeadline?.message}
+                        errorId="deal-delivery-deadline-error"
+                        aria-invalid={Boolean(errors.deliveryDeadline)}
+                      />
+                    );
+                  }}
+                />
 
                 <div>
                   <label htmlFor="deal-arbiter" className="block text-sm font-medium text-white">
