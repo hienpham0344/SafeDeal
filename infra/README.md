@@ -4,7 +4,7 @@ This directory contains container orchestration and cloud deployment descriptors
 
 - `docker-compose.yml` — local full-stack orchestration (`postgres`, `anvil`, `backend`, `frontend`).
 - `railway/README.md` — Rust `safedeal-api` + PostgreSQL deployment guide on Railway (`backend/railway.json`).
-- `vercel/README.md` — React + Vite SPA deployment guide on Vercel (`frontend/vercel.json`).
+- Frontend hosting: Firebase Hosting (`/firebase.json`, `/.firebaserc`, deployed by `.github/workflows/deploy-frontend.yml`).
 
 ## Local Docker Compose Usage
 

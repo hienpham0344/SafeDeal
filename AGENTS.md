@@ -9,7 +9,7 @@ SafeDeal là nền tảng escrow P2P phi lưu ký trên Avalanche C-Chain (Fuji 
 - **Frontend (`frontend/`)**: React 18, Vite 6, TypeScript (strict), Tailwind CSS v3, React Router, TanStack Query v5, wagmi + viem, React Hook Form + Zod, Lucide React, Vitest, Playwright.
 - **Backend (`backend/`)**: Rust (`1.91+`), Cargo workspace (`crates/{shared,domain,application,infrastructure,presentation}` + root `safedeal-api`), Axum `0.8`, Tokio, SQLx `0.8` + PostgreSQL migrations (`backend/migrations/`), Alloy `1.7` (`1.8.3` resolved, `sol!` ABI codec + HTTP provider), `k256` + `sha3` (EIP-191/SIWE EIP-4361), HS256 JWT + HttpOnly session cookie + Double-Submit CSRF + Peer-IP Auth Rate Limit, `utoipa` OpenAPI, enforced DAG boundaries (`tests/architecture_dag.rs`).
 - **Blockchain (`blockchain/`)**: Solidity `0.8.28`, Foundry (`forge`, `anvil`, `cast`), OpenZeppelin Contracts, native AVAX pull-payment `SafeDealEscrow.sol`.
-- **Infra (`infra/`)**: `docker-compose.yml` (`postgres`, `anvil`, `backend`, `frontend`), multi-stage Dockerfiles, Nginx SPA config (`frontend/nginx.conf`), Railway (`backend/railway.json`) & Vercel (`frontend/vercel.json`).
+- **Infra (`infra/`)**: `docker-compose.yml` (`postgres`, `anvil`, `backend`, `frontend`), multi-stage Dockerfiles, Nginx SPA config (`frontend/nginx.conf`), Railway (`backend/railway.json`) & Firebase Hosting (`firebase.json`).
 - **Scripts (`scripts/`)**: `install.sh`, `dev-db.sh`, `dev-anvil.sh`, `deploy-local.sh`, `deploy-fuji.sh`, `dev-backend.sh`, `dev-frontend.sh`, `verify.sh`, `e2e-live.sh`, `smoke-test.sh`, `reset-dev.sh`.
 
 ## 2. Nguyên tắc vận hành (Agents-Kit Governance)

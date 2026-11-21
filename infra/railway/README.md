@@ -12,9 +12,9 @@ Use Railway for the Rust `safedeal-api` service (`backend/`) and managed Postgre
    - `APP_ENV=prod`
    - `DATABASE_URL=postgres://<PGUSER>:<PGPASSWORD>@<PGHOST>:<PGPORT>/<PGDATABASE>?sslmode=require` (or `DB_URL` + `DB_USERNAME` + `DB_PASSWORD`)
    - `JWT_SECRET=<cryptographically-random-32+-chars>`
-   - `CORS_ALLOWED_ORIGINS=https://<your-vercel-domain>`
-   - `SIWE_DOMAIN=<your-vercel-domain>`
-   - `SIWE_URI=https://<your-vercel-domain>`
+   - `CORS_ALLOWED_ORIGINS=https://<your-firebase-domain>`
+   - `SIWE_DOMAIN=<your-firebase-domain>`
+   - `SIWE_URI=https://<your-firebase-domain>`
    - `COOKIE_SECURE=true`
    - `COOKIE_SAME_SITE=None`
    - `BLOCKCHAIN_SYNC_ENABLED=true`

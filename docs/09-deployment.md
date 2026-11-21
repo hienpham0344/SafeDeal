@@ -7,13 +7,13 @@
 | **Local Development** | Anvil (`http://127.0.0.1:8545`, chain `31337`) | Gradle `bootRun` / Docker container (`:8080`) | Docker PostgreSQL 16 + `./storage/evidence` | Vite dev/preview (`:5173` / `:4173`) |
 | **Local Live 3-Tier E2E** | Isolated Anvil (`127.0.0.1:18545`) | Packaged `safedeal-api.jar` (`PropertiesLauncher`, `:18080`) | H2 PostgreSQL-mode or `DB_URL` (PostgreSQL 16) + temp evidence dir | Built Vite SPA (`127.0.0.1:14173`) |
 | **Full Docker Compose** | `anvil` service (`infra/docker-compose.yml`, `${ANVIL_PORT:-8545}`) | Multi-stage `backend/Dockerfile` (`${BACKEND_PORT:-8080}`) | Named volumes `postgres_data` (`${DB_PORT:-5432}`) + `evidence_data` | `frontend/Dockerfile` (`nginx:1.27-alpine`, `${FRONTEND_PORT:-5173}`) |
-| **Cloud Testnet / Production** | Avalanche Fuji C-Chain (`43113`) | Railway (`backend/railway.json` healthcheck `/api/v1/health`) | Managed PostgreSQL addon + mounted persistent volume `/app/storage/evidence` | Vercel (`frontend/vercel.json`) or Firebase Hosting (`firebase.json`, `avalanche-9b099.web.app`) |
+| **Cloud Testnet / Production** | Avalanche Fuji C-Chain (`43113`) | Railway (`backend/railway.json` healthcheck `/api/v1/health`) | Managed PostgreSQL addon + mounted persistent volume `/app/storage/evidence` | Firebase Hosting (`firebase.json`, `avalanche-9b099.web.app`) |
 
 ## 2. Container & Web Security Configuration
 
 - **`backend/Dockerfile`**: Two-stage build producing non-root user `safedeal`, JRE 21 runtime, container memory limits (`-XX:MaxRAMPercentage=75.0`), and Docker `HEALTHCHECK` against `http://127.0.0.1:8080/api/v1/health`.
 - **`frontend/Dockerfile` & `frontend/nginx.conf`**: Copies `public/` (favicon, static assets), runs `npm run build`, and serves via `nginx:1.27-alpine` with `server_tokens off`, `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy`, `Permissions-Policy`, immutable asset caching, and SPA fallback (`try_files $uri $uri/ /index.html`).
-- **`frontend/vercel.json` & `firebase.json` (`.firebaserc` -> `avalanche-9b099`)**: Configure matching security headers (`no-cache` for SPA shell, `immutable` for `/assets/**`) and SPA fallback rewrites on Vercel Edge or Firebase Hosting (`https://avalanche-9b099.web.app`). Note: when Firebase Hosting serves the SPA cross-origin against a Railway backend, configure the backend with `COOKIE_SECURE=true`, `COOKIE_SAME_SITE=None`, `SIWE_DOMAIN=avalanche-9b099.web.app`, `SIWE_URI=https://avalanche-9b099.web.app`, and `CORS_ALLOWED_ORIGINS=https://avalanche-9b099.web.app,https://avalanche-9b099.firebaseapp.com` (do not proxy cookies through a Firebase Hosting rewrite, because Firebase strips non-`__session` cookies).
+- **`firebase.json` (`.firebaserc` -> `avalanche-9b099`)**: Configures security headers (`no-cache` for SPA shell, `immutable` for `/assets/**`) and SPA fallback rewrites on Firebase Hosting (`https://avalanche-9b099.web.app`). Note: when Firebase Hosting serves the SPA cross-origin against a Railway backend, configure the backend with `COOKIE_SECURE=true`, `COOKIE_SAME_SITE=None`, `SIWE_DOMAIN=avalanche-9b099.web.app`, `SIWE_URI=https://avalanche-9b099.web.app`, and `CORS_ALLOWED_ORIGINS=https://avalanche-9b099.web.app,https://avalanche-9b099.firebaseapp.com` (do not proxy cookies through a Firebase Hosting rewrite, because Firebase strips non-`__session` cookies).
 
 ## 3. GitHub Actions CI/CD Workflows (`.github/workflows/`)
 
@@ -29,7 +29,7 @@
 4. **`deploy-backend.yml`** (push to `main` under `backend/**` or manual):
    - Executes `./backend/gradlew -p backend test bootJar`, pushes backend to Railway via `RAILWAY_TOKEN`, and probes `vars.BACKEND_HEALTH_URL` if configured.
 5. **`deploy-frontend.yml`** (push to `main` under `frontend/**` or manual):
-   - Builds `frontend/` using `vars.VITE_*` and deploys prebuilt production bundle to Vercel via `VERCEL_TOKEN`, `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID`.
+   - Builds `frontend/` using `vars.VITE_*` and deploys the production bundle to Firebase Hosting via `FIREBASE_TOKEN`.
 
 ## 4. Production Secrets & Variables Matrix
 
@@ -37,6 +37,6 @@
 |---|---|---|
 | Contracts Deploy | `DEPLOYER_PRIVATE_KEY`, `SNOWTRACE_API_KEY` | `FUJI_RPC_URL` |
 | Backend Deploy | `RAILWAY_TOKEN` | `BACKEND_HEALTH_URL` |
-| Frontend Deploy | `VERCEL_TOKEN`, `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID` | `VITE_APP_NAME`, `VITE_APP_ENV`, `VITE_API_BASE_URL`, `VITE_CHAIN_ID`, `VITE_CHAIN_NAME`, `VITE_RPC_URL`, `VITE_EXPLORER_BASE_URL`, `VITE_ESCROW_CONTRACT_ADDRESS`, `VITE_DEFAULT_ARBITER_ADDRESS` |
+| Frontend Deploy | `FIREBASE_TOKEN` | `VITE_APP_NAME`, `VITE_APP_ENV`, `VITE_API_BASE_URL`, `VITE_CHAIN_ID`, `VITE_CHAIN_NAME`, `VITE_RPC_URL`, `VITE_EXPLORER_BASE_URL`, `VITE_ESCROW_CONTRACT_ADDRESS`, `VITE_DEFAULT_ARBITER_ADDRESS` |
 
 Concrete operational procedures appear in [`12-local-development.md`](./12-local-development.md), [`13-fuji-setup.md`](./13-fuji-setup.md), and [`14-railway-setup.md`](./14-railway-setup.md).

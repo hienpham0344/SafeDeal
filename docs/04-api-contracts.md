@@ -6,7 +6,7 @@ Base path: `/api/v1` · Canonical OpenAPI 3 specification: [`docs/openapi.json`]
 
 - **Session Cookie (`safedeal_session`)**: `HttpOnly` HS256 JWT issued upon valid EIP-4361 SIWE signature verification (`POST /api/v1/auth/verify`). JavaScript cannot read this cookie.
 - **Double-Submit CSRF (`safedeal_csrf` + `X-CSRF-Token`)**: Every authenticated mutating request (`POST`, `PUT`, `PATCH`, `DELETE`) must supply the `safedeal_csrf` cookie value identically inside the `X-CSRF-Token` HTTP header.
-- **Cross-Site TLS Deployments**: Set `COOKIE_SECURE=true`, `COOKIE_SAME_SITE=None` when frontend (`Vercel`) and backend (`Railway`) operate on different domains over HTTPS.
+- **Cross-Site TLS Deployments**: Set `COOKIE_SECURE=true`, `COOKIE_SAME_SITE=None` when frontend (`Firebase Hosting`) and backend (`Railway`) operate on different domains over HTTPS.
 
 ## 2. Endpoint Reference
 

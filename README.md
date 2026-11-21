@@ -144,7 +144,6 @@ To prevent thread starvation and connection pool exhaustion on PostgreSQL, datab
 | Forms & Validation | React Hook Form / Zod | `7.54` / `3.24` | Schema-driven form parsing and client validation |
 | Unit & E2E Testing | Vitest / Playwright | `3.0` / `1.50` | Component unit tests and cross-browser integration suites |
 | Primary Frontend Hosting | Firebase Hosting | Automated GitHub Actions | Static asset edge distribution and SPA route rewrites |
-| Alternative Frontend Hosting | Vercel | `frontend/vercel.json` | Static deployment configuration with security headers |
 | Backend Platform | Railway | `backend/Dockerfile` | Containerized Rust Axum API and managed PostgreSQL |
 
 ---
@@ -198,7 +197,7 @@ SafeDeal/
 │   │   ├── application/     Use cases (deals, disputes, arbitration voting, SIWE, indexer)
 │   │   ├── infrastructure/  SQLx persistence, Alloy EVM client, JWT auth, CSRF, storage
 │   │   └── presentation/    Axum HTTP routers, health probes, DTOs, OpenAPI spec
-│   ├── migrations/          Flyway-compatible SQL migrations for PostgreSQL schema
+│   ├── migrations/          SQLx SQL migrations for PostgreSQL schema
 │   ├── tests/
 │   │   └── architecture_dag.rs  Automated Clean Architecture crate dependency assertions
 │   ├── src/main.rs          Backend binary entrypoint and runtime orchestration
@@ -219,8 +218,7 @@ SafeDeal/
 │
 ├── infra/                   Containerization and cloud deployment manifests
 │   ├── docker-compose.yml   Local multi-container stack (Postgres, Anvil, API, Frontend)
-│   ├── railway/             Railway cloud deployment descriptors for backend
-│   └── vercel/              Vercel single-page application routing configurations
+│   └── railway/             Railway cloud deployment descriptors for backend
 │
 ├── scripts/                 Automation scripts for local setup, testing, and deployment
 │   ├── install.sh           Toolchain verification and dependency installation
@@ -242,6 +240,8 @@ SafeDeal/
 │   ├── 06-state-machines.md State transitions and reconciliation rules
 │   ├── 07-smart-contract-design.md Contract security invariants and pull-payment mechanics
 │   ├── 08-security.md       Threat model, authentication, and file security
+│   ├── demo/                Demo script, captions, pitch outline, judge Q&A
+│   ├── process/             Generic engineering templates, workflows, references
 │   └── openapi.json         Committed OpenAPI 3.0 specification
 │
 ├── firebase.json            Firebase Hosting configuration for frontend deployment
@@ -527,7 +527,7 @@ Detailed step-by-step instructions for funding testnet accounts and configuring 
 [ Railway PostgreSQL ]           [ Avalanche C-Chain / Fuji ]
 ```
 
-- **Frontend (Firebase Hosting)**: The primary continuous deployment target configured via `.github/workflows/deploy-frontend.yml` and `firebase.json`, distributing static assets over global CDN edge nodes with SPA rewrite handling. Alternatively, Vercel deployment descriptors remain available in `frontend/vercel.json` and `infra/vercel/README.md`.
+- **Frontend (Firebase Hosting)**: The primary continuous deployment target configured via `.github/workflows/deploy-frontend.yml` and `firebase.json`, distributing static assets over global CDN edge nodes with SPA rewrite handling.
 - **Backend (Railway)**: Built from `backend/Dockerfile` using multi-stage builds. Production settings require `APP_ENV=prod`, an explicit `CORS_ALLOWED_ORIGINS` domain, `COOKIE_SECURE=true`, and an allocated persistent volume for evidence storage. Refer to [`docs/14-railway-setup.md`](docs/14-railway-setup.md).
 
 ---
@@ -566,7 +566,7 @@ Comprehensive technical documentation is maintained within the `docs/` directory
 - [Smart Contract Design](docs/07-smart-contract-design.md): Pull-payment mechanics, security invariants, and gas optimization.
 - [Security Strategy](docs/08-security.md): Threat modeling, SIWE authentication, and file security.
 - [Deployment Strategy](docs/09-deployment.md): Multi-stage containerization and cloud infrastructure specifications.
-- [Testing Strategy](docs/10-testing-strategy.md): Foundry invariants, ArchUnit checks, Vitest, and Playwright suites.
+- [Testing Strategy](docs/10-testing-strategy.md): Foundry invariants, Cargo crate DAG architecture checks, Vitest, and Playwright suites.
 
 ### Operations and Deployment Guides
 

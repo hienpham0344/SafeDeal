@@ -27,7 +27,7 @@ Peer-to-peer digital commerce, freelance deliverables, bespoke hardware trades, 
 - `frontend/` — React 18, Vite 6, TypeScript (strict), Tailwind CSS v3, wagmi + viem, TanStack Query v5, React Hook Form + Zod, Vitest, Playwright.
 - `backend/` — Java 21, Spring Boot 3.5.7, Gradle, PostgreSQL 16 + Flyway (`ddl-auto: validate`), Spring Security (SIWE EIP-4361 + HttpOnly cookie + Double-Submit CSRF + IP rate limit), Web3j, ArchUnit, SpringDoc OpenAPI (`docs/openapi.json`).
 - `blockchain/` — Solidity `0.8.28`, Foundry (`forge`, `anvil`, `cast`), OpenZeppelin Contracts (`ReentrancyGuard`).
-- `infra/` — `docker-compose.yml`, multi-stage Dockerfiles, Nginx SPA headers, Railway & Vercel configs.
+- `infra/` — `docker-compose.yml`, multi-stage Dockerfiles, Nginx SPA headers, Railway & Firebase Hosting configs.
 - `scripts/` — Monorepo setup (`install.sh`), local nodes (`dev-db.sh`, `dev-anvil.sh`), deployers (`deploy-local.sh`, `deploy-fuji.sh`), verification (`verify.sh`, `smoke-test.sh`, `e2e-live.sh`), and reset (`reset-dev.sh`).
 
 ## Documentation Index
@@ -42,12 +42,12 @@ Peer-to-peer digital commerce, freelance deliverables, bespoke hardware trades, 
 | [`06-state-machines.md`](./06-state-machines.md) | On-chain/off-chain `DealStatus` and `DisputeStatus` state machine & reconciliation rules |
 | [`07-smart-contract-design.md`](./07-smart-contract-design.md) | `SafeDealEscrow.sol` pull-payment storage, CEI, role guards & Foundry fuzz invariants |
 | [`08-security.md`](./08-security.md) | Threat model, SIWE single-use nonces, HttpOnly + CSRF, magic-byte upload defense, prod checks |
-| [`09-deployment.md`](./09-deployment.md) | Docker Compose stack, Railway + Vercel production topology, GitHub Actions CI/CD |
+| [`09-deployment.md`](./09-deployment.md) | Docker Compose stack, Railway + Firebase Hosting production topology, GitHub Actions CI/CD |
 | [`10-testing-strategy.md`](./10-testing-strategy.md) | Foundry, ArchUnit/MockMvc/OpenAPI sync, Vitest, Playwright responsive/fault tests & 3-tier E2E |
 | [`11-configuration-guide.md`](./11-configuration-guide.md) | Environment variable matrix (`blockchain/`, `backend/`, `frontend/`, config modules) |
 | [`12-local-development.md`](./12-local-development.md) | Step-by-step local Anvil + Postgres walkthrough (Setup Steps 1–8) |
 | [`13-fuji-setup.md`](./13-fuji-setup.md) | Step-by-step Avalanche Fuji C-Chain testnet deployment (Setup Steps 9–13) |
-| [`14-railway-setup.md`](./14-railway-setup.md) | Step-by-step Railway + PostgreSQL + Vercel production setup (Setup Steps 14–19) |
+| [`14-railway-setup.md`](./14-railway-setup.md) | Step-by-step Railway + PostgreSQL + Firebase Hosting production setup (Setup Steps 14–19) |
 | [`15-troubleshooting.md`](./15-troubleshooting.md) | Common failure diagnostics (SIWE, CSRF, `/health/ready`, rate limits, magic bytes, reloads) |
 | [`16-hackathon-submission.md`](./16-hackathon-submission.md) | UNIHACK 2026 submission dossier, verification ledger & deployment placeholders |
 | [`demo/demo-script.md`](./demo/demo-script.md) | 5-minute live judge walkthrough |

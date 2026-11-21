@@ -1,6 +1,6 @@
-# Railway & Vercel Production Deployment Guide (Setup Steps 14–19)
+# Railway & Firebase Production Deployment Guide (Setup Steps 14–19)
 
-This guide completes the 19-step setup sequence (Steps **14–19**), connecting your Fuji `SafeDealEscrow` contract from [`13-fuji-setup.md`](./13-fuji-setup.md) to **Railway** (Spring Boot API + Managed PostgreSQL) and **Vercel** (React + Vite SPA).
+This guide completes the 19-step setup sequence (Steps **14–19**), connecting your Fuji `SafeDealEscrow` contract from [`13-fuji-setup.md`](./13-fuji-setup.md) to **Railway** (Rust Axum API + Managed PostgreSQL) and **Firebase Hosting** (React + Vite SPA).
 
 ---
 
@@ -36,9 +36,9 @@ DB_URL=jdbc:postgresql://<PGHOST>:<PGPORT>/<PGDATABASE>?sslmode=require
 DB_USERNAME=<PGUSER>
 DB_PASSWORD=<PGPASSWORD>
 JWT_SECRET=<OUTPUT_FROM_OPENSSL_RAND_HEX_32>
-CORS_ALLOWED_ORIGINS=https://<YOUR_VERCEL_DOMAIN>
-SIWE_DOMAIN=<YOUR_VERCEL_DOMAIN>
-SIWE_URI=https://<YOUR_VERCEL_DOMAIN>
+CORS_ALLOWED_ORIGINS=https://<YOUR_FIREBASE_DOMAIN>
+SIWE_DOMAIN=<YOUR_FIREBASE_DOMAIN>
+SIWE_URI=https://<YOUR_FIREBASE_DOMAIN>
 COOKIE_SECURE=true
 COOKIE_SAME_SITE=None
 BLOCKCHAIN_SYNC_ENABLED=true
@@ -75,11 +75,11 @@ Expected: HTTP `200 OK` with `"status":"READY"`, `"databaseConnected":true`, `"e
 
 ---
 
-### Step 18: Deploy Frontend to Vercel (`frontend/vercel.json`)
+### Step 18: Deploy Frontend to Firebase Hosting (`firebase.json`)
 
-Import the repository in Vercel with **Root Directory** set to `frontend`, or run Vercel CLI / `.github/workflows/deploy-frontend.yml`:
+Deployment runs automatically via `.github/workflows/deploy-frontend.yml` (requires repository secret `FIREBASE_TOKEN`).
 
-Configure Vercel **Environment Variables** (`Production`):
+Configure GitHub **Repository Variables** (`Settings → Secrets and variables → Actions → Variables`):
 
 ```env
 VITE_APP_NAME=SafeDeal
@@ -96,10 +96,10 @@ VITE_DEFAULT_ARBITER_ADDRESS=<OPTIONAL_ARBITER_WALLET>
 Deploy prebuilt bundle via CLI (or merge to `main`):
 
 ```bash
-cd frontend && vercel --prod
+npm --prefix frontend run build && npx firebase-tools deploy --only hosting
 ```
 
-Ensure Railway's `CORS_ALLOWED_ORIGINS`, `SIWE_DOMAIN`, and `SIWE_URI` match your final `https://<YOUR_VERCEL_DOMAIN>` origin **without** a trailing slash.
+Ensure Railway's `CORS_ALLOWED_ORIGINS`, `SIWE_DOMAIN`, and `SIWE_URI` match your final `https://<YOUR_FIREBASE_DOMAIN>` origin **without** a trailing slash.
 
 ---
 
@@ -109,8 +109,8 @@ Run the repository smoke test script against the deployed backend and frontend U
 
 ```bash
 API_BASE_URL="https://<YOUR_RAILWAY_DOMAIN>" \
-FRONTEND_BASE_URL="https://<YOUR_VERCEL_DOMAIN>" \
+FRONTEND_BASE_URL="https://<YOUR_FIREBASE_DOMAIN>" \
   bash scripts/smoke-test.sh
 ```
 
-Then open `https://<YOUR_VERCEL_DOMAIN>/support` in a browser with MetaMask/Core on Avalanche Fuji (`43113`), confirm API Status reports healthy, and sign in via SIWE on `/dashboard` to confirm cross-site `HttpOnly` cookie + CSRF headers work end-to-end.
+Then open `https://<YOUR_FIREBASE_DOMAIN>/support` in a browser with MetaMask/Core on Avalanche Fuji (`43113`), confirm API Status reports healthy, and sign in via SIWE on `/dashboard` to confirm cross-site `HttpOnly` cookie + CSRF headers work end-to-end.
