@@ -40,6 +40,7 @@ export interface AuthSessionUser {
   readonly chainId: number;
   readonly authenticatedAt: string;
   readonly csrfToken?: string;
+  readonly token?: string;
 }
 
 export interface DealSummary {

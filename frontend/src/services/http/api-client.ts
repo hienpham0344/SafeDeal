@@ -32,11 +32,41 @@ export function shouldRetryQueryError(failureCount: number, error: unknown): boo
   return failureCount < 2;
 }
 
+const BEARER_TOKEN_KEY = "safedeal_bearer_token";
+
 let inMemoryCsrfToken: string | null = null;
+let inMemoryBearerToken: string | null = null;
 let unauthorizedHandler: (() => void) | null = null;
 
 export function setCsrfToken(token: string | null): void {
   inMemoryCsrfToken = token;
+}
+
+export function setBearerToken(token: string | null): void {
+  inMemoryBearerToken = token;
+  if (typeof window !== "undefined") {
+    try {
+      if (token) {
+        window.sessionStorage.setItem(BEARER_TOKEN_KEY, token);
+      } else {
+        window.sessionStorage.removeItem(BEARER_TOKEN_KEY);
+      }
+    } catch {
+      // Ignore storage access errors in restricted browser contexts
+    }
+  }
+}
+
+export function resolveBearerToken(): string | null {
+  if (inMemoryBearerToken) return inMemoryBearerToken;
+  if (typeof window !== "undefined") {
+    try {
+      return window.sessionStorage.getItem(BEARER_TOKEN_KEY);
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
 
 export function setUnauthorizedHandler(handler: (() => void) | null): void {
@@ -83,6 +113,11 @@ export async function apiRequest<T>(path: string, options: ApiRequestOptions = {
     }
   }
 
+  const bearer = resolveBearerToken();
+  if (bearer) {
+    headers["Authorization"] = `Bearer ${bearer}`;
+  }
+
   const response = await fetch(`${env.apiBaseUrl}${path}`, {
     method,
     headers,
@@ -102,6 +137,7 @@ export async function apiRequest<T>(path: string, options: ApiRequestOptions = {
   if (!response.ok) {
     if (response.status === 401) {
       inMemoryCsrfToken = null;
+      setBearerToken(null);
       if (path !== "/api/v1/auth/me") {
         unauthorizedHandler?.();
       }

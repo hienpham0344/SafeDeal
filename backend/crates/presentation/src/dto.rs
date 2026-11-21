@@ -164,6 +164,8 @@ pub struct SessionUserResponse {
     #[serde(with = "utc_serde")]
     pub authenticated_at: DateTime<Utc>,
     pub csrf_token: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
