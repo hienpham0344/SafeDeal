@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use safedeal_domain::dispute::{Dispute, DisputeEvidence, DisputeStatus};
-use safedeal_domain::ports::{DisputeEvidenceRepository, DisputeRepository};
+use safedeal_domain::dispute::{Dispute, DisputeEvidence, DisputeStatus, DisputeVote, VoterRole};
+use safedeal_domain::ports::{DisputeEvidenceRepository, DisputeRepository, DisputeVoteRepository};
 use safedeal_shared::DomainError;
 use sqlx::{PgConnection, PgPool};
 
@@ -22,6 +22,8 @@ struct DisputeRow {
     resolution_rationale: Option<String>,
     open_tx_hash: Option<String>,
     resolve_tx_hash: Option<String>,
+    disputed_at: Option<DateTime<Utc>>,
+    dispute_timeout_seconds: i64,
     created_at: DateTime<Utc>,
     resolved_at: Option<DateTime<Utc>>,
 }
@@ -51,6 +53,8 @@ impl TryFrom<DisputeRow> for Dispute {
             resolution_rationale: r.resolution_rationale,
             open_tx_hash: r.open_tx_hash,
             resolve_tx_hash: r.resolve_tx_hash,
+            disputed_at: r.disputed_at,
+            dispute_timeout_seconds: r.dispute_timeout_seconds,
             created_at: r.created_at,
             resolved_at: r.resolved_at,
         })
@@ -112,11 +116,13 @@ async fn save_dispute_conn(
                 INSERT INTO disputes (
                     trade_id, opened_by, reason, summary, status,
                     buyer_award_wei, seller_award_wei, resolution_rationale,
-                    open_tx_hash, resolve_tx_hash, created_at, resolved_at
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                    open_tx_hash, resolve_tx_hash, disputed_at, dispute_timeout_seconds,
+                    created_at, resolved_at
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
                 RETURNING id, trade_id, opened_by, reason, summary, status,
                           buyer_award_wei, seller_award_wei, resolution_rationale,
-                          open_tx_hash, resolve_tx_hash, created_at, resolved_at
+                          open_tx_hash, resolve_tx_hash, disputed_at, dispute_timeout_seconds,
+                          created_at, resolved_at
                 "#,
         )
         .bind(&trade_id)
@@ -129,6 +135,8 @@ async fn save_dispute_conn(
         .bind(&dispute.resolution_rationale)
         .bind(&open_tx)
         .bind(&resolve_tx)
+        .bind(dispute.disputed_at)
+        .bind(dispute.dispute_timeout_seconds)
         .bind(dispute.created_at)
         .bind(dispute.resolved_at)
         .fetch_one(conn)
@@ -139,11 +147,13 @@ async fn save_dispute_conn(
                 UPDATE disputes SET
                     trade_id = $2, opened_by = $3, reason = $4, summary = $5, status = $6,
                     buyer_award_wei = $7, seller_award_wei = $8, resolution_rationale = $9,
-                    open_tx_hash = $10, resolve_tx_hash = $11, resolved_at = $12
+                    open_tx_hash = $10, resolve_tx_hash = $11, disputed_at = $12,
+                    dispute_timeout_seconds = $13, resolved_at = $14
                 WHERE id = $1
                 RETURNING id, trade_id, opened_by, reason, summary, status,
                           buyer_award_wei, seller_award_wei, resolution_rationale,
-                          open_tx_hash, resolve_tx_hash, created_at, resolved_at
+                          open_tx_hash, resolve_tx_hash, disputed_at, dispute_timeout_seconds,
+                          created_at, resolved_at
                 "#,
         )
         .bind(id)
@@ -157,6 +167,8 @@ async fn save_dispute_conn(
         .bind(&dispute.resolution_rationale)
         .bind(&open_tx)
         .bind(&resolve_tx)
+        .bind(dispute.disputed_at)
+        .bind(dispute.dispute_timeout_seconds)
         .bind(dispute.resolved_at)
         .fetch_one(conn)
         .await
@@ -173,7 +185,8 @@ async fn find_dispute_by_id_conn(
         r#"
         SELECT id, trade_id, opened_by, reason, summary, status,
                buyer_award_wei, seller_award_wei, resolution_rationale,
-               open_tx_hash, resolve_tx_hash, created_at, resolved_at
+               open_tx_hash, resolve_tx_hash, disputed_at, dispute_timeout_seconds,
+               created_at, resolved_at
         FROM disputes
         WHERE id = $1
         "#,
@@ -193,7 +206,8 @@ async fn find_dispute_by_trade_id_conn(
         r#"
         SELECT id, trade_id, opened_by, reason, summary, status,
                buyer_award_wei, seller_award_wei, resolution_rationale,
-               open_tx_hash, resolve_tx_hash, created_at, resolved_at
+               open_tx_hash, resolve_tx_hash, disputed_at, dispute_timeout_seconds,
+               created_at, resolved_at
         FROM disputes
         WHERE trade_id = $1
         "#,
@@ -243,7 +257,8 @@ async fn find_assigned_to_arbiter_conn(
         r#"
         SELECT disp.id, disp.trade_id, disp.opened_by, disp.reason, disp.summary, disp.status,
                disp.buyer_award_wei, disp.seller_award_wei, disp.resolution_rationale,
-               disp.open_tx_hash, disp.resolve_tx_hash, disp.created_at, disp.resolved_at
+               disp.open_tx_hash, disp.resolve_tx_hash, disp.disputed_at,
+               disp.dispute_timeout_seconds, disp.created_at, disp.resolved_at
         FROM disputes disp
         JOIN deals deal ON disp.trade_id = deal.trade_id
         WHERE deal.arbiter_address = $1
@@ -531,5 +546,212 @@ impl DisputeEvidenceRepository for PgTxDisputeEvidenceRepository {
             .as_mut()
             .ok_or_else(|| DomainError::internal("Transaction already finalized"))?;
         find_evidence_by_id_and_dispute_conn(tx, evidence_id, dispute_id).await
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct DisputeVoteRow {
+    id: i64,
+    dispute_id: i64,
+    trade_id: String,
+    voter_address: String,
+    voter_role: String,
+    buyer_award_wei: String,
+    seller_award_wei: String,
+    proposal_hash: String,
+    rationale: Option<String>,
+    tx_hash: String,
+    updated_at: DateTime<Utc>,
+}
+
+impl TryFrom<DisputeVoteRow> for DisputeVote {
+    type Error = DomainError;
+
+    fn try_from(r: DisputeVoteRow) -> Result<Self, Self::Error> {
+        let voter_role = match r.voter_role.as_str() {
+            "BUYER" => VoterRole::Buyer,
+            "SELLER" => VoterRole::Seller,
+            "ARBITER" => VoterRole::Arbiter,
+            other => {
+                return Err(DomainError::internal(format!(
+                    "Invalid voter role in DB: {other}"
+                )))
+            }
+        };
+        Ok(Self {
+            id: Some(r.id),
+            dispute_id: r.dispute_id,
+            trade_id: r.trade_id,
+            voter_address: r.voter_address,
+            voter_role,
+            buyer_award_wei: r.buyer_award_wei,
+            seller_award_wei: r.seller_award_wei,
+            proposal_hash: r.proposal_hash,
+            rationale: r.rationale,
+            tx_hash: r.tx_hash,
+            updated_at: r.updated_at,
+        })
+    }
+}
+
+async fn upsert_dispute_vote_conn(
+    conn: &mut PgConnection,
+    vote: &DisputeVote,
+) -> Result<DisputeVote, DomainError> {
+    let row = sqlx::query_as::<_, DisputeVoteRow>(
+        r#"
+        INSERT INTO dispute_votes (
+            dispute_id, trade_id, voter_address, voter_role,
+            buyer_award_wei, seller_award_wei, proposal_hash,
+            rationale, tx_hash, updated_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        ON CONFLICT (dispute_id, voter_address) DO UPDATE SET
+            voter_role = EXCLUDED.voter_role,
+            buyer_award_wei = EXCLUDED.buyer_award_wei,
+            seller_award_wei = EXCLUDED.seller_award_wei,
+            proposal_hash = EXCLUDED.proposal_hash,
+            rationale = COALESCE(EXCLUDED.rationale, dispute_votes.rationale),
+            tx_hash = EXCLUDED.tx_hash,
+            updated_at = EXCLUDED.updated_at
+        RETURNING id, dispute_id, trade_id, voter_address, voter_role,
+                  buyer_award_wei, seller_award_wei, proposal_hash,
+                  rationale, tx_hash, updated_at
+        "#,
+    )
+    .bind(vote.dispute_id)
+    .bind(vote.trade_id.to_ascii_lowercase())
+    .bind(vote.voter_address.to_ascii_lowercase())
+    .bind(vote.voter_role.as_str())
+    .bind(&vote.buyer_award_wei)
+    .bind(&vote.seller_award_wei)
+    .bind(vote.proposal_hash.to_ascii_lowercase())
+    .bind(&vote.rationale)
+    .bind(vote.tx_hash.to_ascii_lowercase())
+    .bind(vote.updated_at)
+    .fetch_one(conn)
+    .await
+    .map_err(map_sqlx_err)?;
+    row.try_into()
+}
+
+async fn find_votes_by_dispute_id_conn(
+    conn: &mut PgConnection,
+    dispute_id: i64,
+) -> Result<Vec<DisputeVote>, DomainError> {
+    let rows = sqlx::query_as::<_, DisputeVoteRow>(
+        r#"
+        SELECT id, dispute_id, trade_id, voter_address, voter_role,
+               buyer_award_wei, seller_award_wei, proposal_hash,
+               rationale, tx_hash, updated_at
+        FROM dispute_votes
+        WHERE dispute_id = $1
+        ORDER BY updated_at ASC, id ASC
+        "#,
+    )
+    .bind(dispute_id)
+    .fetch_all(conn)
+    .await
+    .map_err(map_sqlx_err)?;
+    rows.into_iter().map(TryInto::try_into).collect()
+}
+
+async fn find_votes_by_dispute_ids_conn(
+    conn: &mut PgConnection,
+    dispute_ids: &[i64],
+) -> Result<HashMap<i64, Vec<DisputeVote>>, DomainError> {
+    if dispute_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let rows = sqlx::query_as::<_, DisputeVoteRow>(
+        r#"
+        SELECT id, dispute_id, trade_id, voter_address, voter_role,
+               buyer_award_wei, seller_award_wei, proposal_hash,
+               rationale, tx_hash, updated_at
+        FROM dispute_votes
+        WHERE dispute_id = ANY($1)
+        ORDER BY updated_at ASC, id ASC
+        "#,
+    )
+    .bind(dispute_ids)
+    .fetch_all(conn)
+    .await
+    .map_err(map_sqlx_err)?;
+
+    let mut out: HashMap<i64, Vec<DisputeVote>> = HashMap::new();
+    for row in rows {
+        let vote: DisputeVote = row.try_into()?;
+        out.entry(vote.dispute_id).or_default().push(vote);
+    }
+    Ok(out)
+}
+
+pub struct PgDisputeVoteRepository {
+    pool: PgPool,
+}
+
+impl PgDisputeVoteRepository {
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+}
+
+#[async_trait]
+impl DisputeVoteRepository for PgDisputeVoteRepository {
+    async fn upsert_vote(&self, vote: &DisputeVote) -> Result<DisputeVote, DomainError> {
+        let mut conn = acquire_conn(&self.pool).await?;
+        upsert_dispute_vote_conn(&mut conn, vote).await
+    }
+
+    async fn find_by_dispute_id(&self, dispute_id: i64) -> Result<Vec<DisputeVote>, DomainError> {
+        let mut conn = acquire_conn(&self.pool).await?;
+        find_votes_by_dispute_id_conn(&mut conn, dispute_id).await
+    }
+
+    async fn find_by_dispute_ids(
+        &self,
+        dispute_ids: &[i64],
+    ) -> Result<HashMap<i64, Vec<DisputeVote>>, DomainError> {
+        let mut conn = acquire_conn(&self.pool).await?;
+        find_votes_by_dispute_ids_conn(&mut conn, dispute_ids).await
+    }
+}
+
+pub(crate) struct PgTxDisputeVoteRepository {
+    tx: PgTxHandle,
+}
+
+impl PgTxDisputeVoteRepository {
+    pub(crate) fn new(tx: PgTxHandle) -> Self {
+        Self { tx }
+    }
+}
+
+#[async_trait]
+impl DisputeVoteRepository for PgTxDisputeVoteRepository {
+    async fn upsert_vote(&self, vote: &DisputeVote) -> Result<DisputeVote, DomainError> {
+        let mut guard = self.tx.lock().await;
+        let tx = guard
+            .as_mut()
+            .ok_or_else(|| DomainError::internal("Transaction already finalized"))?;
+        upsert_dispute_vote_conn(tx, vote).await
+    }
+
+    async fn find_by_dispute_id(&self, dispute_id: i64) -> Result<Vec<DisputeVote>, DomainError> {
+        let mut guard = self.tx.lock().await;
+        let tx = guard
+            .as_mut()
+            .ok_or_else(|| DomainError::internal("Transaction already finalized"))?;
+        find_votes_by_dispute_id_conn(tx, dispute_id).await
+    }
+
+    async fn find_by_dispute_ids(
+        &self,
+        dispute_ids: &[i64],
+    ) -> Result<HashMap<i64, Vec<DisputeVote>>, DomainError> {
+        let mut guard = self.tx.lock().await;
+        let tx = guard
+            .as_mut()
+            .ok_or_else(|| DomainError::internal("Transaction already finalized"))?;
+        find_votes_by_dispute_ids_conn(tx, dispute_ids).await
     }
 }

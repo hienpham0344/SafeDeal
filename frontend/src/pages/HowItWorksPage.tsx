@@ -21,9 +21,9 @@ const LIFECYCLE_STEPS = [
   },
   {
     step: "03",
-    title: "Delivery, approval, or arbitration",
-    body: "After markDelivered, the buyer calls releaseFunds to credit the seller. If an agreement fails before delivery deadline, buyer can reclaim; if disputed, the assigned arbiter settles the split.",
-    tags: ["markDelivered", "releaseFunds", "resolveDispute"],
+    title: "Delivery, approval, or 2-of-3 arbitration",
+    body: "After markDelivered, the buyer calls releaseFunds to credit the seller. If disputed, Buyer, Seller, and Arbiter reach 2-of-3 consensus via submitResolutionVote — or anyone triggers the 50/50 timeout fallback after 14 days.",
+    tags: ["markDelivered", "releaseFunds", "submitResolutionVote", "resolveDisputeByTimeout"],
     icon: Scale,
   },
 ] as const;
@@ -94,16 +94,19 @@ export function HowItWorksPage() {
             </p>
           </Panel>
 
-          <Panel variant="inset" className="border-amber-400/35 bg-amber-500/[0.06] space-y-3">
-            <div className="flex items-center gap-2 text-amber-200">
+          <Panel variant="inset" className="border-emerald-400/35 bg-emerald-500/[0.06] space-y-3">
+            <div className="flex items-center gap-2 text-emerald-200">
               <ShieldAlert size={18} aria-hidden="true" />
-              <h2 className="text-base font-medium">Important Trust Limitation</h2>
+              <h2 className="text-base font-medium">2-of-3 Consensus &amp; 14-Day Stalemate Protection</h2>
             </div>
             <p className="max-w-[65ch] text-sm leading-relaxed text-sd-inkMuted">
-              SafeDeal does not verify real-world service delivery autonomously. While the smart contract
-              strictly enforces custody, deadlines, and non-custodial settlement rules, a designated human
-              arbiter remains a trusted party for disputed transactions. If an arbiter becomes permanently
-              unavailable while a deal is disputed, disputed funds remain locked on-chain until resolved.
+              Disputed deals cannot be settled unilaterally by an arbiter and can never remain trapped on-chain.
+              Settlement requires 2-of-3 matching votes across Buyer, Seller, and the neutral Arbiter. If no
+              consensus is reached within 14 days,{" "}
+              <code className="rounded bg-sd-inset px-1.5 py-0.5 font-mono text-xs text-white">
+                resolveDisputeByTimeout
+              </code>{" "}
+              unlocks a deterministic 50/50 split automatically.
             </p>
           </Panel>
 

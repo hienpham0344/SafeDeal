@@ -8,6 +8,8 @@ export const appConfig = {
   },
   escrow: {
     defaultInspectionWindowSeconds: env.defaultInspectionWindowSeconds,
+    evidenceSlaSeconds: 7 * 86_400,
+    disputeTimeoutSeconds: 14 * 86_400,
     maxTitleLength: 160,
     maxDescriptionLength: 4000,
     maxTermsLength: 8000,

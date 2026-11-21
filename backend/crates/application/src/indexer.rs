@@ -3,7 +3,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use safedeal_domain::blockchain::{ChainSyncState, OnChainEventType, VerifiedChainEvent};
 use safedeal_domain::deal::{Deal, DealEvent, DealStatus};
-use safedeal_domain::dispute::{Dispute, DisputeStatus};
+use safedeal_domain::dispute::{Dispute, DisputeStatus, DisputeVote, VoterRole};
 use safedeal_domain::ports::{in_tx, BlockchainGateway, TxRepos, UnitOfWork};
 use safedeal_shared::{DomainError, EthFormatValidator, ZERO_ADDRESS};
 use tokio::sync::Mutex;
@@ -207,7 +207,10 @@ async fn apply_event_to_deal_projection<'a>(
         OnChainEventType::FundsReleased => DealStatus::Released,
         OnChainEventType::RefundExecuted => DealStatus::Refunded,
         OnChainEventType::DisputeOpened => DealStatus::Disputed,
-        OnChainEventType::DisputeResolved => DealStatus::Resolved,
+        OnChainEventType::DisputeVoteSubmitted => current.status,
+        OnChainEventType::DisputeResolved | OnChainEventType::DisputeResolvedByTimeout => {
+            DealStatus::Resolved
+        }
         OnChainEventType::TradeCancelled => DealStatus::Cancelled,
         OnChainEventType::FundsWithdrawn => current.status,
     };
@@ -235,8 +238,10 @@ async fn apply_event_to_deal_projection<'a>(
         current.delivered_at
     };
 
-    let (buyer_award_wei, seller_award_wei) = if ev.event_type == OnChainEventType::DisputeResolved
-    {
+    let (buyer_award_wei, seller_award_wei) = if matches!(
+        ev.event_type,
+        OnChainEventType::DisputeResolved | OnChainEventType::DisputeResolvedByTimeout
+    ) {
         (ev.buyer_award_wei.clone(), ev.seller_award_wei.clone())
     } else {
         (
@@ -309,9 +314,76 @@ async fn apply_event_to_deal_projection<'a>(
         })
         .await?;
 
-    if ev.event_type == OnChainEventType::DisputeResolved {
+    if ev.event_type == OnChainEventType::DisputeOpened {
+        if let Some(existing) = repos.disputes().find_by_trade_id(trade_id).await? {
+            if existing.disputed_at.is_none() {
+                repos
+                    .disputes()
+                    .save(&Dispute {
+                        disputed_at: Some(event_time),
+                        ..existing
+                    })
+                    .await?;
+            }
+        }
+    }
+
+    if ev.event_type == OnChainEventType::DisputeVoteSubmitted {
+        if let (Some(existing), Some(actor), Some(buyer_wei), Some(seller_wei), Some(prop_hash)) = (
+            repos.disputes().find_by_trade_id(trade_id).await?,
+            ev.actor_address.as_deref(),
+            ev.buyer_award_wei.as_ref(),
+            ev.seller_award_wei.as_ref(),
+            ev.proposal_hash.as_ref(),
+        ) {
+            if let Some(dispute_id) = existing.id {
+                let role = if current
+                    .buyer
+                    .as_deref()
+                    .is_some_and(|b| b.eq_ignore_ascii_case(actor))
+                {
+                    Some(VoterRole::Buyer)
+                } else if current.seller.eq_ignore_ascii_case(actor) {
+                    Some(VoterRole::Seller)
+                } else if current.arbiter.eq_ignore_ascii_case(actor) {
+                    Some(VoterRole::Arbiter)
+                } else {
+                    None
+                };
+                if let Some(voter_role) = role {
+                    repos
+                        .dispute_votes()
+                        .upsert_vote(&DisputeVote {
+                            id: None,
+                            dispute_id,
+                            trade_id: trade_id.clone(),
+                            voter_address: actor.to_ascii_lowercase(),
+                            voter_role,
+                            buyer_award_wei: buyer_wei.clone(),
+                            seller_award_wei: seller_wei.clone(),
+                            proposal_hash: prop_hash.clone(),
+                            rationale: None,
+                            tx_hash: ev.tx_hash.clone(),
+                            updated_at: event_time,
+                        })
+                        .await?;
+                }
+            }
+        }
+    }
+
+    if matches!(
+        ev.event_type,
+        OnChainEventType::DisputeResolved | OnChainEventType::DisputeResolvedByTimeout
+    ) {
+        const TIMEOUT_RATIONALE: &str =
+            "Automatic 50/50 stalemate timeout fallback executed after 14-day dispute window.";
         if let Some(existing) = repos.disputes().find_by_trade_id(trade_id).await? {
             if existing.status == DisputeStatus::Open {
+                let rationale = existing.resolution_rationale.clone().or_else(|| {
+                    (ev.event_type == OnChainEventType::DisputeResolvedByTimeout)
+                        .then(|| TIMEOUT_RATIONALE.to_string())
+                });
                 repos
                     .disputes()
                     .save(&Dispute {
@@ -323,11 +395,32 @@ async fn apply_event_to_deal_projection<'a>(
                         status: DisputeStatus::Resolved,
                         buyer_award_wei: ev.buyer_award_wei.clone(),
                         seller_award_wei: ev.seller_award_wei.clone(),
-                        resolution_rationale: existing.resolution_rationale,
+                        resolution_rationale: rationale,
                         open_tx_hash: existing.open_tx_hash,
                         resolve_tx_hash: Some(ev.tx_hash.clone()),
+                        disputed_at: existing.disputed_at,
+                        dispute_timeout_seconds: existing.dispute_timeout_seconds,
                         created_at: existing.created_at,
                         resolved_at: Some(event_time),
+                    })
+                    .await?;
+            } else if existing.status == DisputeStatus::Resolved
+                && ev.event_type == OnChainEventType::DisputeResolvedByTimeout
+                && existing
+                    .resolution_rationale
+                    .as_deref()
+                    .is_none_or(|r| r.trim().is_empty())
+            {
+                let resolve_tx_hash = existing
+                    .resolve_tx_hash
+                    .clone()
+                    .or_else(|| Some(ev.tx_hash.clone()));
+                repos
+                    .disputes()
+                    .save(&Dispute {
+                        resolution_rationale: Some(TIMEOUT_RATIONALE.to_string()),
+                        resolve_tx_hash,
+                        ..existing
                     })
                     .await?;
             }

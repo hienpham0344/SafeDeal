@@ -243,16 +243,126 @@ contract SafeDealEscrowTest is Test {
         escrow.openDispute(TRADE_ID);
         assertEq(uint8(escrow.getTrade(TRADE_ID).status), uint8(ISafeDealEscrow.TradeStatus.DISPUTED));
 
-        // Arbiter splits 25% buyer / 75% seller
+        // Arbiter proposes 25% buyer / 75% seller (1/3 vote -> still DISPUTED)
         uint256 buyerShare = 0.5 ether;
         uint256 sellerShare = 1.5 ether;
         vm.prank(arbiter);
-        escrow.resolveDispute(TRADE_ID, buyerShare, sellerShare);
+        escrow.submitResolutionVote(TRADE_ID, buyerShare, sellerShare);
+        assertEq(uint8(escrow.getTrade(TRADE_ID).status), uint8(ISafeDealEscrow.TradeStatus.DISPUTED));
+        assertFalse(escrow.getTrade(TRADE_ID).settled);
+
+        // Seller co-signs the split (2/3 votes -> RESOLVED)
+        vm.prank(seller);
+        escrow.submitResolutionVote(TRADE_ID, buyerShare, sellerShare);
 
         assertEq(uint8(escrow.getTrade(TRADE_ID).status), uint8(ISafeDealEscrow.TradeStatus.RESOLVED));
         assertEq(escrow.claimableBalances(buyer), buyerShare);
         assertEq(escrow.claimableBalances(seller), sellerShare);
         assertEq(escrow.claimableBalances(arbiter), 0);
+    }
+
+    function testBuyerAndSellerCanSelfSettleWithoutArbiter() public {
+        _createDefaultTrade(TRADE_ID, buyer);
+        vm.prank(buyer);
+        escrow.fundTrade{value: AMOUNT}(TRADE_ID);
+
+        vm.prank(buyer);
+        escrow.openDispute(TRADE_ID);
+
+        // Buyer proposes compromise, seller initially demands full payout, then accepts compromise
+        vm.prank(buyer);
+        escrow.submitResolutionVote(TRADE_ID, 0.8 ether, 1.2 ether);
+        vm.prank(seller);
+        escrow.submitResolutionVote(TRADE_ID, 0, AMOUNT);
+        assertEq(uint8(escrow.getTrade(TRADE_ID).status), uint8(ISafeDealEscrow.TradeStatus.DISPUTED));
+
+        // Seller changes vote to match buyer (must overwrite old vote cleanly and settle)
+        vm.prank(seller);
+        escrow.submitResolutionVote(TRADE_ID, 0.8 ether, 1.2 ether);
+
+        assertEq(uint8(escrow.getTrade(TRADE_ID).status), uint8(ISafeDealEscrow.TradeStatus.RESOLVED));
+        assertEq(escrow.claimableBalances(buyer), 0.8 ether);
+        assertEq(escrow.claimableBalances(seller), 1.2 ether);
+    }
+
+    function testVoteOverwriteDoesNotDoubleCountAndRejectsOutsider() public {
+        _createDefaultTrade(TRADE_ID, buyer);
+        vm.prank(buyer);
+        escrow.fundTrade{value: AMOUNT}(TRADE_ID);
+        vm.prank(buyer);
+        escrow.openDispute(TRADE_ID);
+
+        vm.prank(outsider);
+        vm.expectRevert(abi.encodeWithSelector(SafeDealEscrow.UnauthorizedCaller.selector, outsider));
+        escrow.submitResolutionVote(TRADE_ID, AMOUNT, 0);
+
+        // Buyer votes for split A, then changes to split B -> only 1 vote for B, must not settle
+        vm.prank(buyer);
+        escrow.submitResolutionVote(TRADE_ID, AMOUNT, 0);
+        vm.prank(buyer);
+        escrow.submitResolutionVote(TRADE_ID, 1 ether, 1 ether);
+        assertEq(uint8(escrow.getTrade(TRADE_ID).status), uint8(ISafeDealEscrow.TradeStatus.DISPUTED));
+
+        ISafeDealEscrow.DisputeVoteSummary memory summary = escrow.getDisputeVotes(TRADE_ID);
+        assertTrue(summary.buyerVoteHash != bytes32(0));
+        assertEq(summary.sellerVoteHash, bytes32(0));
+        assertEq(summary.arbiterVoteHash, bytes32(0));
+        assertEq(summary.timeoutAt, summary.disputedAt + escrow.DISPUTE_TIMEOUT());
+
+        // Arbiter matches split B -> settles at 2/3
+        vm.prank(arbiter);
+        escrow.submitResolutionVote(TRADE_ID, 1 ether, 1 ether);
+        assertEq(uint8(escrow.getTrade(TRADE_ID).status), uint8(ISafeDealEscrow.TradeStatus.RESOLVED));
+    }
+
+    function testResolveDisputeByTimeoutSplitsOddWeiDeterministically() public {
+        uint256 oddAmount = 2 ether + 1;
+        uint64 fundingDeadline = uint64(block.timestamp + 1 days);
+        uint64 deliveryDeadline = uint64(block.timestamp + 7 days);
+
+        vm.prank(seller);
+        escrow.createTrade(
+            TRADE_ID,
+            buyer,
+            arbiter,
+            oddAmount,
+            TERMS_HASH,
+            fundingDeadline,
+            deliveryDeadline,
+            INSPECTION_WINDOW
+        );
+        vm.prank(buyer);
+        escrow.fundTrade{value: oddAmount}(TRADE_ID);
+        vm.prank(buyer);
+        escrow.openDispute(TRADE_ID);
+
+        uint64 disputedAt = escrow.getTrade(TRADE_ID).disputedAt;
+        uint64 timeoutAt = disputedAt + escrow.DISPUTE_TIMEOUT();
+
+        // At exact timeout boundary, still reverts (must be strictly > timeoutAt)
+        vm.warp(timeoutAt);
+        vm.prank(outsider);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                SafeDealEscrow.DisputeTimeoutNotReached.selector,
+                timeoutAt,
+                uint64(block.timestamp)
+            )
+        );
+        escrow.resolveDisputeByTimeout(TRADE_ID);
+
+        // After 14-day dispute timeout, anyone can trigger deterministic 50/50 split
+        vm.warp(timeoutAt + 1);
+        vm.prank(outsider);
+        escrow.resolveDisputeByTimeout(TRADE_ID);
+
+        ISafeDealEscrow.Trade memory settledTrade = escrow.getTrade(TRADE_ID);
+        assertEq(uint8(settledTrade.status), uint8(ISafeDealEscrow.TradeStatus.RESOLVED));
+        assertTrue(settledTrade.settled);
+        assertEq(escrow.claimableBalances(buyer), 1 ether);
+        assertEq(escrow.claimableBalances(seller), 1 ether + 1);
+        assertEq(escrow.claimableBalances(arbiter), 0);
+        assertEq(escrow.claimableBalances(outsider), 0);
     }
 
     function testRejectsInvalidCreationParametersAndDuplicateIds() public {

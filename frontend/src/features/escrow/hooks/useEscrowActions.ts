@@ -275,7 +275,7 @@ export function useEscrowContractExecutor() {
     [runContractCall, writeContractAsync]
   );
 
-  const resolveDispute = useCallback(
+  const submitResolutionVote = useCallback(
     (
       tradeId: `0x${string}`,
       buyerAmountWei: bigint,
@@ -283,13 +283,29 @@ export function useEscrowContractExecutor() {
       onHashSubmitted?: (txHash: `0x${string}`) => void
     ) =>
       runContractCall(
-        "resolveDispute",
+        "submitResolutionVote",
         (address) =>
           writeContractAsync({
             address,
             abi: contractsConfig.escrowAbi,
-            functionName: "resolveDispute",
+            functionName: "submitResolutionVote",
             args: [tradeId, buyerAmountWei, sellerAmountWei],
+          }),
+        onHashSubmitted
+      ),
+    [runContractCall, writeContractAsync]
+  );
+
+  const resolveDisputeByTimeout = useCallback(
+    (tradeId: `0x${string}`, onHashSubmitted?: (txHash: `0x${string}`) => void) =>
+      runContractCall(
+        "resolveDisputeByTimeout",
+        (address) =>
+          writeContractAsync({
+            address,
+            abi: contractsConfig.escrowAbi,
+            functionName: "resolveDisputeByTimeout",
+            args: [tradeId],
           }),
         onHashSubmitted
       ),
@@ -327,7 +343,8 @@ export function useEscrowContractExecutor() {
       refundAfterDeadline,
       cancelUnfundedTrade,
       openDispute,
-      resolveDispute,
+      submitResolutionVote,
+      resolveDisputeByTimeout,
       withdraw,
     }),
     [
@@ -343,7 +360,8 @@ export function useEscrowContractExecutor() {
       refundAfterDeadline,
       cancelUnfundedTrade,
       openDispute,
-      resolveDispute,
+      submitResolutionVote,
+      resolveDisputeByTimeout,
       withdraw,
     ]
   );

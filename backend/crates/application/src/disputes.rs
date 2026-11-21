@@ -1,9 +1,12 @@
 use std::sync::Arc;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use safedeal_domain::blockchain::OnChainEventType;
 use safedeal_domain::deal::{Deal, DealStatus};
-use safedeal_domain::dispute::{AuditLogEntry, Dispute, DisputeEvidence, DisputeStatus};
+use safedeal_domain::dispute::{
+    AuditLogEntry, Dispute, DisputeEvidence, DisputeStatus, DisputeVote,
+    DEFAULT_DISPUTE_TIMEOUT_SECONDS,
+};
 use safedeal_domain::ports::{
     in_tx, AuditLogRepository, BlockchainGateway, DisputeEvidenceRepository,
     EvidenceDownloadPayload, EvidenceStoragePort, UnitOfWork,
@@ -16,6 +19,7 @@ use crate::deals::SyncDealUseCase;
 pub struct DisputeWithDeal {
     pub dispute: Dispute,
     pub deal: Deal,
+    pub votes: Vec<DisputeVote>,
 }
 
 #[derive(Debug, Clone)]
@@ -112,6 +116,8 @@ impl DisputeUseCase {
         })
         .await?;
 
+        let mut disputed_at_from_chain: Option<DateTime<Utc>> = None;
+
         // Phase 2: Verify on-chain DISPUTED status (and DisputeOpened tx receipt if provided) OUTSIDE DB tx
         if self.blockchain_gateway.is_enabled() {
             if let Some(ref hash) = tx_hash {
@@ -124,18 +130,33 @@ impl DisputeUseCase {
                             "Dispute transaction receipt not found or pending: {hash}"
                         ))
                     })?;
-                let has_dispute_opened = receipt.succeeded
-                    && receipt.decoded_events.iter().any(|ev| {
-                        ev.event_type == OnChainEventType::DisputeOpened
-                            && ev
-                                .trade_id
-                                .as_deref()
-                                .is_some_and(|t| t.eq_ignore_ascii_case(&trade_id))
-                    });
-                if !has_dispute_opened {
+                if !receipt.succeeded {
+                    return Err(DomainError::validation(format!(
+                        "Dispute transaction reverted on-chain: {hash}"
+                    )));
+                }
+                let opened_ev = receipt.decoded_events.iter().find(|ev| {
+                    ev.event_type == OnChainEventType::DisputeOpened
+                        && ev
+                            .trade_id
+                            .as_deref()
+                            .is_some_and(|t| t.eq_ignore_ascii_case(&trade_id))
+                });
+                let Some(ev) = opened_ev else {
                     return Err(DomainError::validation(format!(
                         "Submitted transaction did not emit DisputeOpened for tradeId {trade_id}"
                     )));
+                };
+                if ev.block_timestamp_epoch > 0 {
+                    disputed_at_from_chain = DateTime::from_timestamp(ev.block_timestamp_epoch, 0);
+                }
+            }
+            if disputed_at_from_chain.is_none() {
+                if let Some(snapshot) = self.blockchain_gateway.fetch_trade(&trade_id).await? {
+                    if snapshot.disputed_at_epoch > 0 {
+                        disputed_at_from_chain =
+                            DateTime::from_timestamp(snapshot.disputed_at_epoch, 0);
+                    }
                 }
             }
             deal = self
@@ -152,6 +173,7 @@ impl DisputeUseCase {
         }
 
         let now = Utc::now();
+        let effective_disputed_at = disputed_at_from_chain.unwrap_or(now);
         let correlation_id = CorrelationIdContext::get_or_default("n/a");
         in_tx(self.uow.as_ref(), move |repos| {
             Box::pin(async move {
@@ -190,6 +212,8 @@ impl DisputeUseCase {
                         resolution_rationale: None,
                         open_tx_hash: tx_hash,
                         resolve_tx_hash: None,
+                        disputed_at: Some(effective_disputed_at),
+                        dispute_timeout_seconds: DEFAULT_DISPUTE_TIMEOUT_SECONDS,
                         created_at: now,
                         resolved_at: None,
                     })
@@ -213,6 +237,7 @@ impl DisputeUseCase {
                 Ok(DisputeWithDeal {
                     dispute: created,
                     deal: current_deal,
+                    votes: Vec::new(),
                 })
             })
         })
@@ -248,7 +273,12 @@ impl DisputeUseCase {
                         "Only deal parties or the assigned arbiter may view this dispute.",
                     ));
                 }
-                Ok(DisputeWithDeal { dispute, deal })
+                let votes = repos.dispute_votes().find_by_dispute_id(dispute_id).await?;
+                Ok(DisputeWithDeal {
+                    dispute,
+                    deal,
+                    votes,
+                })
             })
         })
         .await

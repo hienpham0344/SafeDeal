@@ -8,6 +8,7 @@ import { ArbiterPage } from "@/pages/ArbiterPage";
 import { CreateDealPage } from "@/pages/CreateDealPage";
 import { DashboardPage } from "@/pages/DashboardPage";
 import { DealDetailsPage } from "@/pages/DealDetailsPage";
+import { DisputePage } from "@/pages/DisputePage";
 import { SupportPage } from "@/pages/SupportPage";
 import type { DealDetail, DealSummary, DisputeDetail } from "@/types/api";
 import { computeCanonicalTermsHash } from "@/utils/canonical-terms";
@@ -52,7 +53,8 @@ const mockExecutor = {
   refundAfterDeadline: vi.fn(),
   cancelUnfundedTrade: vi.fn(),
   openDispute: vi.fn(),
-  resolveDispute: vi.fn(),
+  submitResolutionVote: vi.fn(),
+  resolveDisputeByTimeout: vi.fn(),
   withdraw: vi.fn(),
 };
 
@@ -109,7 +111,11 @@ const sampleDispute: DisputeDetail = {
   openTxHash: null,
   resolveTxHash: null,
   createdAt: "2026-12-02T00:00:00Z",
+  disputedAt: "2026-12-02T00:00:00Z",
+  evidenceDeadlineAt: "2026-12-09T00:00:00Z",
+  timeoutAt: "2026-12-16T00:00:00Z",
   resolvedAt: null,
+  votes: [],
 };
 
 const listDealsMock = vi.fn();
@@ -121,6 +127,10 @@ const syncDealMock = vi.fn();
 const listAssignedDisputesMock = vi.fn();
 const recordResolutionMock = vi.fn();
 const createDisputeMock = vi.fn();
+const getDisputeMock = vi.fn();
+const listDisputeEvidenceMock = vi.fn();
+const submitDisputeVoteMock = vi.fn();
+const recordDisputeTimeoutMock = vi.fn();
 
 vi.mock("@/config/env", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/config/env")>();
@@ -168,6 +178,10 @@ vi.mock("@/features/disputes/api/disputes-api", async (importOriginal) => {
   return {
     ...actual,
     createDisputeMetadata: (...args: unknown[]) => createDisputeMock(...args),
+    getDispute: (...args: unknown[]) => getDisputeMock(...args),
+    listDisputeEvidence: (...args: unknown[]) => listDisputeEvidenceMock(...args),
+    submitDisputeVoteRecord: (...args: unknown[]) => submitDisputeVoteMock(...args),
+    recordDisputeTimeoutResolution: (...args: unknown[]) => recordDisputeTimeoutMock(...args),
   };
 });
 
@@ -404,7 +418,7 @@ describe("SafeDeal Dashboard, DealDetails & Arbiter Pages", () => {
     await user.click(screen.getByRole("button", { name: /sign & submit settlement/i }));
 
     expect(await screen.findByText(/must sum exactly to the locked escrow amount/i)).toBeInTheDocument();
-    expect(mockExecutor.resolveDispute).not.toHaveBeenCalled();
+    expect(mockExecutor.submitResolutionVote).not.toHaveBeenCalled();
   });
 
   it("recovers pending createTrade after /create reload via waitForHash without re-invoking createTrade", async () => {
@@ -830,18 +844,18 @@ describe("SafeDeal Dashboard, DealDetails & Arbiter Pages", () => {
     expect(window.sessionStorage.getItem(`safedeal:pending-tx:${TRADE_ID}`)).toBeNull();
   });
 
-  it("retains confirmed resolveDispute txHash on 503 failure in ArbiterPage and retries recordArbitrationResolution without resending tx", async () => {
+  it("retains confirmed submitResolutionVote txHash on 503 failure in ArbiterPage and retries submitDisputeVoteRecord without resending tx", async () => {
     const user = userEvent.setup();
     const resolveTxHash = "0xabababababababababababababababababababababababababababababababab" as const;
     mockSessionState.address = ARBITER;
     listAssignedDisputesMock.mockResolvedValue([sampleDispute]);
-    mockExecutor.resolveDispute.mockImplementationOnce(
+    mockExecutor.submitResolutionVote.mockImplementationOnce(
       async (_tradeId, _buyerWei, _sellerWei, onHash?: (hash: `0x${string}`) => void) => {
         onHash?.(resolveTxHash);
         return { txHash: resolveTxHash, blockNumber: 120n };
       }
     );
-    recordResolutionMock
+    submitDisputeVoteMock
       .mockRejectedValueOnce(new Error("Backend temporarily unavailable (503)"))
       .mockResolvedValueOnce({
         ...sampleDispute,
@@ -867,10 +881,12 @@ describe("SafeDeal Dashboard, DealDetails & Arbiter Pages", () => {
 
     await user.click(screen.getByRole("button", { name: "Retry Recording Settlement" }));
 
-    expect(await screen.findByText(new RegExp(`Dispute settled on-chain \\(${resolveTxHash}\\)`))).toBeInTheDocument();
-    expect(mockExecutor.resolveDispute).toHaveBeenCalledTimes(1);
-    expect(recordResolutionMock).toHaveBeenCalledTimes(2);
-    expect(recordResolutionMock).toHaveBeenLastCalledWith(7, {
+    expect(
+      await screen.findByText(new RegExp(`2-of-3 consensus reached and settled on-chain \\(${resolveTxHash}\\)`))
+    ).toBeInTheDocument();
+    expect(mockExecutor.submitResolutionVote).toHaveBeenCalledTimes(1);
+    expect(submitDisputeVoteMock).toHaveBeenCalledTimes(2);
+    expect(submitDisputeVoteMock).toHaveBeenLastCalledWith(7, {
       txHash: resolveTxHash,
       rationale: rationaleText,
     });
@@ -917,14 +933,14 @@ describe("SafeDeal Dashboard, DealDetails & Arbiter Pages", () => {
     expect(
       await screen.findByText(new RegExp(`Arbitration rationale recorded for settlement \\(${indexedTxHash}\\)`))
     ).toBeInTheDocument();
-    expect(mockExecutor.resolveDispute).not.toHaveBeenCalled();
+    expect(mockExecutor.submitResolutionVote).not.toHaveBeenCalled();
     expect(recordResolutionMock).toHaveBeenCalledWith(7, {
       txHash: indexedTxHash,
       rationale: rationaleText,
     });
   });
 
-  it("recovers pending resolveDispute after reload on ArbiterPage via waitForHash without duplicate tx", async () => {
+  it("recovers pending submitResolutionVote after reload on ArbiterPage via waitForHash without duplicate tx", async () => {
     const user = userEvent.setup();
     const pendingResolveHash = "0xefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef" as const;
     const rationaleText = "Recovered settlement verified after reload.";
@@ -934,12 +950,12 @@ describe("SafeDeal Dashboard, DealDetails & Arbiter Pages", () => {
       "safedeal:pending-tx:arbiter-resolve-7",
       JSON.stringify({
         txHash: pendingResolveHash,
-        action: "resolveDispute",
+        action: "submitResolutionVote",
         startedAt: new Date().toISOString(),
       })
     );
     mockExecutor.waitForHash.mockResolvedValueOnce({ txHash: pendingResolveHash, blockNumber: 150n });
-    recordResolutionMock.mockResolvedValueOnce({
+    submitDisputeVoteMock.mockResolvedValueOnce({
       ...sampleDispute,
       status: "RESOLVED",
       buyerAwardWei: "1000000000000000000",
@@ -958,9 +974,11 @@ describe("SafeDeal Dashboard, DealDetails & Arbiter Pages", () => {
     await user.type(screen.getByLabelText("Arbitration Rationale"), rationaleText);
     await user.click(screen.getByRole("button", { name: "Retry Recording Settlement" }));
 
-    expect(await screen.findByText(new RegExp(`Dispute settled on-chain \\(${pendingResolveHash}\\)`))).toBeInTheDocument();
-    expect(mockExecutor.resolveDispute).not.toHaveBeenCalled();
-    expect(recordResolutionMock).toHaveBeenCalledWith(7, {
+    expect(
+      await screen.findByText(new RegExp(`2-of-3 consensus reached and settled on-chain \\(${pendingResolveHash}\\)`))
+    ).toBeInTheDocument();
+    expect(mockExecutor.submitResolutionVote).not.toHaveBeenCalled();
+    expect(submitDisputeVoteMock).toHaveBeenCalledWith(7, {
       txHash: pendingResolveHash,
       rationale: rationaleText,
     });
@@ -1294,6 +1312,125 @@ describe("SafeDeal Dashboard, DealDetails & Arbiter Pages", () => {
     await user.keyboard("{Escape}");
 
     expect(mockSessionState.closeWalletModal).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows Buyer on DisputePage to co-sign Arbiter's 1/3 proposal and reach 2-of-3 settlement", async () => {
+    const user = userEvent.setup();
+    const cosignTxHash = "0x3434343434343434343434343434343434343434343434343434343434343434" as const;
+    const proposalHash = "0x5656565656565656565656565656565656565656565656565656565656565656" as const;
+    const arbiterVote = {
+      id: 1,
+      voterAddress: ARBITER,
+      voterRole: "ARBITER" as const,
+      buyerAwardWei: "700000000000000000",
+      sellerAwardWei: "300000000000000000",
+      proposalHash,
+      rationale: "70/30 refund recommended from delivery logs.",
+      txHash: "0x1212121212121212121212121212121212121212121212121212121212121212",
+      updatedAt: "2026-12-03T00:00:00Z",
+    };
+
+    mockSessionState.address = BUYER;
+    getDisputeMock.mockResolvedValue({
+      ...sampleDispute,
+      votes: [arbiterVote],
+    });
+    listDisputeEvidenceMock.mockResolvedValue([]);
+    mockExecutor.submitResolutionVote.mockResolvedValueOnce({ txHash: cosignTxHash, blockNumber: 201n });
+    submitDisputeVoteMock.mockResolvedValueOnce({
+      ...sampleDispute,
+      status: "RESOLVED",
+      buyerAwardWei: "700000000000000000",
+      sellerAwardWei: "300000000000000000",
+      resolveTxHash: cosignTxHash,
+      resolvedAt: "2026-12-03T01:00:00Z",
+      votes: [
+        arbiterVote,
+        {
+          id: 2,
+          voterAddress: BUYER,
+          voterRole: "BUYER" as const,
+          buyerAwardWei: "700000000000000000",
+          sellerAwardWei: "300000000000000000",
+          proposalHash,
+          rationale: null,
+          txHash: cosignTxHash,
+          updatedAt: "2026-12-03T01:00:00Z",
+        },
+      ],
+    });
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/disputes/7"]}>
+          <Routes>
+            <Route path="/disputes/:id" element={<DisputePage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>
+    );
+
+    const cosignButton = await screen.findByRole("button", { name: "Co-sign to Finalize (2/3)" });
+    await user.click(cosignButton);
+
+    expect(mockExecutor.submitResolutionVote).toHaveBeenCalledWith(
+      TRADE_ID,
+      700000000000000000n,
+      300000000000000000n,
+      expect.any(Function)
+    );
+    expect(submitDisputeVoteMock).toHaveBeenCalledWith(7, {
+      txHash: cosignTxHash,
+      rationale: "Co-signed arbiter settlement proposal.",
+    });
+    expect(
+      await screen.findByText(new RegExp(`2-of-3 consensus reached and settled on-chain \\(${cosignTxHash}\\)`))
+    ).toBeInTheDocument();
+  });
+
+  it("allows Buyer on DisputePage to trigger 50/50 timeout fallback after 14-day timeoutAt expires", async () => {
+    const user = userEvent.setup();
+    const timeoutTxHash = "0x7878787878787878787878787878787878787878787878787878787878787878" as const;
+    mockSessionState.address = BUYER;
+    getDisputeMock.mockResolvedValue({
+      ...sampleDispute,
+      disputedAt: "2020-01-01T00:00:00Z",
+      evidenceDeadlineAt: "2020-01-08T00:00:00Z",
+      timeoutAt: "2020-01-15T00:00:00Z",
+      votes: [],
+    });
+    listDisputeEvidenceMock.mockResolvedValue([]);
+    mockExecutor.resolveDisputeByTimeout.mockResolvedValueOnce({ txHash: timeoutTxHash, blockNumber: 202n });
+    recordDisputeTimeoutMock.mockResolvedValueOnce({
+      ...sampleDispute,
+      status: "RESOLVED",
+      buyerAwardWei: "500000000000000000",
+      sellerAwardWei: "500000000000000000",
+      resolveTxHash: timeoutTxHash,
+      resolvedAt: "2026-12-03T02:00:00Z",
+      votes: [],
+    });
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/disputes/7"]}>
+          <Routes>
+            <Route path="/disputes/:id" element={<DisputePage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>
+    );
+
+    const timeoutButton = await screen.findByRole("button", { name: "Execute 50/50 Timeout Fallback" });
+    await user.click(timeoutButton);
+
+    expect(mockExecutor.resolveDisputeByTimeout).toHaveBeenCalledWith(TRADE_ID, expect.any(Function));
+    expect(recordDisputeTimeoutMock).toHaveBeenCalledWith(7, { txHash: timeoutTxHash });
+    expect(
+      await screen.findByText(new RegExp(`14-day stalemate 50/50 fallback settled on-chain \\(${timeoutTxHash}\\)`))
+    ).toBeInTheDocument();
   });
 });
 

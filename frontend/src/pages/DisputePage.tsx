@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/Button";
 import { CopyableHash } from "@/components/ui/CopyableHash";
 import { dealPath, ROUTES } from "@/config/routes";
 import { useAuthSession } from "@/features/authentication/hooks/useAuthSession";
+import { DisputeConsensusPanel } from "@/features/disputes/components/DisputeConsensusPanel";
 import {
   useDisputeEvidenceQuery,
   useDisputeQuery,
@@ -34,7 +35,7 @@ function getSubmitterRole(submittedBy: string, dispute: DisputeDetail): {
   readonly badgeClass: string;
 } {
   const normalized = submittedBy.toLowerCase();
-  if (normalized === dispute.buyer.toLowerCase()) {
+  if (dispute.buyer && normalized === dispute.buyer.toLowerCase()) {
     return {
       label: "Buyer",
       badgeClass: "border-sky-400/40 bg-sky-500/15 text-sky-200",
@@ -86,7 +87,7 @@ export function DisputePage() {
     dispute &&
       dispute.status === "OPEN" &&
       me &&
-      (dispute.buyer.toLowerCase() === me || dispute.seller.toLowerCase() === me)
+      (dispute.buyer?.toLowerCase() === me || dispute.seller.toLowerCase() === me)
   );
 
   function handleFileChange(file: File | null) {
@@ -426,11 +427,15 @@ export function DisputePage() {
                 <div className="py-3">
                   <dt className="text-sd-inkSubtle">Buyer</dt>
                   <dd className="mt-1">
-                    <CopyableHash
-                      value={dispute.buyer}
-                      label="Buyer address"
-                      className="w-full text-xs"
-                    />
+                    {dispute.buyer ? (
+                      <CopyableHash
+                        value={dispute.buyer}
+                        label="Buyer address"
+                        className="w-full text-xs"
+                      />
+                    ) : (
+                      <span className="font-mono text-xs text-sd-inkMuted">Open (unassigned)</span>
+                    )}
                   </dd>
                 </div>
                 <div className="py-3">
@@ -460,6 +465,8 @@ export function DisputePage() {
               </Link>
             </Panel>
           </div>
+
+          <DisputeConsensusPanel dispute={dispute} evidence={evidenceQuery.data} />
         </div>
       )}
     </AppShell>

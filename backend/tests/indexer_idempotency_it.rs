@@ -54,6 +54,7 @@ async fn deduplicates_chain_events_by_tx_hash_and_log_index_and_advances_cursor(
         buyer_award_wei: None,
         seller_award_wei: None,
         terms_hash: Some(draft.terms_hash.clone()),
+        proposal_hash: None,
     };
     let ev_funded = VerifiedChainEvent {
         tx_hash: format!("0x{}", "2".repeat(64)),
@@ -69,6 +70,7 @@ async fn deduplicates_chain_events_by_tx_hash_and_log_index_and_advances_cursor(
         buyer_award_wei: None,
         seller_award_wei: None,
         terms_hash: None,
+        proposal_hash: None,
     };
 
     harness
@@ -237,6 +239,7 @@ async fn record_resolution_backfills_rationale_and_stale_sync_does_not_regress_d
         buyer_award_wei: None,
         seller_award_wei: None,
         terms_hash: None,
+        proposal_hash: None,
     };
     let trade_id_1 = draft1.trade_id.clone();
     harness
@@ -267,6 +270,7 @@ async fn record_resolution_backfills_rationale_and_stale_sync_does_not_regress_d
                     delivery_deadline_epoch: delivery_deadline,
                     inspection_window_seconds: 3600,
                     delivered_at_epoch: 0,
+                    disputed_at_epoch: 0,
                     chain_status_ordinal: 6,
                     settled: false,
                     buyer_award_wei: "0".to_string(),
@@ -306,6 +310,7 @@ async fn record_resolution_backfills_rationale_and_stale_sync_does_not_regress_d
         buyer_award_wei: Some("1000000000000000000".to_string()),
         seller_award_wei: Some("1000000000000000000".to_string()),
         terms_hash: None,
+        proposal_hash: None,
     };
     harness
         .gateway
@@ -381,6 +386,7 @@ async fn record_resolution_backfills_rationale_and_stale_sync_does_not_regress_d
         buyer_award_wei: None,
         seller_award_wei: None,
         terms_hash: Some(draft2.terms_hash.clone()),
+        proposal_hash: None,
     };
     let ev_funded = VerifiedChainEvent {
         tx_hash: fund_tx.clone(),
@@ -396,6 +402,7 @@ async fn record_resolution_backfills_rationale_and_stale_sync_does_not_regress_d
         buyer_award_wei: None,
         seller_award_wei: None,
         terms_hash: None,
+        proposal_hash: None,
     };
     let ev_delivered = VerifiedChainEvent {
         tx_hash: format!("0x12{}", "0".repeat(62)),
@@ -411,6 +418,7 @@ async fn record_resolution_backfills_rationale_and_stale_sync_does_not_regress_d
         buyer_award_wei: None,
         seller_award_wei: None,
         terms_hash: None,
+        proposal_hash: None,
     };
 
     let tid2 = draft2.trade_id.clone();
@@ -447,6 +455,7 @@ async fn record_resolution_backfills_rationale_and_stale_sync_does_not_regress_d
                     delivery_deadline_epoch: delivery_deadline,
                     inspection_window_seconds: 3600,
                     delivered_at_epoch: now + 2,
+                    disputed_at_epoch: 0,
                     chain_status_ordinal: 2,
                     settled: false,
                     buyer_award_wei: "0".to_string(),
@@ -513,6 +522,7 @@ async fn concurrent_bind_tx_and_indexer_poll_do_not_violate_unique_constraints()
             buyer_award_wei: None,
             seller_award_wei: None,
             terms_hash: Some(draft.terms_hash.clone()),
+            proposal_hash: None,
         };
 
         let ctx_hash = create_tx.clone();
@@ -549,6 +559,7 @@ async fn concurrent_bind_tx_and_indexer_poll_do_not_violate_unique_constraints()
                         delivery_deadline_epoch: delivery_deadline,
                         inspection_window_seconds: 3600,
                         delivered_at_epoch: 0,
+                        disputed_at_epoch: 0,
                         chain_status_ordinal: 1,
                         settled: false,
                         buyer_award_wei: "0".to_string(),
@@ -638,6 +649,7 @@ async fn indexer_ignores_mismatched_trade_created_event_for_unbound_draft_deal()
         buyer_award_wei: None,
         seller_award_wei: None,
         terms_hash: Some(format!("0x{}", "b".repeat(64))),
+        proposal_hash: None,
     };
 
     harness

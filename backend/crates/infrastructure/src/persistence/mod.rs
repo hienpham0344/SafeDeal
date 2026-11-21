@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use safedeal_domain::ports::{
     AuditLogRepository, AuthNonceRepository, BlockchainTransactionRepository, ChainEventRepository,
     ChainSyncStateRepository, DealEventRepository, DealRepository, DisputeEvidenceRepository,
-    DisputeRepository, TxRepos, TxWorkFn, UnitOfWork, UserRepository,
+    DisputeRepository, DisputeVoteRepository, TxRepos, TxWorkFn, UnitOfWork, UserRepository,
 };
 use safedeal_shared::DomainError;
 use sqlx::postgres::PgPoolOptions;
@@ -27,8 +27,8 @@ use auth_repo::{
 };
 use deal_repo::{PgDealRepository, PgTxDealRepository};
 use dispute_repo::{
-    PgDisputeEvidenceRepository, PgDisputeRepository, PgTxDisputeEvidenceRepository,
-    PgTxDisputeRepository,
+    PgDisputeEvidenceRepository, PgDisputeRepository, PgDisputeVoteRepository,
+    PgTxDisputeEvidenceRepository, PgTxDisputeRepository, PgTxDisputeVoteRepository,
 };
 use event_repo::{
     PgBlockchainTransactionRepository, PgChainEventRepository, PgChainSyncStateRepository,
@@ -76,6 +76,7 @@ pub struct PgRepositories {
     pub readiness: Arc<PgDatabaseReadinessAdapter>,
     pub deals: Arc<PgDealRepository>,
     pub disputes: Arc<PgDisputeRepository>,
+    pub dispute_votes: Arc<PgDisputeVoteRepository>,
     pub auth_nonces: Arc<PgAuthNonceRepository>,
     pub users: Arc<PgUserRepository>,
     pub deal_events: Arc<PgDealEventRepository>,
@@ -93,6 +94,7 @@ impl PgRepositories {
             readiness: Arc::new(PgDatabaseReadinessAdapter::new(pool.clone())),
             deals: Arc::new(PgDealRepository::new(pool.clone())),
             disputes: Arc::new(PgDisputeRepository::new(pool.clone())),
+            dispute_votes: Arc::new(PgDisputeVoteRepository::new(pool.clone())),
             auth_nonces: Arc::new(PgAuthNonceRepository::new(pool.clone())),
             users: Arc::new(PgUserRepository::new(pool.clone())),
             deal_events: Arc::new(PgDealEventRepository::new(pool.clone())),
@@ -118,6 +120,7 @@ impl PgUnitOfWork {
 struct PgTxRepos {
     deals: PgTxDealRepository,
     disputes: PgTxDisputeRepository,
+    dispute_votes: PgTxDisputeVoteRepository,
     auth_nonces: PgTxAuthNonceRepository,
     users: PgTxUserRepository,
     deal_events: PgTxDealEventRepository,
@@ -133,6 +136,7 @@ impl PgTxRepos {
         Self {
             deals: PgTxDealRepository::new(Arc::clone(handle)),
             disputes: PgTxDisputeRepository::new(Arc::clone(handle)),
+            dispute_votes: PgTxDisputeVoteRepository::new(Arc::clone(handle)),
             auth_nonces: PgTxAuthNonceRepository::new(Arc::clone(handle)),
             users: PgTxUserRepository::new(Arc::clone(handle)),
             deal_events: PgTxDealEventRepository::new(Arc::clone(handle)),
@@ -151,6 +155,9 @@ impl TxRepos for PgTxRepos {
     }
     fn disputes(&self) -> &dyn DisputeRepository {
         &self.disputes
+    }
+    fn dispute_votes(&self) -> &dyn DisputeVoteRepository {
+        &self.dispute_votes
     }
     fn auth_nonces(&self) -> &dyn AuthNonceRepository {
         &self.auth_nonces

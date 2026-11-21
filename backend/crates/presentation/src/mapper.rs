@@ -1,10 +1,11 @@
+use chrono::Duration;
 use safedeal_application::disputes::DisputeWithDeal;
 use safedeal_domain::deal::{BlockchainTransaction, Deal, DealEvent};
-use safedeal_domain::dispute::DisputeEvidence;
+use safedeal_domain::dispute::{DisputeEvidence, DEFAULT_EVIDENCE_SLA_SECONDS};
 
 use crate::dto::{
     BlockchainTransactionResponse, DealDetailResponse, DealEventResponse, DealSummaryResponse,
-    DisputeDetailResponse, DisputeEvidenceResponse,
+    DisputeDetailResponse, DisputeEvidenceResponse, DisputeVoteResponse,
 };
 
 pub fn to_summary(deal: &Deal, dispute_id: Option<i64>) -> DealSummaryResponse {
@@ -86,6 +87,25 @@ pub fn to_tx_response(tx: BlockchainTransaction) -> BlockchainTransactionRespons
 pub fn to_dispute_detail(ctx: DisputeWithDeal) -> DisputeDetailResponse {
     let d = ctx.dispute;
     let deal = ctx.deal;
+    let disputed_at = d.disputed_at.or(Some(d.created_at));
+    let evidence_deadline_at =
+        disputed_at.map(|ts| ts + Duration::seconds(DEFAULT_EVIDENCE_SLA_SECONDS));
+    let timeout_at = disputed_at.map(|ts| ts + Duration::seconds(d.dispute_timeout_seconds));
+    let votes = ctx
+        .votes
+        .into_iter()
+        .map(|v| DisputeVoteResponse {
+            voter_address: v.voter_address,
+            voter_role: v.voter_role.as_str().to_string(),
+            buyer_award_wei: v.buyer_award_wei,
+            seller_award_wei: v.seller_award_wei,
+            proposal_hash: v.proposal_hash,
+            rationale: v.rationale,
+            tx_hash: v.tx_hash,
+            updated_at: v.updated_at,
+        })
+        .collect();
+
     DisputeDetailResponse {
         id: d.id,
         trade_id: d.trade_id,
@@ -103,6 +123,10 @@ pub fn to_dispute_detail(ctx: DisputeWithDeal) -> DisputeDetailResponse {
         resolution_rationale: d.resolution_rationale,
         open_tx_hash: d.open_tx_hash,
         resolve_tx_hash: d.resolve_tx_hash,
+        disputed_at,
+        evidence_deadline_at,
+        timeout_at,
+        votes,
         created_at: d.created_at,
         resolved_at: d.resolved_at,
     }

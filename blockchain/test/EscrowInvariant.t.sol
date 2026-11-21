@@ -120,8 +120,16 @@ contract EscrowInvariantHandler is Test {
 
         uint256 buyerShare = splitSeed % (t.amount + 1);
         uint256 sellerShare = t.amount - buyerShare;
-        vm.prank(t.arbiter);
-        escrow.resolveDispute(tradeId, buyerShare, sellerShare);
+        if (splitSeed % 3 == 0) {
+            vm.warp(block.timestamp + escrow.DISPUTE_TIMEOUT() + 1);
+            vm.prank(t.buyer);
+            escrow.resolveDisputeByTimeout(tradeId);
+        } else {
+            vm.prank(t.arbiter);
+            escrow.submitResolutionVote(tradeId, buyerShare, sellerShare);
+            vm.prank(splitSeed % 2 == 0 ? t.buyer : t.seller);
+            escrow.submitResolutionVote(tradeId, buyerShare, sellerShare);
+        }
     }
 
     function withdrawActor(uint256 actorSeed) external {

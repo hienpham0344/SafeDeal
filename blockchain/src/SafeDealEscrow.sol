@@ -19,10 +19,14 @@ import {ISafeDealEscrow} from "./interfaces/ISafeDealEscrow.sol";
  * - No admin custody or arbitrary fund recovery.
  * - Pull-payment withdrawals isolate failed recipient transfers so one party's reverting fallback
  *   never blocks settlement or the counterparty's withdrawal.
- * - A human arbiter resolves disputes within strict allocation invariants and cannot receive funds.
+ * - 2-of-3 multi-party dispute voting across [buyer, seller, arbiter] prevents unilateral
+ *   arbiter bias, with a deterministic 14-day 50/50 stalemate timeout fallback so funds are never locked.
  */
 contract SafeDealEscrow is ISafeDealEscrow, ReentrancyGuard {
+    uint64 public constant DISPUTE_TIMEOUT = 14 days;
+
     mapping(bytes32 => Trade) private _trades;
+    mapping(bytes32 => mapping(address => bytes32)) private _disputeVotes;
     mapping(address => uint256) private _claimableBalances;
     uint256 private _totalLockedEscrow;
     uint256 private _totalClaimable;
@@ -41,6 +45,7 @@ contract SafeDealEscrow is ISafeDealEscrow, ReentrancyGuard {
     error DeliveryDeadlinePassed(uint64 deliveryDeadline, uint64 currentTimestamp);
     error DeliveryDeadlineNotReached(uint64 deliveryDeadline, uint64 currentTimestamp);
     error InspectionWindowActive(uint64 unlocksAt, uint64 currentTimestamp);
+    error DisputeTimeoutNotReached(uint64 timeoutAt, uint64 currentTimestamp);
     error IncorrectPaymentAmount(uint256 expected, uint256 actual);
     error AlreadySettled(bytes32 tradeId);
     error InvalidSettlementAllocation(uint256 expectedTotal, uint256 buyerAmount, uint256 sellerAmount);
@@ -93,6 +98,7 @@ contract SafeDealEscrow is ISafeDealEscrow, ReentrancyGuard {
             fundingDeadline: fundingDeadline,
             deliveryDeadline: deliveryDeadline,
             inspectionWindow: inspectionWindow,
+            disputedAt: 0,
             status: TradeStatus.CREATED,
             settled: false
         });
@@ -246,21 +252,69 @@ contract SafeDealEscrow is ISafeDealEscrow, ReentrancyGuard {
         }
 
         trade.status = TradeStatus.DISPUTED;
-        emit DisputeOpened(tradeId, msg.sender);
+        trade.disputedAt = uint64(block.timestamp);
+        emit DisputeOpened(tradeId, msg.sender, trade.disputedAt);
     }
 
-    function resolveDispute(bytes32 tradeId, uint256 buyerAmount, uint256 sellerAmount) external {
+    function submitResolutionVote(bytes32 tradeId, uint256 buyerAmount, uint256 sellerAmount) external {
         Trade storage trade = _requireExistingTrade(tradeId);
         if (trade.settled) revert AlreadySettled(tradeId);
         if (trade.status != TradeStatus.DISPUTED) {
             revert InvalidState(trade.status, TradeStatus.DISPUTED);
         }
-        if (msg.sender != trade.arbiter) revert UnauthorizedCaller(msg.sender);
+
+        address buyer = trade.buyer;
+        address seller = trade.seller;
+        address arbiter = trade.arbiter;
+        if (msg.sender != buyer && msg.sender != seller && msg.sender != arbiter) {
+            revert UnauthorizedCaller(msg.sender);
+        }
 
         if (buyerAmount > trade.amount || sellerAmount != trade.amount - buyerAmount) {
             revert InvalidSettlementAllocation(trade.amount, buyerAmount, sellerAmount);
         }
 
+        bytes32 proposalHash = _computeProposalHash(buyerAmount, sellerAmount);
+        mapping(address => bytes32) storage votes = _disputeVotes[tradeId];
+        votes[msg.sender] = proposalHash;
+
+        uint8 matchCount = 1;
+        if (msg.sender != buyer && votes[buyer] == proposalHash) matchCount++;
+        if (msg.sender != seller && votes[seller] == proposalHash) matchCount++;
+        if (msg.sender != arbiter && votes[arbiter] == proposalHash) matchCount++;
+
+        emit DisputeVoteSubmitted(tradeId, msg.sender, buyerAmount, sellerAmount, proposalHash, matchCount);
+
+        if (matchCount >= 2) {
+            _settleDispute(trade, msg.sender, buyerAmount, sellerAmount);
+        }
+    }
+
+    function resolveDisputeByTimeout(bytes32 tradeId) external {
+        Trade storage trade = _requireExistingTrade(tradeId);
+        if (trade.settled) revert AlreadySettled(tradeId);
+        if (trade.status != TradeStatus.DISPUTED) {
+            revert InvalidState(trade.status, TradeStatus.DISPUTED);
+        }
+
+        uint64 timeoutAt = trade.disputedAt + DISPUTE_TIMEOUT;
+        if (block.timestamp <= timeoutAt) {
+            revert DisputeTimeoutNotReached(timeoutAt, uint64(block.timestamp));
+        }
+
+        uint256 buyerAmount = trade.amount / 2;
+        uint256 sellerAmount = trade.amount - buyerAmount;
+
+        _settleDispute(trade, msg.sender, buyerAmount, sellerAmount);
+        emit DisputeResolvedByTimeout(tradeId, msg.sender, buyerAmount, sellerAmount);
+    }
+
+    function _settleDispute(
+        Trade storage trade,
+        address settledBy,
+        uint256 buyerAmount,
+        uint256 sellerAmount
+    ) private {
         trade.status = TradeStatus.RESOLVED;
         trade.settled = true;
         _totalLockedEscrow -= trade.amount;
@@ -273,7 +327,21 @@ contract SafeDealEscrow is ISafeDealEscrow, ReentrancyGuard {
             _claimableBalances[trade.seller] += sellerAmount;
         }
 
-        emit DisputeResolved(tradeId, msg.sender, trade.buyer, buyerAmount, trade.seller, sellerAmount);
+        emit DisputeResolved(
+            trade.tradeId,
+            settledBy,
+            trade.buyer,
+            buyerAmount,
+            trade.seller,
+            sellerAmount
+        );
+    }
+
+    function _computeProposalHash(uint256 buyerAmount, uint256 sellerAmount) private pure returns (bytes32 h) {
+        h = keccak256(abi.encode(buyerAmount, sellerAmount));
+        if (h == bytes32(0)) {
+            h = bytes32(uint256(1));
+        }
     }
 
     function withdraw() external nonReentrant {
@@ -291,6 +359,19 @@ contract SafeDealEscrow is ISafeDealEscrow, ReentrancyGuard {
 
     function getTrade(bytes32 tradeId) external view returns (Trade memory) {
         return _trades[tradeId];
+    }
+
+    function getDisputeVotes(bytes32 tradeId) external view returns (DisputeVoteSummary memory) {
+        Trade storage trade = _trades[tradeId];
+        mapping(address => bytes32) storage votes = _disputeVotes[tradeId];
+        uint64 timeoutAt = trade.disputedAt == 0 ? 0 : trade.disputedAt + DISPUTE_TIMEOUT;
+        return DisputeVoteSummary({
+            buyerVoteHash: trade.buyer == address(0) ? bytes32(0) : votes[trade.buyer],
+            sellerVoteHash: trade.seller == address(0) ? bytes32(0) : votes[trade.seller],
+            arbiterVoteHash: trade.arbiter == address(0) ? bytes32(0) : votes[trade.arbiter],
+            disputedAt: trade.disputedAt,
+            timeoutAt: timeoutAt
+        });
     }
 
     function claimableBalances(address account) external view returns (uint256) {
