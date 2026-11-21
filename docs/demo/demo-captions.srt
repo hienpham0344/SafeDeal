@@ -1,0 +1,82 @@
+1
+00:00:00,000 --> 00:00:06,500
+Every P2P crypto deal has a trust paradox:
+pay upfront and risk getting scammed,
+
+2
+00:00:06,500 --> 00:00:12,500
+deliver work first and risk getting ghosted,
+or use centralized escrow with custody risk.
+
+3
+00:00:12,500 --> 00:00:20,000
+Meet SafeDeal — non-custodial P2P escrow on Avalanche.
+Smart contracts hold the funds, RFC 8785 locks the terms.
+
+4
+00:00:20,000 --> 00:00:29,000
+Flow 1: Cooperative Trade.
+The seller drafts deal terms and computes an RFC 8785 hash.
+
+5
+00:00:29,000 --> 00:00:38,000
+Both TypeScript and our Rust backend produce the exact
+termsHash, anchored on Avalanche Fuji via createTrade.
+
+6
+00:00:38,000 --> 00:00:48,000
+The buyer funds the escrow, the seller marks delivery,
+and the buyer approves and releases payment on-chain.
+
+7
+00:00:48,000 --> 00:01:00,000
+SafeDeal uses Pull-Payment withdraw() instead of inline pushes,
+preventing reentrancy and reverting-recipient DoS attacks.
+
+8
+00:01:00,000 --> 00:01:10,000
+The seller claims their AVAX directly from the contract.
+
+9
+00:01:10,000 --> 00:01:21,000
+Flow 2: Open-Buyer & Refund Protection.
+Leave the buyer blank to create a shareable payment link.
+
+10
+00:01:21,000 --> 00:01:32,000
+The first wallet to call fundTrade locks in as the buyer.
+If delivery misses the deadline, or the seller refunds,
+
+11
+00:01:32,000 --> 00:01:45,000
+the buyer reclaims 100% of their AVAX directly on-chain
+without needing permission from any admin.
+
+12
+00:01:45,000 --> 00:01:58,000
+Flow 3: Dispute & 2-of-3 Consensus.
+Participants upload private evidence verified by magic-bytes.
+
+13
+00:01:58,000 --> 00:02:10,000
+SIWE authentication and role checks enforce strict 403
+isolation so outsiders can never view dispute files.
+
+14
+00:02:10,000 --> 00:02:24,000
+Unlike god-mode arbiters, SafeDeal requires 2-of-3 matching
+votes across Buyer, Seller, and Arbiter to settle.
+
+15
+00:02:24,000 --> 00:02:40,000
+And if anyone ghosts, a 14-day timeout fallback unlocks
+a deterministic 50/50 split so funds are never trapped.
+
+16
+00:02:40,000 --> 00:02:51,000
+Built with Foundry invariant fuzzing, a Clean Architecture
+Rust backend on Railway, and a reload-safe React UI.
+
+17
+00:02:51,000 --> 00:03:00,000
+Live now on Avalanche Fuji Testnet at avalanche-9b099.web.app.
