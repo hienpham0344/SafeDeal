@@ -56,7 +56,7 @@ const mockExecutor = {
   withdraw: vi.fn(),
 };
 
-let mockOnChainTrade: { data: { status: number } | undefined; refetch: ReturnType<typeof vi.fn> } = {
+let mockOnChainTrade: { data: { status: number; deliveredAt?: bigint } | undefined; refetch: ReturnType<typeof vi.fn> } = {
   data: undefined,
   refetch: vi.fn(),
 };
@@ -672,6 +672,9 @@ describe("SafeDeal Dashboard, DealDetails & Arbiter Pages", () => {
     );
 
     const fundBtn = await screen.findByRole("button", { name: /Fund Escrow/i });
+    expect(fundBtn).toBeDisabled();
+    await user.click(screen.getByRole("checkbox", { name: /reviewed and accept the agreed terms/i }));
+    expect(fundBtn).toBeEnabled();
     await user.click(fundBtn);
 
     // Pending banner renders (causing a state-driven re-render) while fundTrade awaits receipt
@@ -1294,6 +1297,50 @@ describe("SafeDeal Dashboard, DealDetails & Arbiter Pages", () => {
     await user.keyboard("{Escape}");
 
     expect(mockSessionState.closeWalletModal).toHaveBeenCalledTimes(1);
+  });
+
+  it("closes orphaned seller dispute form after markDelivered transitions deal to DELIVERED during inspection window", async () => {
+    const user = userEvent.setup();
+    const deliverTxHash = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" as const;
+    const nowSec = Math.floor(Date.now() / 1000);
+    const deliveredDeal = {
+      ...sampleDealDetail,
+      status: "DELIVERED" as const,
+      deliveredAt: new Date(nowSec * 1000).toISOString(),
+      inspectionWindowSeconds: 72 * 3600,
+    };
+
+    mockSessionState.address = SELLER;
+    getDealMock.mockResolvedValue({ ...sampleDealDetail, status: "FUNDED" });
+    getDealHistoryMock.mockResolvedValue({ events: [], transactions: [] });
+    mockOnChainTrade = { data: { status: 2, deliveredAt: 0n }, refetch: vi.fn().mockResolvedValue(undefined) };
+    mockExecutor.markDelivered.mockResolvedValueOnce({ txHash: deliverTxHash, blockNumber: 90n });
+    syncDealMock.mockImplementationOnce(async () => {
+      mockOnChainTrade = {
+        data: { status: 3, deliveredAt: BigInt(nowSec) },
+        refetch: vi.fn().mockResolvedValue(undefined),
+      };
+      getDealMock.mockResolvedValue(deliveredDeal);
+      return deliveredDeal;
+    });
+
+    renderWithQuery(
+      <Routes>
+        <Route path="/deals/:id" element={<DealDetailsPage />} />
+      </Routes>,
+      `/deals/${TRADE_ID}`
+    );
+
+    const openDisputeBtn = await screen.findByRole("button", { name: "Open Dispute" });
+    await user.click(openDisputeBtn);
+    expect(screen.getByText("Open On-Chain Dispute & Submit Details")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Mark Delivered" }));
+
+    expect(
+      await screen.findByText(/Delivered\. Waiting for buyer approval or inspection window expiry/i)
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Open On-Chain Dispute & Submit Details")).not.toBeInTheDocument();
   });
 });
 

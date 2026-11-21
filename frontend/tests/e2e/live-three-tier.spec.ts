@@ -263,6 +263,7 @@ test.describe("Live Unmocked 3-Tier Browser -> Backend -> Anvil E2E", () => {
       await buyer.page.goto(`/deals/${tradeId1}`);
       await expect(buyer.page.getByText("CREATED", { exact: true }).first()).toBeVisible({ timeout: 15_000 });
       await expect(buyer.page.getByText("(client SHA-256 verified)")).toBeVisible({ timeout: 15_000 });
+      await buyer.page.getByRole("checkbox", { name: /reviewed and accept the agreed terms/i }).check();
       await buyer.page.getByRole("button", { name: /Fund Escrow \(0\.5 AVAX\)/ }).click();
       await expect(buyer.page.getByText("FUNDED", { exact: true }).first()).toBeVisible({ timeout: 25_000 });
 
@@ -316,6 +317,7 @@ test.describe("Live Unmocked 3-Tier Browser -> Backend -> Anvil E2E", () => {
       await expect(buyer.page.getByRole("button", { name: /Fund Escrow \(0\.25 AVAX\)/ })).toBeVisible({
         timeout: 15_000,
       });
+      await buyer.page.getByRole("checkbox", { name: /reviewed and accept the agreed terms/i }).check();
       await buyer.page.getByRole("button", { name: /Fund Escrow \(0\.25 AVAX\)/ }).click();
       await expect(buyer.page.getByText("FUNDED", { exact: true }).first()).toBeVisible({ timeout: 25_000 });
 
@@ -356,6 +358,7 @@ test.describe("Live Unmocked 3-Tier Browser -> Backend -> Anvil E2E", () => {
       await expect(buyer.page.getByRole("button", { name: /Fund Escrow \(0\.6 AVAX\)/ })).toBeVisible({
         timeout: 15_000,
       });
+      await buyer.page.getByRole("checkbox", { name: /reviewed and accept the agreed terms/i }).check();
       await buyer.page.getByRole("button", { name: /Fund Escrow \(0\.6 AVAX\)/ }).click();
       await expect(buyer.page.getByText("FUNDED", { exact: true }).first()).toBeVisible({ timeout: 25_000 });
 

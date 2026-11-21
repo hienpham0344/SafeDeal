@@ -74,6 +74,7 @@ export function DealDetailsPage() {
   const [disputeReason, setDisputeReason] = useState("");
   const [disputeSummary, setDisputeSummary] = useState("");
   const [showDisputeForm, setShowDisputeForm] = useState(false);
+  const [buyerTermsAccepted, setBuyerTermsAccepted] = useState(false);
 
   const deal = dealQuery.data;
 
@@ -257,6 +258,27 @@ export function DealDetailsPage() {
         ? Math.floor(Date.parse(deal.deliveredAt) / 1000)
         : 0;
   const sellerDisputeUnlockEpoch = deal ? deliveredAtEpoch + deal.inspectionWindowSeconds : 0;
+  const canOpenDispute = Boolean(
+    deal &&
+    ((effectiveStatus === "FUNDED" && (isBuyer || isSeller)) ||
+      (effectiveStatus === "DELIVERED" &&
+        (isBuyer || (isSeller && deliveredAtEpoch > 0 && nowSeconds > sellerDisputeUnlockEpoch))))
+  );
+  const canAttachDisputeMetadata = Boolean(
+    deal && effectiveStatus === "DISPUTED" && !deal.disputeId && (isBuyer || isSeller)
+  );
+  const canShowDisputeForm = canOpenDispute || canAttachDisputeMetadata;
+
+  useEffect(() => {
+    if (!canShowDisputeForm) {
+      setShowDisputeForm(false);
+    }
+  }, [canShowDisputeForm]);
+
+  useEffect(() => {
+    setShowDisputeForm(false);
+    setBuyerTermsAccepted(false);
+  }, [tradeId, address]);
 
   const termsHashVerified = useMemo(() => {
     if (!deal || !verifiedTermsHash) return false;
@@ -396,10 +418,10 @@ export function DealDetailsPage() {
           pendingTx?.action === "openDispute"
             ? await executor.waitForHash(pendingTx.txHash)
             : await executor.openDispute(tradeId, (hash) => {
-                submittedTxHash = hash;
-                recoveredPendingHashRef.current = hash;
-                setPending(hash, "openDispute");
-              });
+              submittedTxHash = hash;
+              recoveredPendingHashRef.current = hash;
+              setPending(hash, "openDispute");
+            });
         txHash = res.txHash;
         confirmedTxHash = txHash;
         await syncDealAsync({ tradeId, txHash });
@@ -544,6 +566,20 @@ export function DealDetailsPage() {
               <div className="space-y-3 border-t border-sd-line pt-5">
                 <h2 className="text-sm font-medium text-white">Available Actions</h2>
 
+                {effectiveStatus === "CREATED" && (isBuyer || isOpenBuyerEligible) && nowSeconds <= fundingDeadlineEpoch && (
+                  <label className="flex cursor-pointer items-center gap-3 rounded-xl border border-sd-lineStrong bg-sd-inset px-3.5 py-3 text-sm text-sd-ink transition-colors hover:border-sd-accent/50">
+                    <input
+                      type="checkbox"
+                      checked={buyerTermsAccepted}
+                      onChange={(e) => setBuyerTermsAccepted(e.target.checked)}
+                      className="h-4 w-4 shrink-0 rounded border-sd-lineStrong bg-sd-canvas accent-sd-accent focus:ring-2 focus:ring-sd-accent"
+                    />
+                    <span className="leading-snug">
+                      I have reviewed and accept the agreed terms &amp; escrow conditions.
+                    </span>
+                  </label>
+                )}
+
                 <div className="flex flex-wrap gap-3">
                   {effectiveStatus === "DRAFT" && isSeller && (
                     <Button
@@ -577,7 +613,8 @@ export function DealDetailsPage() {
                         isRecoveringPending ||
                         syncMutation.isPending ||
                         bindTxMutation.isPending ||
-                        termsHashMismatch
+                        termsHashMismatch ||
+                        !buyerTermsAccepted
                       }
                       onClick={() =>
                         void runAndSync("fundTrade", (onHash) =>
@@ -667,9 +704,7 @@ export function DealDetailsPage() {
                     </Button>
                   )}
 
-                  {((effectiveStatus === "FUNDED" && (isBuyer || isSeller)) ||
-                    (effectiveStatus === "DELIVERED" &&
-                      (isBuyer || (isSeller && deliveredAtEpoch > 0 && nowSeconds > sellerDisputeUnlockEpoch)))) && (
+                  {canOpenDispute && (
                     <Button
                       variant="danger"
                       disabled={Boolean(executor.activeAction) || syncMutation.isPending || createDisputeMutation.isPending}
@@ -689,14 +724,24 @@ export function DealDetailsPage() {
                     </Link>
                   )}
 
-                  {effectiveStatus === "DISPUTED" && !deal.disputeId && (isBuyer || isSeller) && (
+                  {canAttachDisputeMetadata && (
                     <Button variant="secondary" onClick={() => setShowDisputeForm(true)}>
                       Attach Dispute Metadata
                     </Button>
                   )}
                 </div>
 
-                {showDisputeForm && (
+                {effectiveStatus === "DELIVERED" &&
+                  isSeller &&
+                  deliveredAtEpoch > 0 &&
+                  nowSeconds <= sellerDisputeUnlockEpoch && (
+                    <p className="text-xs text-sd-inkMuted">
+                      Delivered. Waiting for buyer approval or inspection window expiry (
+                      {formatEpochSeconds(sellerDisputeUnlockEpoch)}).
+                    </p>
+                  )}
+
+                {showDisputeForm && canShowDisputeForm && (
                   <form
                     onSubmit={handleOpenDisputeSubmit}
                     className="mt-4 space-y-3 rounded-xl border border-red-400/30 bg-red-500/5 p-4"
