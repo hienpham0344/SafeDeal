@@ -1,14 +1,9 @@
-=== [0:00 - 0:20] HOOK ===
-Every P2P crypto deal has a trust paradox: send AVAX upfront and risk getting scammed; deliver your work first and risk getting ghosted; use a centralized escrow and you're back to trusting a middleman. Meet SafeDeal — non-custodial P2P escrow on Avalanche, where smart contracts hold the funds, RFC 8785 locks the terms, and no admin can ever touch your AVAX.
+Every P2P crypto deal has a trust paradox: send Avalanche upfront and risk getting scammed; deliver your work first and risk getting ghosted; or use a centralized escrow and go back to trusting a middleman. Meet SafeDeal — non-custodial P2P escrow on Avalanche, where smart contracts hold the funds, R-F-C 87-85 locks the terms, and no admin can ever touch your funds.
 
-=== [0:20 - 1:10] FLOW 1: COOPERATIVE TRADE & PULL-PAYMENT ===
-Flow 1 — Cooperative Trade. The seller drafts deal terms; SafeDeal hashes them deterministically with RFC 8785 in both TypeScript and Rust, then anchors termsHash on Avalanche Fuji. The buyer funds the vault, the seller marks delivery, and the buyer releases payment. Notice SafeDeal uses Pull-Payment withdraw — funds are credited to claimable balances rather than pushed inline, eliminating reentrancy and reverting-contract DoS.
+Flow 1: Cooperative Trade. The seller drafts deal terms. SafeDeal hashes them deterministically with R-F-C 87-85 in both TypeScript and Rust, then anchors the terms hash on Avalanche Fuji. The buyer funds the vault, the seller marks delivery, and the buyer releases payment. Notice SafeDeal uses Pull-Payment withdraw — funds are credited to claimable balances rather than pushed inline, eliminating reentrancy and reverting-contract attacks.
 
-=== [1:10 - 1:45] FLOW 2: OPEN-BUYER & REFUND PROTECTION ===
-Flow 2 — Open-Buyer and Refund Protection. Need a public payment link? Leave the buyer blank — the first wallet to fund locks in as the buyer. And if a seller misses the delivery deadline, or issues a voluntary refund, the buyer reclaims 100% of their AVAX directly on-chain without asking anyone for permission.
+Flow 2: Open-Buyer and Refund Protection. Need a public payment link? Leave the buyer address blank — the first wallet to fund locks in as the buyer. And if a seller misses the delivery deadline, or issues a voluntary refund, the buyer reclaims 100 percent of their funds directly on-chain without asking anyone for permission.
 
-=== [1:45 - 2:40] FLOW 3: DISPUTE, EVIDENCE & 2-OF-3 CONSENSUS ===
-Flow 3 — Dispute and 2-of-3 Consensus. When a deal goes wrong, participants upload private evidence validated by binary magic-bytes and gated by SIWE — outsiders get a strict 403. Unlike traditional escrows where a single arbiter has god-mode, SafeDeal requires 2-of-3 matching votes across Buyer, Seller, and Arbiter. And if everyone ghosts? After 14 days, anyone can trigger resolveDisputeByTimeout for a deterministic 50/50 split — zero trapped funds.
+Flow 3: Dispute and 2-of-3 Consensus. When a deal goes wrong, participants upload private evidence validated by binary magic-bytes and gated by Sign-In with Ethereum — outsiders get a strict 403 error. Unlike traditional escrows where a single arbiter has god-mode, SafeDeal requires 2-of-3 matching votes across the buyer, the seller, and the arbiter. And if everyone ghosts? After 14 days, anyone can trigger a timeout resolution for a deterministic 50-50 split — zero trapped funds.
 
-=== [2:40 - 3:00] OUTRO ===
 Built with Solidity plus Foundry invariant fuzzing, a Clean Architecture Rust backend on Railway, and a reload-safe React UI live on Avalanche Fuji. Try SafeDeal today at avalanche-9b099.web.app.
