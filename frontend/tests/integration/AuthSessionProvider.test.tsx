@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthSessionProvider } from "@/features/authentication/components/AuthSessionProvider";
 import { useAuthSession } from "@/features/authentication/hooks/useAuthSession";
+import { BEARER_TOKEN_KEY } from "@/services/http/api-client";
 
 const SELLER = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" as `0x${string}`;
 const BUYER = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" as `0x${string}`;
@@ -256,5 +257,45 @@ describe("AuthSessionProvider race & cache isolation", () => {
     expect(window.sessionStorage.getItem("safedeal:pending-tx:deal-1")).toBeNull();
     expect(queryClient.getQueryData(["deals", "list", {}])).toBeUndefined();
     expect(queryClient.getQueryData(["disputes", "detail", "1"])).toBeUndefined();
+  });
+
+  it("clears session and cached private queries when bearer token is removed in another tab", async () => {
+    fetchCurrentSessionMock.mockResolvedValue({
+      address: SELLER,
+      chainId: 31337,
+      authenticatedAt: "2026-01-01T00:00:00Z",
+    });
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    queryClient.setQueryData(["deals", "list", {}], { items: [{ tradeId: "0x1" }] });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AuthSessionProvider>
+          <SessionProbe />
+        </AuthSessionProvider>
+      </QueryClientProvider>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("auth-state")).toHaveTextContent(SELLER);
+    });
+
+    await act(async () => {
+      window.dispatchEvent(
+        new StorageEvent("storage", {
+          key: BEARER_TOKEN_KEY,
+          oldValue: "jwt-token",
+          newValue: null,
+        })
+      );
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("auth-state")).toHaveTextContent("anon");
+    });
+    expect(queryClient.getQueryData(["deals", "list", {}])).toBeUndefined();
   });
 });

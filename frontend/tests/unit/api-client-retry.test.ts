@@ -2,8 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bindDealTransaction, syncDealState } from "@/features/deals/api/deals-api";
 import {
   ApiClientError,
+  BEARER_TOKEN_KEY,
+  apiRequest,
   isPendingReceiptApiError,
+  resolveBearerToken,
   retryOnPendingReceipt,
+  setBearerToken,
 } from "@/services/http/api-client";
 
 const TRADE_ID = "0xdfaa30e28fea61388d7a480a028dbdfe58c9b938b1ec990c8d819d7b5417c2f8";
@@ -150,5 +154,72 @@ describe("pending receipt retry helper", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(4);
     vi.unstubAllGlobals();
+  });
+});
+
+describe("bearer token persistence across tabs", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    window.sessionStorage.clear();
+    setBearerToken(null);
+    vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    window.localStorage.clear();
+    window.sessionStorage.clear();
+    setBearerToken(null);
+    vi.unstubAllGlobals();
+  });
+
+  it("persists bearer token in localStorage, attaches Authorization header, and clears on 401", async () => {
+    setBearerToken("jwt-cross-tab-token");
+    expect(window.localStorage.getItem(BEARER_TOKEN_KEY)).toBe("jwt-cross-tab-token");
+    expect(window.sessionStorage.getItem(BEARER_TOKEN_KEY)).toBeNull();
+    expect(resolveBearerToken()).toBe("jwt-cross-tab-token");
+
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        headers: new Headers({ "content-type": "application/json" }),
+        json: async () => ({ address: "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266" }),
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 401,
+        headers: new Headers({ "content-type": "application/json" }),
+        json: async () => ({ code: "UNAUTHORIZED", message: "Expired" }),
+      } as Response);
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    await apiRequest("/api/v1/auth/me");
+    const firstCallHeaders = fetchMock.mock.calls[0]?.[1]?.headers as Record<string, string>;
+    expect(firstCallHeaders["Authorization"]).toBe("Bearer jwt-cross-tab-token");
+
+    await expect(apiRequest("/api/v1/auth/me")).rejects.toThrow("Expired");
+    expect(window.localStorage.getItem(BEARER_TOKEN_KEY)).toBeNull();
+    expect(resolveBearerToken()).toBeNull();
+  });
+
+  it("migrates legacy sessionStorage bearer token into localStorage", () => {
+    window.sessionStorage.setItem(BEARER_TOKEN_KEY, "legacy-session-jwt");
+    expect(resolveBearerToken()).toBe("legacy-session-jwt");
+    expect(window.localStorage.getItem(BEARER_TOKEN_KEY)).toBe("legacy-session-jwt");
+    expect(window.sessionStorage.getItem(BEARER_TOKEN_KEY)).toBeNull();
+  });
+
+  it("falls back to in-memory token when localStorage throws", () => {
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("QuotaExceededError");
+    });
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("SecurityError");
+    });
+
+    setBearerToken("memory-only-jwt");
+    expect(resolveBearerToken()).toBe("memory-only-jwt");
   });
 });

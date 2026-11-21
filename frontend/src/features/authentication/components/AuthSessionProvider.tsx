@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAccount, useChainId, useConnect, useDisconnect, useSignMessage, useSwitchChain } from "wagmi";
 import { env } from "@/config/env";
-import { setUnauthorizedHandler } from "@/services/http/api-client";
+import { BEARER_TOKEN_KEY, setUnauthorizedHandler } from "@/services/http/api-client";
 import {
   fetchCurrentSession,
   logoutSession,
@@ -54,6 +54,27 @@ export function AuthSessionProvider({ children }: { readonly children: ReactNode
     });
     return () => {
       setUnauthorizedHandler(null);
+    };
+  }, [queryClient]);
+
+  useEffect(() => {
+    function handleStorageChange(event: StorageEvent) {
+      if (event.key !== BEARER_TOKEN_KEY && event.key !== null) {
+        return;
+      }
+      if (!event.newValue) {
+        queryClient.setQueryData(["auth", "session"], null);
+        queryClient.removeQueries({ queryKey: ["deals"] });
+        queryClient.removeQueries({ queryKey: ["disputes"] });
+        queryClient.removeQueries({ queryKey: ["arbitration"] });
+      } else {
+        void queryClient.invalidateQueries({ queryKey: ["auth", "session"] });
+      }
+    }
+
+    window.addEventListener("storage", handleStorageChange);
+    return () => {
+      window.removeEventListener("storage", handleStorageChange);
     };
   }, [queryClient]);
 

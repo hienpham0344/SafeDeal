@@ -61,7 +61,7 @@ function getSubmitterRole(submittedBy: string, dispute: DisputeDetail): {
 
 export function DisputePage() {
   const { id } = useParams<{ id: string }>();
-  const { address, isConnected, isAuthenticated, openWalletModal, signInWithWallet } = useAuthSession();
+  const { address, isConnected, isAuthenticated, isSessionLoading, openWalletModal, signInWithWallet } = useAuthSession();
 
   const disputeQuery = useDisputeQuery(id, isAuthenticated);
   const evidenceQuery = useDisputeEvidenceQuery(id, isAuthenticated);
@@ -137,6 +137,8 @@ export function DisputePage() {
           description="Only verified trade participants and the assigned arbiter can inspect dispute evidence."
           action={<Button onClick={openWalletModal}>Connect Wallet</Button>}
         />
+      ) : isSessionLoading ? (
+        <LoadingState label="Restoring wallet session..." />
       ) : !isAuthenticated ? (
         <EmptyState
           title="Wallet sign-in required"

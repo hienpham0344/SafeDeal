@@ -53,7 +53,7 @@ export function DealDetailsPage() {
   const navigate = useNavigate();
   const tradeId = id as `0x${string}` | undefined;
 
-  const { address, isConnected, isWrongNetwork, isAuthenticated, openWalletModal, signInWithWallet } = useAuthSession();
+  const { address, isConnected, isWrongNetwork, isAuthenticated, isSessionLoading, openWalletModal, signInWithWallet } = useAuthSession();
   const dealQuery = useDealQuery(tradeId, isAuthenticated);
   const historyQuery = useDealHistoryQuery(tradeId, isAuthenticated);
   const syncMutation = useSyncDealMutation();
@@ -443,6 +443,8 @@ export function DealDetailsPage() {
           description="Connect your wallet and sign in to view verified terms, on-chain status, and available escrow actions."
           action={<Button onClick={openWalletModal}>Connect Wallet</Button>}
         />
+      ) : isSessionLoading ? (
+        <LoadingState label="Restoring wallet session..." />
       ) : !isAuthenticated ? (
         <EmptyState
           title="Sign in required"

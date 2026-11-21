@@ -32,6 +32,7 @@ export function AppShell({
     isWrongNetwork,
     isAuthenticated,
     isAuthenticating,
+    isSessionLoading,
     authError,
     walletModalOpen,
     openWalletModal,
@@ -208,7 +209,7 @@ export function AppShell({
           />
         )}
 
-        {isConnected && !isWrongNetwork && !isAuthenticated && (
+        {isConnected && !isWrongNetwork && !isSessionLoading && !isAuthenticated && (
           <AlertBanner
             tone="info"
             title="Wallet Authentication Required"

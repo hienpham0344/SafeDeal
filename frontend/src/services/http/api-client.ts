@@ -80,7 +80,7 @@ export async function retryOnPendingReceipt<T>(
   }
 }
 
-const BEARER_TOKEN_KEY = "safedeal_bearer_token";
+export const BEARER_TOKEN_KEY = "safedeal_bearer_token";
 
 let inMemoryCsrfToken: string | null = null;
 let inMemoryBearerToken: string | null = null;
@@ -95,10 +95,11 @@ export function setBearerToken(token: string | null): void {
   if (typeof window !== "undefined") {
     try {
       if (token) {
-        window.sessionStorage.setItem(BEARER_TOKEN_KEY, token);
+        window.localStorage.setItem(BEARER_TOKEN_KEY, token);
       } else {
-        window.sessionStorage.removeItem(BEARER_TOKEN_KEY);
+        window.localStorage.removeItem(BEARER_TOKEN_KEY);
       }
+      window.sessionStorage.removeItem(BEARER_TOKEN_KEY);
     } catch {
       // Ignore storage access errors in restricted browser contexts
     }
@@ -106,15 +107,29 @@ export function setBearerToken(token: string | null): void {
 }
 
 export function resolveBearerToken(): string | null {
-  if (inMemoryBearerToken) return inMemoryBearerToken;
   if (typeof window !== "undefined") {
     try {
-      return window.sessionStorage.getItem(BEARER_TOKEN_KEY);
-    } catch {
+      const stored = window.localStorage.getItem(BEARER_TOKEN_KEY);
+      if (stored) {
+        inMemoryBearerToken = stored;
+        return stored;
+      }
+
+      const legacySessionToken = window.sessionStorage.getItem(BEARER_TOKEN_KEY);
+      if (legacySessionToken) {
+        window.localStorage.setItem(BEARER_TOKEN_KEY, legacySessionToken);
+        window.sessionStorage.removeItem(BEARER_TOKEN_KEY);
+        inMemoryBearerToken = legacySessionToken;
+        return legacySessionToken;
+      }
+
+      inMemoryBearerToken = null;
       return null;
+    } catch {
+      return inMemoryBearerToken;
     }
   }
-  return null;
+  return inMemoryBearerToken;
 }
 
 export function setUnauthorizedHandler(handler: (() => void) | null): void {

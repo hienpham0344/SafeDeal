@@ -62,7 +62,7 @@ function ArbiterDisputeCard({ dispute }: { readonly dispute: DisputeDetail }) {
 }
 
 export function ArbiterPage() {
-  const { isConnected, isAuthenticated, openWalletModal, signInWithWallet } = useAuthSession();
+  const { isConnected, isAuthenticated, isSessionLoading, openWalletModal, signInWithWallet } = useAuthSession();
   const disputesQuery = useAssignedDisputesQuery(isAuthenticated);
 
   return (
@@ -77,6 +77,8 @@ export function ArbiterPage() {
           description="Connect the designated arbiter wallet to review evidence and submit 2-of-3 settlement votes."
           action={<Button onClick={openWalletModal}>Connect Wallet</Button>}
         />
+      ) : isSessionLoading ? (
+        <LoadingState label="Restoring wallet session..." />
       ) : !isAuthenticated ? (
         <EmptyState
           title="Sign in as arbiter"
