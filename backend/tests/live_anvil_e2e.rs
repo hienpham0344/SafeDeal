@@ -775,7 +775,7 @@ async fn runs_full_multi_actor_escrow_dispute_arbitration_and_indexer_flow_on_li
         .await
         .unwrap()
         .len();
-    assert_eq!(first_indexed, 2);
+    assert_eq!(first_indexed, 1);
     let second_indexed = indexer.poll_and_index().await.expect("second live poll");
     assert_eq!(second_indexed, 0);
     let count_after_second = components

@@ -10,7 +10,7 @@ test.describe("Application Navigation, Error Boundaries & Wallet Session UI", ()
 
     await page.goto("/how-it-works");
     await expect(page.getByRole("heading", { name: "How SafeDeal Works" })).toBeVisible();
-    await expect(page.getByText("Important Trust Limitation")).toBeVisible();
+    await expect(page.getByText("2-of-3 Consensus & 14-Day Stalemate Protection")).toBeVisible();
 
     // Backend healthy state
     await page.route("**/api/v1/health", async (route) => {
