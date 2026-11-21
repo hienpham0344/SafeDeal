@@ -4,8 +4,8 @@
 
 | Environment | Blockchain | Backend Runtime | Database & Storage | Frontend Hosting |
 |---|---|---|---|---|
-| **Local Development** | Anvil (`http://127.0.0.1:8545`, chain `31337`) | Gradle `bootRun` / Docker container (`:8080`) | Docker PostgreSQL 16 + `./storage/evidence` | Vite dev/preview (`:5173` / `:4173`) |
-| **Local Live 3-Tier E2E** | Isolated Anvil (`127.0.0.1:18545`) | Packaged `safedeal-api.jar` (`PropertiesLauncher`, `:18080`) | H2 PostgreSQL-mode or `DB_URL` (PostgreSQL 16) + temp evidence dir | Built Vite SPA (`127.0.0.1:14173`) |
+| **Local Development** | Anvil (`http://127.0.0.1:8545`, chain `31337`) | `scripts/dev-backend.sh` (`cargo run`) / Docker container (`:8080`) | Docker PostgreSQL 16 + `./storage/evidence` | Vite dev/preview (`:5173` / `:4173`) |
+| **Local Live 3-Tier E2E** | Isolated Anvil (`127.0.0.1:18545`) | Release binary `safedeal-api` (`:18080`) | PostgreSQL 16 (`DB_URL` / `DATABASE_URL`) + temp evidence dir | Built Vite SPA (`127.0.0.1:14173`) |
 | **Full Docker Compose** | `anvil` service (`infra/docker-compose.yml`, `${ANVIL_PORT:-8545}`) | Multi-stage `backend/Dockerfile` (`${BACKEND_PORT:-8080}`) | Named volumes `postgres_data` (`${DB_PORT:-5432}`) + `evidence_data` | `frontend/Dockerfile` (`nginx:1.27-alpine`, `${FRONTEND_PORT:-5173}`) |
 | **Cloud Testnet / Production** | Avalanche Fuji C-Chain (`43113`) | Railway (`backend/railway.json` healthcheck `/api/v1/health`) | Managed PostgreSQL addon + mounted persistent volume `/app/storage/evidence` | Firebase Hosting (`firebase.json`, `avalanche-9b099.web.app`) |
 
@@ -19,15 +19,15 @@
 
 1. **`ci.yml`** (on `push` to `main` and every `pull_request`):
    - `blockchain`: Foundry `forge test --root blockchain -vvv`.
-   - `backend`: JDK 21 + Gradle `./backend/gradlew -p backend test bootJar` (executes unit, ArchUnit, Flyway/PostgreSQL Testcontainers & H2 contract verification, security, controller, indexer, and OpenAPI sync tests).
+   - `backend`: Rust toolchain + PostgreSQL 16 service — `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test --workspace -- --test-threads=1` (unit, architecture DAG, OpenAPI sync, Wiremock gateway, PostgreSQL integration & live Anvil tests), then `cargo build --release --bin safedeal-api`.
    - `frontend`: Node 22 `npm ci`, `typecheck`, `lint`, `test` (Vitest), `build`, and `npm run test:e2e` (Playwright across Desktop, Tablet, Mobile).
-   - `docker-postgres-e2e`: Boots `infra/docker-compose.yml` (`postgres:16-alpine`, `anvil`, `backend/Dockerfile`, `frontend/Dockerfile`) on isolated ports, verifies `smoke-test.sh` & `psql flyway_schema_history`, and executes the full unmocked `scripts/e2e-live.sh` suite directly against PostgreSQL 16.
+   - `docker-postgres-e2e`: Boots `infra/docker-compose.yml` (`postgres:16-alpine`, `anvil`, `backend/Dockerfile`, `frontend/Dockerfile`) on isolated ports, verifies `smoke-test.sh` & `psql _sqlx_migrations`, and executes the full unmocked `scripts/e2e-live.sh` suite directly against PostgreSQL 16.
 2. **`secrets-scan.yml`** (on `push`, `pull_request`, and weekly cron):
    - Executes Gitleaks secret scanning across commit history.
 3. **`contracts-deploy.yml`** (manual `workflow_dispatch`):
    - Validates `forge test`, broadcasts `script/Deploy.s.sol:Deploy` to `FUJI_RPC_URL` with secret `DEPLOYER_PRIVATE_KEY` (plus optional `SNOWTRACE_API_KEY`), and uploads `blockchain/broadcast/` artifact.
 4. **`deploy-backend.yml`** (push to `main` under `backend/**` or manual):
-   - Executes `./backend/gradlew -p backend test bootJar`, pushes backend to Railway via `RAILWAY_TOKEN`, and probes `vars.BACKEND_HEALTH_URL` if configured.
+   - Runs `cargo fmt`/`clippy`/`test` and builds the release binary, pushes backend to Railway via `RAILWAY_TOKEN`, and probes `vars.BACKEND_HEALTH_URL` if configured.
 5. **`deploy-frontend.yml`** (push to `main` under `frontend/**` or manual):
    - Builds `frontend/` using `vars.VITE_*` and deploys the production bundle to Firebase Hosting via `FIREBASE_TOKEN`.
 

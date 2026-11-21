@@ -1,13 +1,13 @@
 # Configuration & Environment Variable Guide
 
-No secrets, private keys, deployment addresses, or environment URLs are hardcoded in application binaries. Runtime validation occurs in [`env.ts`](../frontend/src/config/env.ts), [`InfrastructureBeansConfig.java`](../backend/src/main/java/com/safedeal/infrastructure/configuration/InfrastructureBeansConfig.java), and `@ConfigurationProperties` bindings.
+No secrets, private keys, deployment addresses, or environment URLs are hardcoded in application binaries. Runtime validation occurs in [`env.ts`](../frontend/src/config/env.ts), and [`config.rs`](../backend/crates/infrastructure/src/config.rs) (`validate_common_and_production`, `validate_production_configuration`).
 
 ## 1. Root Docker Stack (`.env` for `infra/docker-compose.yml`)
 
 Create from root `.env.example` when running the containerized compose stack:
 - `DB_NAME`, `DB_USERNAME`, `DB_PASSWORD`, `DB_PORT`
 - `JWT_SECRET` (`openssl rand -hex 32`)
-- `SPRING_PROFILES_ACTIVE`, `BLOCKCHAIN_SYNC_ENABLED`, `ESCROW_CONTRACT_ADDRESS`
+- `APP_ENV`, `BLOCKCHAIN_SYNC_ENABLED`, `ESCROW_CONTRACT_ADDRESS`
 - `VITE_API_BASE_URL`, `VITE_CHAIN_ID`, `VITE_RPC_URL`, `VITE_ESCROW_CONTRACT_ADDRESS`
 
 ## 2. Smart Contracts (`blockchain/.env`)
@@ -21,31 +21,31 @@ Create from root `.env.example` when running the containerized compose stack:
 | `DEPLOYER_PRIVATE_KEY` | *(supplied dynamically — never commit)* | Deployment signer used only during `Deploy.s.sol` broadcast |
 | `SNOWTRACE_API_KEY` | *(optional)* | Explorer API key for automated `--verify` on Snowtrace |
 
-## 3. Backend (`backend/.env` + Spring Environment)
+## 3. Backend (`backend/.env` + process environment)
 
-| Variable | Default (`application.yml` / `.env.example`) | Notes |
+| Variable | Default (`config.rs` / `.env.example`) | Notes |
 |---|---|---|
-| `SPRING_PROFILES_ACTIVE` | `local` | Supported: `local`, `test`, `staging`, `prod` |
-| `SERVER_PORT` | `8080` | HTTP port bound by Spring Boot |
-| `DB_URL` | `jdbc:postgresql://localhost:5432/safedeal` (`local`) | Required JDBC PostgreSQL URL |
+| `APP_ENV` | `local` | Supported: `local`, `test`, `staging`, `prod` (`SPRING_PROFILES_ACTIVE` accepted as legacy alias) |
+| `SERVER_HOST` / `SERVER_PORT` | `0.0.0.0` / `8080` | HTTP bind address (`PORT` accepted as fallback, e.g. Railway) |
+| `DATABASE_URL` (or `DB_URL`) | `postgresql://localhost:5432/safedeal` (`local` only) | PostgreSQL URL (`postgres://`, `postgresql://`, or legacy `jdbc:postgresql://`); required in `staging`/`prod` |
 | `DB_USERNAME` / `DB_PASSWORD` | `safedeal` / `safedeal` (`local`) | Database user credentials |
-| `DB_DRIVER_CLASS_NAME` | `org.postgresql.Driver` | `org.h2.Driver` only in H2 test/live-E2E harnesses |
+| `DB_POOL_MAX_CONNECTIONS` / `DB_POOL_MIN_CONNECTIONS` / `DB_ACQUIRE_TIMEOUT_MS` | `20` / `2` / `5000` | SQLx `PgPool` sizing |
 | `JWT_SECRET` | *(required, no fallback)* | Must be `>= 32` chars; `prod`/`staging` fail startup on placeholders (`replace-with`, `placeholder`, `changeme`, `change-me`, `dev-only`, `test-only`, `example`) |
 | `SESSION_TTL_SECONDS` | `86400` | Signed session JWT lifetime |
 | `NONCE_TTL_SECONDS` | `300` | SIWE challenge expiry window |
 | `SIWE_DOMAIN` / `SIWE_URI` | `localhost:5173` / `http://localhost:5173` | Expected browser domain and origin URI (`localhost` forbidden in `prod`/`staging`) |
 | `SESSION_COOKIE_NAME` / `CSRF_COOKIE_NAME` | `safedeal_session` / `safedeal_csrf` | Session cookie & CSRF token cookie names |
-| `COOKIE_SECURE` / `COOKIE_SAME_SITE` | `false` / `Lax` (`true` / `None` in `application-prod.yml`) | Must be `true` in `prod`/`staging` |
+| `COOKIE_SECURE` / `COOKIE_SAME_SITE` | `false` / `Lax` (default `true` / `None` in `staging`/`prod`) | Must be `true` in `prod`/`staging` |
 | `CORS_ALLOWED_ORIGINS` | `http://localhost:5173` | Comma-separated origins; `*` and loopback hosts forbidden in `prod`/`staging` |
-| `BLOCKCHAIN_SYNC_ENABLED` | `true` (`application.yml`; `false` in `.env.example`) | Enables RPC verification, indexing, and `/health/ready` contract check |
+| `BLOCKCHAIN_SYNC_ENABLED` | `true` (`config.rs`; `false` in `.env.example`) | Enables RPC verification, indexing, and `/health/ready` contract check |
 | `CHAIN_ID` / `CHAIN_NAME` | `31337` / `Anvil Local` | Target Avalanche/EVM network (`43113` on Fuji) |
-| `AVALANCHE_RPC_URL` | `http://127.0.0.1:8545` | JSON-RPC URL queried via Web3j |
+| `AVALANCHE_RPC_URL` | `http://127.0.0.1:8545` | JSON-RPC URL queried via Alloy |
 | `ESCROW_CONTRACT_ADDRESS` | *(blank until deployed)* | Deployed `SafeDealEscrow` address |
 | `ESCROW_DEPLOYMENT_BLOCK` | `0` | Indexer start cursor (`max(0, deploymentBlock - 1)`) |
 | `BLOCKCHAIN_CONFIRMATIONS_REQUIRED` | `1` | Confirmation lag before indexing (`2+` recommended on Fuji) |
 | `BLOCKCHAIN_SYNC_BATCH_SIZE` | `1000` | Max block span per `eth_getLogs` poll |
 | `BLOCKCHAIN_POLL_INTERVAL_MS` | `10000` | Scheduler fixed delay in ms |
-| `BLOCKCHAIN_RPC_TIMEOUT_MS` | `10000` | OkHttp read/connect/write timeout |
+| `BLOCKCHAIN_RPC_TIMEOUT_MS` | `10000` | Per-request HTTP JSON-RPC timeout (reqwest) |
 | `EVIDENCE_STORAGE_DIR` | `./storage/evidence` | Root directory for private evidence attachments |
 | `EVIDENCE_MAX_BYTES` | `5242880` | Max binary upload per attachment (5 MiB) |
 | `EVIDENCE_MAX_REQUEST_BYTES` | `6291456` | Max multipart HTTP payload |

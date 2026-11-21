@@ -20,7 +20,7 @@ Inspect the JSON fields in `ReadinessStatusResponse`:
 - **Resolution**: Reconnect the same seller wallet and return to `/create`. If pending, UI finishes waiting for confirmation automatically; if confirmed, click **Retry Backend Binding**. Never click **Edit Draft** if you intend to bind the already-mined trade without recreating.
 
 ## 5. Production Backend Fails Startup (`IllegalStateException`)
-- **Cause**: Active profile is `prod` or `staging`, and [`validateProductionConfiguration`](../backend/src/main/java/com/safedeal/infrastructure/configuration/InfrastructureBeansConfig.java) rejected a placeholder word in `JWT_SECRET`, `COOKIE_SECURE=false`, wildcard CORS `*`, or loopback hosts in `SIWE_DOMAIN`/`SIWE_URI`/`CORS_ALLOWED_ORIGINS`/`AVALANCHE_RPC_URL`.
+- **Cause**: Active profile is `prod` or `staging`, and [`validate_production_configuration`](../backend/crates/infrastructure/src/config.rs) rejected a placeholder word in `JWT_SECRET`, `COOKIE_SECURE=false`, wildcard CORS `*`, or loopback hosts in `SIWE_DOMAIN`/`SIWE_URI`/`CORS_ALLOWED_ORIGINS`/`AVALANCHE_RPC_URL`.
 - **Fix**: Generate a random secret (`openssl rand -hex 32`) and populate non-loopback HTTPS origins.
 
 ## 6. Evidence Upload Returns `400 File contents do not match declared MIME type`
@@ -28,15 +28,17 @@ Inspect the JSON fields in `ReadinessStatusResponse`:
 - **Fix**: Upload genuine `PNG`, `JPEG`, `PDF`, or non-blank UTF-8 plain text within `EVIDENCE_MAX_BYTES` (default 5 MiB).
 
 ## 7. Authentication Calls Return `429 RATE_LIMITED`
-- **Cause**: Exceeded `AUTH_RATE_LIMIT_PER_MINUTE` calls from the resolved client IP (`request.getRemoteAddr()`) on `/api/v1/auth/nonce` or `/verify`.
-- **Fix**: Wait up to 60 seconds, or verify reverse-proxy `X-Forwarded-For` configuration if multiple remote users share one proxy IP with Spring `server.forward-headers-strategy: framework`. Disable only in isolated test harnesses (`RATE_LIMIT_ENABLED=false`).
+- **Cause**: Exceeded `AUTH_RATE_LIMIT_PER_MINUTE` calls from the resolved client IP (TCP peer address; `X-Forwarded-For` only when `AUTH_TRUST_PROXY_HEADERS=true`) on `/api/v1/auth/nonce` or `/verify`.
+- **Fix**: Wait up to 60 seconds, or set `AUTH_TRUST_PROXY_HEADERS=true` behind a trusted reverse proxy if multiple remote users share one proxy IP. Disable only in isolated test harnesses (`RATE_LIMIT_ENABLED=false`).
 
-## 8. `OpenApiContractVerificationTest` Fails After Controller Changes
+## 8. `openapi_contract` Test Fails After Handler/DTO Changes
 - **Cause**: Backend API DTOs or routes changed while [`docs/openapi.json`](./openapi.json) was not regenerated.
 - **Fix**: Intentionally refresh the contract snapshot and commit alongside your code diff:
   ```bash
-  ./backend/gradlew -p backend test --tests com.safedeal.OpenApiContractVerificationTest -DupdateOpenApiSpec=true
+  # with the API running locally (API_DOCS_ENABLED defaults to true outside staging/prod)
+  curl -fsS http://localhost:8080/v3/api-docs | jq . > docs/openapi.json
+  cargo test --manifest-path backend/Cargo.toml --test openapi_contract
   ```
 
-## 9. `scripts/verify.sh` / `e2e-live.sh` Cannot Find `java` or `forge`/`anvil`
-- **Fix**: Ensure Java 21 is installed (scripts check `PATH` and `$HOME/.jdks/jdk-21*`) and Foundry is on `PATH`, `~/.foundry/bin`, or `/tmp/foundry-tool`.
+## 9. `scripts/verify.sh` / `e2e-live.sh` Cannot Find `cargo` or `forge`/`anvil`
+- **Fix**: Ensure the Rust toolchain is installed (scripts check `PATH` and `$HOME/.cargo/bin`) and Foundry is on `PATH`, `~/.foundry/bin`, or `/tmp/foundry-tool`.

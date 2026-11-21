@@ -1,6 +1,6 @@
 # REST API Contracts & Security Semantics
 
-Base path: `/api/v1` · Canonical OpenAPI 3 specification: [`docs/openapi.json`](./openapi.json) (continuously verified against SpringDoc `/v3/api-docs` in [`OpenApiContractVerificationTest`](../backend/src/test/java/com/safedeal/OpenApiContractVerificationTest.java)).
+Base path: `/api/v1` · Canonical OpenAPI 3 specification: [`docs/openapi.json`](./openapi.json) (continuously verified against the `utoipa`-generated `/v3/api-docs` in [`openapi_contract.rs`](../backend/tests/openapi_contract.rs)).
 
 ## 1. Authentication, Session Cookies & CSRF
 
@@ -16,7 +16,7 @@ Base path: `/api/v1` · Canonical OpenAPI 3 specification: [`docs/openapi.json`]
 |---|---|---|---|
 | `GET /api/v1/health` | Public | `200 OK` | Liveness payload: `{ status: "UP", service, chainId, chainName, escrowContractConfigured }` |
 | `GET /api/v1/health/ready` | Public | `200 OK` / `503 Service Unavailable` | Dependency readiness probe returning `ReadinessStatusResponse` (`status: "READY" \| "NOT_READY"`, `databaseConnected`, `evidenceStorageReady`, `siweConfigured`, `blockchainEnabled`, `escrowContractConfigured`, `chainId`). Returns HTTP `503` whenever DB connectivity (`SELECT 1`), evidence directory writability, SIWE settings, or enabled contract configuration fail. |
-| `GET /actuator/health/readiness` | Public | `200 OK` | Spring Actuator readiness probe (`probes.enabled: true`) |
+| `GET /actuator/health/readiness` | Public | `200 OK` | Actuator-compatible readiness probe for container orchestrators |
 
 ### Authentication (SIWE EIP-4361)
 

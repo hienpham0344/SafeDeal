@@ -30,7 +30,7 @@ openssl rand -hex 32
 Configure these environment variables on the Railway backend service:
 
 ```env
-SPRING_PROFILES_ACTIVE=prod
+APP_ENV=prod
 SERVER_PORT=8080
 DB_URL=jdbc:postgresql://<PGHOST>:<PGPORT>/<PGDATABASE>?sslmode=require
 DB_USERNAME=<PGUSER>
@@ -53,7 +53,7 @@ RATE_LIMIT_ENABLED=true
 AUTH_RATE_LIMIT_PER_MINUTE=30
 ```
 
-> `prod` startup enforces [`validateProductionConfiguration`](../backend/src/main/java/com/safedeal/infrastructure/configuration/InfrastructureBeansConfig.java): placeholder secrets, `<32` char `JWT_SECRET`, `COOKIE_SECURE=false`, wildcard CORS `*`, or loopback URLs immediately fail boot.
+> `prod` startup enforces [`validate_production_configuration`](../backend/crates/infrastructure/src/config.rs): placeholder secrets, `<32` char `JWT_SECRET`, `COOKIE_SECURE=false`, wildcard CORS `*`, or loopback URLs immediately fail boot.
 
 ---
 

@@ -25,7 +25,7 @@ stateDiagram-v2
 
 ## 2. `DealStatus` Transition & Reconciliation Matrix
 
-Implemented identically in [`SafeDealEscrow.sol`](../blockchain/src/SafeDealEscrow.sol) and [`DealStatus.java`](../backend/src/main/java/com/safedeal/domain/deal/DealStatus.java):
+Implemented identically in [`SafeDealEscrow.sol`](../blockchain/src/SafeDealEscrow.sol) and [`deal.rs` (`DealStatus`)](../backend/crates/domain/src/deal.rs):
 
 | Current State | Authorized Trigger | Next State | Settlement Credited? |
 |---|---|---|---|

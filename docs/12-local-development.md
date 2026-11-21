@@ -4,7 +4,7 @@ This guide covers Setup **Steps 1–8** of the 19-step deployment runbook. For A
 
 ## Prerequisites
 
-- **Java 21** (Eclipse Temurin / OpenJDK 21)
+- **Rust 1.91+** (`rustc`, `cargo`) — https://rustup.rs
 - **Node.js 22+** and npm
 - **Foundry** (`forge`, `anvil`, `cast`) — https://getfoundry.sh
 - **Docker** + **Docker Compose** (or local PostgreSQL 16 service)
@@ -13,10 +13,10 @@ This guide covers Setup **Steps 1–8** of the 19-step deployment runbook. For A
 
 ### Step 1: Verify Toolchains
 
-Confirm Java 21, Node 22+, and Foundry binaries are installed on `PATH` (or `$HOME/.foundry/bin`):
+Confirm Rust 1.91+, Node 22+, and Foundry binaries are installed on `PATH` (or `$HOME/.foundry/bin`):
 
 ```bash
-java -version
+rustc --version && cargo --version
 node -v && npm -v
 forge --version && anvil --version && cast --version
 ```
@@ -25,7 +25,7 @@ forge --version && anvil --version && cast --version
 
 ### Step 2: Initialize Environment Templates & Install Dependencies
 
-Run `scripts/install.sh` with `INIT_ENV=1` to install frontend packages, verify `./backend/gradlew`, fetch missing Foundry libraries (`forge-std`, `openzeppelin-contracts`), and create local `.env` copies from `.env.example`:
+Run `scripts/install.sh` with `INIT_ENV=1` to install frontend packages, prefetch Rust crates (`cargo fetch --locked`), fetch missing Foundry libraries (`forge-std`, `openzeppelin-contracts`), and create local `.env` copies from `.env.example`:
 
 ```bash
 INIT_ENV=1 bash scripts/install.sh
@@ -83,7 +83,7 @@ VITE_ESCROW_CONTRACT_ADDRESS=0x...
 
 ### Step 6: Start Backend API & Vite Frontend
 
-Run the Spring Boot API (`http://localhost:8080`, applies Flyway `V1__initial_schema.sql`) and React dev server (`http://localhost:5173`) in separate terminals:
+Run the Rust Axum API (`http://localhost:8080`, applies SQLx migrations from `backend/migrations/` on startup) and React dev server (`http://localhost:5173`) in separate terminals:
 
 ```bash
 bash scripts/dev-backend.sh
@@ -104,13 +104,13 @@ bash scripts/smoke-test.sh
 
 ### Step 8: Run Monorepo Verification & Live Unmocked 3-Tier E2E
 
-Run the full offline verification suite (Foundry unit/security/invariant + Gradle ArchUnit/H2/OpenAPI parity + Vite typecheck/lint/Vitest/build + multi-viewport Playwright E2E):
+Run the full offline verification suite (Foundry unit/security/invariant + Cargo fmt/clippy/tests (crate DAG, PostgreSQL integration, OpenAPI parity) + Vite typecheck/lint/Vitest/build + multi-viewport Playwright E2E):
 
 ```bash
 bash scripts/verify.sh
 ```
 
-Run the self-contained unmocked 3-tier E2E harness (`Playwright -> Vite Preview -> safedeal-api.jar -> Anvil`):
+Run the self-contained unmocked 3-tier E2E harness (`Playwright -> Vite Preview -> safedeal-api binary -> Anvil`):
 
 ```bash
 bash scripts/e2e-live.sh

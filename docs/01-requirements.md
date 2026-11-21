@@ -14,18 +14,18 @@ Every foundational architecture and product decision is codified in code, build 
 |---|---|---|
 | 1 | **Non-custodial native asset escrow** | `SafeDealEscrow.sol` locks native AVAX (`payable fundTrade`) with zero admin/owner sweep backdoors. |
 | 2 | **Single clean monorepo layout** | Top-level `frontend/`, `backend/`, `blockchain/`, `infra/`, `scripts/`, `docs/` directories. |
-| 3 | **Deterministic off-chain commercial terms** | Shared RFC 8785 Canonical JSON + SHA-256 hashing (`CanonicalTermsHasher.java` & `canonical-terms.ts`). |
+| 3 | **Deterministic off-chain commercial terms** | Shared RFC 8785 Canonical JSON + SHA-256 hashing (`canonical_terms.rs` & `canonical-terms.ts`). |
 | 4 | **Three distinct protocol roles** | Immutable per trade: `seller`, `buyer` (preassigned or bound on first valid `fundTrade`), and `arbiter` (`seller != arbiter`, `buyer != arbiter`, `buyer != seller`). |
 | 5 | **Open-buyer vs. preassigned deals** | `preassignedBuyer == address(0)` permits shareable link funding by any eligible external buyer, then locks `buyer` permanently on-chain. |
 | 6 | **Pull-payment settlement over push payouts** | Settlement transitions credit `_claimableBalances` + `_totalClaimable`; recipients call `withdraw()` under `ReentrancyGuard`. |
 | 7 | **Seller-only pre-funding cancellation & voluntary refund** | `cancelUnfundedTrade` (`CREATED -> CANCELLED`) and `refundBySeller` (`FUNDED -> REFUNDED`) isolate legitimate seller exits. |
 | 8 | **Buyer inspection window protection** | Configurable `inspectionWindow` (`>= 1h`, `<= 30d` in off-chain policy) blocks premature seller disputes on `DELIVERED` deals until `deliveredAt + inspectionWindow` elapses. |
 | 9 | **Split arbitration allocation** | `resolveDispute(tradeId, buyerAmount, sellerAmount)` requires `buyerAmount + sellerAmount == trade.amount`, returning `0` fee to `arbiter`. |
-| 10 | **Wallet-native passwordless authentication** | EIP-4361 SIWE via Web3j `ecrecover` with atomic PostgreSQL single-use nonces (`consumeOnce`). |
+| 10 | **Wallet-native passwordless authentication** | EIP-4361 SIWE via `k256` secp256k1 recovery (`K256SignatureVerifier`) with atomic PostgreSQL single-use nonces (`consume_once`). |
 | 11 | **XSS/CSRF-hardened web sessions** | HS256 JWT stored solely in `HttpOnly` cookie (`safedeal_session`) paired with Double-Submit CSRF (`safedeal_csrf` + `X-CSRF-Token`). |
-| 12 | **Strict backend Clean Architecture** | Four concentric layers (`domain/`, `application/`, `infrastructure/`, `presentation/`) enforced in CI by `ModuleBoundaryArchTest` (ArchUnit). |
-| 13 | **Connection-pool safe blockchain calls** | Web3j RPC reads (`inspectTransaction`, `fetchTrade`, `fetchLogs`) execute outside database transactions (`TransactionOperations` wraps short ACID writes only). |
-| 14 | **Contract-first OpenAPI specification** | SpringDoc output continuously verified against committed [`docs/openapi.json`](./openapi.json) via `OpenApiContractVerificationTest`. |
+| 12 | **Strict backend Clean Architecture** | Four concentric layers (`domain/`, `application/`, `infrastructure/`, `presentation/`) enforced as separate Cargo crates plus `backend/tests/architecture_dag.rs` in CI. |
+| 13 | **Connection-pool safe blockchain calls** | Alloy RPC reads (`inspect_transaction`, `fetch_trade`, `fetch_logs`) execute outside database transactions (`UnitOfWork::in_tx` wraps short ACID writes only). |
+| 14 | **Contract-first OpenAPI specification** | `utoipa` output continuously verified against committed [`docs/openapi.json`](./openapi.json) via `backend/tests/openapi_contract.rs`. |
 | 15 | **Binary-validated private dispute evidence** | `LocalEvidenceStorageAdapter` validates MIME allowlist + magic bytes + size bounds + UUID normalized paths, accessible exclusively to trade `seller`, `buyer`, and `arbiter`. |
 | 16 | **Immutable Foldcraft editorial landing page** | `/` preserves exact Foldcraft hero media, typography, staggered motion, and responsive navigation breakpoints while functional dApp workflows operate on dedicated routes. |
 
@@ -34,7 +34,7 @@ Every foundational architecture and product decision is codified in code, build 
 | # | Sprint 0 Deliverable | Verification & Location |
 |---|---|---|
 | 1 | **Verified Escrow Smart Contract + Security/Invariant Tests** | `blockchain/src/SafeDealEscrow.sol`, `SafeDealEscrow.t.sol`, `EscrowSecurity.t.sol`, `EscrowInvariant.t.sol` (`forge test --root blockchain -vvv`). |
-| 2 | **PostgreSQL Schema + ArchUnit Clean Modular Backend** | `backend/src/main/resources/db/migration/V1__initial_schema.sql`, ArchUnit `ModuleBoundaryArchTest`, integration & security test suites (`./backend/gradlew -p backend test bootJar`). |
+| 2 | **PostgreSQL Schema + Clean Modular Rust Backend** | `backend/migrations/*.sql`, crate-DAG test `backend/tests/architecture_dag.rs`, integration & security test suites (`cargo test --manifest-path backend/Cargo.toml --workspace -- --test-threads=1`). |
 | 3 | **OpenAPI Contract + Backend Readiness Probe** | Committed [`docs/openapi.json`](./openapi.json), `GET /api/v1/health`, and `GET /api/v1/health/ready`. |
 | 4 | **Frontend Type-Safe Web3 Workflows + Preserved Landing Page** | Strict TypeScript React app (`LandingPage.tsx`, `CreateDealPage.tsx` reload-safe recovery, `DealDetailsPage.tsx`, `DashboardPage.tsx`, `DisputePage.tsx`, `ArbiterPage.tsx`, `SupportPage.tsx`). |
 | 5 | **One-Command Verification & Unmocked 3-Tier Live E2E Harness** | `scripts/verify.sh` + `scripts/e2e-live.sh` + `.github/workflows/*.yml` + complete 20-document specification set. |

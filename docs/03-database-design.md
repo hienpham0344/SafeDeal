@@ -2,9 +2,9 @@
 
 ## 1. Migration & Validation Discipline
 
-SafeDeal uses **PostgreSQL 16** with **Flyway** schema management (`backend/src/main/resources/db/migration/V1__initial_schema.sql`) and strict JPA validation (`spring.jpa.hibernate.ddl-auto: validate`). Hibernate never alters tables automatically; any schema evolution requires a new forward Flyway SQL migration.
+SafeDeal uses **PostgreSQL 16** with **SQLx** schema migrations (`backend/migrations/*.sql`, applied at startup via `sqlx::migrate!` and tracked in `_sqlx_migrations`). There is no ORM auto-DDL; any schema evolution requires a new forward SQL migration file.
 
-For unit/integration testing without Docker, tests run against **H2 in PostgreSQL compatibility mode** (`MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE`), executing the identical `V1__initial_schema.sql` DDL script.
+Integration tests run against a real PostgreSQL database (`SAFEDEAL_TEST_DB_URL` / `TEST_DATABASE_URL`, default `postgres://safedeal:safedeal@127.0.0.1:5432/safedeal_test`), applying the identical migrations.
 
 ## 2. Relational Schema Inventory (11 Tables)
 
@@ -35,4 +35,4 @@ For unit/integration testing without Docker, tests run against **H2 in PostgreSQ
 
 ## 5. Health Check Query Probe
 
-[`JdbcDatabaseReadinessAdapter`](../backend/src/main/java/com/safedeal/infrastructure/persistence/adapter/JdbcDatabaseReadinessAdapter.java) backs `GET /api/v1/health/ready` using a bounded-timeout JDBC query (`SELECT 1`, query timeout `2s`) directly against the active `DataSource` pool.
+[`PgDatabaseReadinessAdapter`](../backend/crates/infrastructure/src/persistence/readiness.rs) backs `GET /api/v1/health/ready` using a bounded-timeout SQLx query (`SELECT 1`, `2s` Tokio timeout) directly against the active `PgPool`.

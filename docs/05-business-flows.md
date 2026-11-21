@@ -7,7 +7,7 @@ sequenceDiagram
     actor Seller
     actor Buyer
     participant FE as Frontend (/create & /deals/:id)
-    participant API as Spring Boot API
+    participant API as Rust Axum API
     participant SC as SafeDealEscrow (Avalanche)
 
     Seller->>FE: Connect Wallet & Sign SIWE (EIP-4361)
@@ -51,7 +51,7 @@ sequenceDiagram
     actor Buyer
     actor Arbiter
     participant FE as Frontend (/deals/:id, /disputes/:id, /arbiter)
-    participant API as Spring Boot API
+    participant API as Rust Axum API
     participant SC as SafeDealEscrow
 
     Note over Buyer,SC: Deal is FUNDED (either party) or DELIVERED (Buyer anytime; Seller after inspectionWindow)

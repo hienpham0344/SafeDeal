@@ -1,6 +1,6 @@
 # Testing & QA Strategy
 
-SafeDeal verifies correctness across four layers — Solidity smart contracts, Spring Boot clean modular API, React/TypeScript frontend, and an unmocked 3-tier `Browser -> Frontend -> Backend JAR -> Anvil` integration suite.
+SafeDeal verifies correctness across four layers — Solidity smart contracts, the Rust Axum clean-architecture API, React/TypeScript frontend, and an unmocked 3-tier `Browser -> Frontend -> Backend binary -> Anvil` integration suite.
 
 ## 1. Smart Contract Tests (`blockchain/test/*.t.sol`)
 
@@ -15,17 +15,24 @@ forge test --root blockchain -vvv
   - Exact equality between summed claimable balances and `totalClaimable`
   - Exact equality between active funded/delivered/disputed trades and `totalLockedEscrow`
 
-## 2. Backend Verification (`backend/src/test/java/com/safedeal/**`)
+## 2. Backend Verification (`backend/tests/**` + crate unit tests)
 
 ```bash
-./backend/gradlew -p backend test bootJar
+cargo fmt --manifest-path backend/Cargo.toml --check
+cargo clippy --manifest-path backend/Cargo.toml --workspace --all-targets -- -D warnings
+cargo test --manifest-path backend/Cargo.toml --workspace -- --test-threads=1
 ```
 
-- **Architecture Rules ([`ModuleBoundaryArchTest`](../backend/src/test/java/com/safedeal/ModuleBoundaryArchTest.java))**: Verifies zero framework/JPA/Web3j dependencies in `domain`, zero `infrastructure`/`presentation` imports in `application`, and clean `presentation -> application` layering.
-- **OpenAPI Contract Parity ([`OpenApiContractVerificationTest`](../backend/src/test/java/com/safedeal/OpenApiContractVerificationTest.java))**: Fetches live `/v3/api-docs` and asserts structural JSON equality against committed [`docs/openapi.json`](./openapi.json) (`-DupdateOpenApiSpec=true` regenerates intentionally during API changes).
-- **Readiness & Security Tests**: [`HealthControllerAndReadinessTest`](../backend/src/test/java/com/safedeal/HealthControllerAndReadinessTest.java), [`ProductionConfigValidationTest`](../backend/src/test/java/com/safedeal/ProductionConfigValidationTest.java), [`AuthRateLimitFilterTest`](../backend/src/test/java/com/safedeal/AuthRateLimitFilterTest.java), [`SiweAuthAndSecurityIntegrationTest`](../backend/src/test/java/com/safedeal/SiweAuthAndSecurityIntegrationTest.java), [`LocalEvidenceStorageAdapterTest`](../backend/src/test/java/com/safedeal/LocalEvidenceStorageAdapterTest.java).
-- **Domain, Workflow & Indexing Tests**: [`CanonicalTermsHasherTest`](../backend/src/test/java/com/safedeal/CanonicalTermsHasherTest.java) (golden vectors shared with frontend), [`DealStatusTest`](../backend/src/test/java/com/safedeal/DealStatusTest.java), [`DealDisputeArbitrationIntegrationTest`](../backend/src/test/java/com/safedeal/DealDisputeArbitrationIntegrationTest.java), [`BlockchainIndexerIdempotencyTest`](../backend/src/test/java/com/safedeal/BlockchainIndexerIdempotencyTest.java), [`DealSyncAndArbitrationEdgeCasesTest`](../backend/src/test/java/com/safedeal/DealSyncAndArbitrationEdgeCasesTest.java), [`Web3jBlockchainGatewayTest`](../backend/src/test/java/com/safedeal/Web3jBlockchainGatewayTest.java), [`Web3jSignatureVerifierTest`](../backend/src/test/java/com/safedeal/Web3jSignatureVerifierTest.java).
-- **Opt-In Java 3-Tier Live Anvil Test (`-DliveAnvilE2e=true`)**: [`LiveAnvilFullStackE2ETest`](../backend/src/test/java/com/safedeal/LiveAnvilFullStackE2ETest.java) connects to a running Anvil RPC node and pre-deployed `SafeDealEscrow` contract configured via `-DliveAnvilRpcUrl` and `-DliveAnvilContract`, exercising full cooperative, dispute, PNG upload/download, and withdrawal flows via real HTTP requests and Ethereum signatures.
+Integration tests need a PostgreSQL database (`SAFEDEAL_TEST_DB_URL` / `TEST_DATABASE_URL`, default `postgres://safedeal:safedeal@127.0.0.1:5432/safedeal_test`; start one with `scripts/dev-db.sh`).
+
+- **Architecture Rules ([`architecture_dag.rs`](../backend/tests/architecture_dag.rs))**: Verifies the Cargo crate DAG (`domain`/`application` free of `sqlx`, `axum`, `tower`, `reqwest`, `alloy-provider`; `presentation -> application` layering) and zero OpenSSL linkage.
+- **OpenAPI Contract Parity ([`openapi_contract.rs`](../backend/tests/openapi_contract.rs))**: Fetches live `/v3/api-docs` and asserts structural JSON equality against committed [`docs/openapi.json`](./openapi.json); also checks Swagger UI enable/disable behaviour.
+- **SIWE & Security ([`siwe_security_it.rs`](../backend/tests/siwe_security_it.rs))**: Nonce issuance/consumption, signature verification, session cookie, CSRF, and auth rate limiting.
+- **Deal, Dispute & Arbitration Workflows ([`deals_disputes_it.rs`](../backend/tests/deals_disputes_it.rs))**: Participant/arbiter authorization, evidence upload/download, and state transitions.
+- **Indexer Idempotency ([`indexer_idempotency_it.rs`](../backend/tests/indexer_idempotency_it.rs))**: Replayed chain logs never duplicate events or regress deal state.
+- **RPC Gateway ([`gateway_wiremock_test.rs`](../backend/tests/gateway_wiremock_test.rs))**: `AlloyBlockchainGateway` decoding, timeouts, and RPC error mapping against a Wiremock JSON-RPC server.
+- **Crate Unit Tests**: `CanonicalTermsHasher` golden vectors shared with the frontend, `DealStatus` transitions, config/production validation, `K256SignatureVerifier`, storage adapters.
+- **Live Anvil Test ([`live_anvil_e2e.rs`](../backend/tests/live_anvil_e2e.rs))**: Spawns a real Anvil node, deploys `SafeDealEscrow`, and exercises cooperative, dispute, evidence upload/download, and withdrawal flows via real HTTP requests and Ethereum signatures (requires Foundry on `PATH`).
 
 ## 3. Frontend Verification & Browser E2E (`frontend/tests/**`)
 
@@ -38,7 +45,7 @@ npm --prefix frontend run test:e2e
 ```
 
 - **Vitest Unit & Integration Suites (`frontend/tests/unit/`, `frontend/tests/integration/`)**:
-  - `canonical-terms.test.ts` (RFC 8785 deterministic hashing matching Java backend byte-for-byte).
+  - `canonical-terms.test.ts` (RFC 8785 deterministic hashing matching the Rust backend byte-for-byte).
   - `format-and-schemas.test.ts` (wei/AVAX conversion, zero-address rejection, env parser validation).
   - `LandingPage.test.tsx` (Foldcraft hero video, CSS/motion classes, mobile drawer structure).
   - `AuthSessionProvider.test.tsx` (SIWE login/logout race safety, wallet mismatch cleanup, and cross-account query cache invalidation).
@@ -53,7 +60,7 @@ npm --prefix frontend run test:e2e
 bash scripts/e2e-live.sh
 ```
 
-Launches a real ephemeral Anvil node (`127.0.0.1:18545`), deploys `SafeDealEscrow.sol`, starts packaged `safedeal-api.jar` (`PropertiesLauncher` + H2 PostgreSQL-mode runtime JAR from `copyTestH2` or external `DB_URL`), builds & serves the real Vite production app, injects real `viem` EIP-1193 wallets with zero HTTP route interception (`LIVE_E2E_ENABLED=1`), verifies `smoke-test.sh` & `/api/v1/health/ready`, and runs all 3 full multi-actor browser lifecycles (Cooperative settlement, Open-Buyer Voluntary Refund, Dispute + real PNG upload/download + outsider `403` + Arbiter split `RESOLVED` + pull withdrawals to `0n`).
+Launches a real ephemeral Anvil node (`127.0.0.1:18545`), deploys `SafeDealEscrow.sol`, builds and starts the release `safedeal-api` binary against PostgreSQL (`DB_URL` / `DATABASE_URL`), builds & serves the real Vite production app, injects real `viem` EIP-1193 wallets with zero HTTP route interception (`LIVE_E2E_ENABLED=1`), verifies `smoke-test.sh` & `/api/v1/health/ready`, and runs all 3 full multi-actor browser lifecycles (Cooperative settlement, Open-Buyer Voluntary Refund, Dispute + real PNG upload/download + outsider `403` + Arbiter split `RESOLVED` + pull withdrawals to `0n`).
 
 ## 5. Monorepo Full Gate
 
