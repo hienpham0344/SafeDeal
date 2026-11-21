@@ -561,7 +561,7 @@ impl ArbitrationUseCase {
                         voter_role,
                         buyer_award_wei: buyer_award_str.clone(),
                         seller_award_wei: seller_award_str.clone(),
-                        proposal_hash,
+                        proposal_hash: proposal_hash.clone(),
                         rationale: vote_rationale.clone(),
                         tx_hash: tx_hash.clone(),
                         updated_at: vote_time,
@@ -610,19 +610,24 @@ impl ArbitrationUseCase {
                     if current_dispute.status == DisputeStatus::Open {
                         let existing_votes =
                             repos.dispute_votes().find_by_dispute_id(dispute_id).await?;
-                        let consensus_rationale = vote_rationale
-                            .or_else(|| {
-                                existing_votes
-                                    .iter()
-                                    .find(|v| v.voter_role == VoterRole::Arbiter)
-                                    .and_then(|v| v.rationale.clone())
+                        let arbiter_proposal_rationale = existing_votes
+                            .iter()
+                            .find(|v| {
+                                v.voter_role == VoterRole::Arbiter
+                                    && v.proposal_hash.eq_ignore_ascii_case(&proposal_hash)
                             })
-                            .unwrap_or_else(|| {
-                                format!(
-                                    "2-of-3 multi-party consensus finalized by {} co-signature.",
-                                    voter_role.as_str()
-                                )
-                            });
+                            .and_then(|v| v.rationale.clone());
+                        let consensus_rationale = if voter_role == VoterRole::Arbiter {
+                            vote_rationale.or(arbiter_proposal_rationale)
+                        } else {
+                            arbiter_proposal_rationale.or(vote_rationale)
+                        }
+                        .unwrap_or_else(|| {
+                            format!(
+                                "2-of-3 multi-party consensus finalized by {} co-signature.",
+                                voter_role.as_str()
+                            )
+                        });
                         return settle_dispute_in_tx(
                             repos,
                             current_deal,
