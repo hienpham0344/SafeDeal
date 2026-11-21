@@ -28,8 +28,8 @@ test.describe("Application Navigation, Error Boundaries & Wallet Session UI", ()
     });
 
     await page.goto("/support");
-    await expect(page.getByRole("heading", { name: "Support & Network Verification" })).toBeVisible();
-    await expect(page.getByRole("main").getByText("Anvil Local (31337)")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Support & Network Status" })).toBeVisible();
+    await expect(page.getByRole("main").getByText("Anvil Local (31337)").first()).toBeVisible();
 
     // Backend down state should render clean "Unavailable" indicator without crashing
     await page.unroute("**/api/v1/health");

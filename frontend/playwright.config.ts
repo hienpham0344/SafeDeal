@@ -20,10 +20,22 @@ export default defineConfig({
   webServer: process.env.PLAYWRIGHT_BASE_URL
     ? undefined
     : {
-        command: "npm run preview -- --host 127.0.0.1 --port 4173 --strictPort",
+        command: "npx vite --host 127.0.0.1 --port 4173 --strictPort",
         url: baseURL,
-        reuseExistingServer: !process.env.CI,
+        reuseExistingServer: false,
         timeout: 30_000,
+        env: {
+          ...process.env,
+          VITE_APP_NAME: "SafeDeal",
+          VITE_APP_ENV: "test",
+          VITE_API_BASE_URL: "http://localhost:8080",
+          VITE_CHAIN_ID: "31337",
+          VITE_CHAIN_NAME: "Anvil Local",
+          VITE_RPC_URL: "http://127.0.0.1:8545",
+          VITE_EXPLORER_BASE_URL: "",
+          VITE_ESCROW_CONTRACT_ADDRESS: "0x5fbdb2315678afecb367f032d93f642f64180aa3",
+          VITE_DEFAULT_ARBITER_ADDRESS: "",
+        },
       },
   use: {
     baseURL,

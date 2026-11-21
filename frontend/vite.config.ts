@@ -13,6 +13,16 @@ export default defineConfig({
     port: 5173,
     strictPort: true,
   },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          "react-vendor": ["react", "react-dom", "react-router-dom", "@tanstack/react-query"],
+          "web3-vendor": ["wagmi", "viem"],
+        },
+      },
+    },
+  },
   test: {
     globals: true,
     environment: "jsdom",
