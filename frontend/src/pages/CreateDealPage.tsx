@@ -9,6 +9,7 @@ import { AlertBanner, Panel } from "@/components/ui/Primitives";
 import { Button } from "@/components/ui/Button";
 import { CopyableHash } from "@/components/ui/CopyableHash";
 import { DeadlinePicker, type DeadlinePreset } from "@/components/ui/DeadlinePicker";
+import { useToast } from "@/components/ui/toast-context";
 import { appConfig } from "@/config/app.config";
 import { env } from "@/config/env";
 import { dealPath, ROUTES } from "@/config/routes";
@@ -77,6 +78,14 @@ export function CreateDealPage() {
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [copiedLink, setCopiedLink] = useState(false);
   const [isRecoveringPending, setIsRecoveringPending] = useState(false);
+  const toast = useToast();
+
+  const displayedSubmitError = submitError ?? txError;
+  useEffect(() => {
+    if (displayedSubmitError) {
+      toast.error("Action Blocked", displayedSubmitError);
+    }
+  }, [displayedSubmitError, toast]);
 
   const mountedRef = useRef(true);
   const inFlightSubmitRef = useRef(false);
@@ -417,10 +426,6 @@ export function CreateDealPage() {
         <AlertBanner tone="warning" title="Contract Not Configured" message={appConfig.messages.contractUnconfigured} />
       )}
 
-      {(submitError || txError) && (
-        <AlertBanner tone="error" title="Action Blocked" message={submitError ?? txError ?? ""} />
-      )}
-
       {!createdTradeId && (
         <ol
           aria-label="Deal creation progress"
@@ -487,6 +492,10 @@ export function CreateDealPage() {
               <span>{copiedLink ? "Copied" : "Copy Link"}</span>
             </Button>
           </div>
+
+          {(submitError || txError) && (
+            <AlertBanner tone="error" title="Action Blocked" message={submitError ?? txError ?? ""} />
+          )}
 
           <div className="flex flex-wrap gap-3">
             <Button onClick={() => navigate(dealPath(createdTradeId))}>
@@ -588,6 +597,10 @@ export function CreateDealPage() {
             <span className="font-mono text-sd-ink">{previewDraft.contractAddress}</span>) without locking seller
             funds. Only the buyer deposits AVAX during funding.
           </div>
+
+          {(submitError || txError) && (
+            <AlertBanner tone="error" title="Action Blocked" message={submitError ?? txError ?? ""} />
+          )}
 
           <div className="flex flex-wrap gap-3">
             <Button
@@ -812,6 +825,10 @@ export function CreateDealPage() {
                 )}
               </div>
             </fieldset>
+
+            {(submitError || txError) && (
+              <AlertBanner tone="error" title="Action Blocked" message={submitError ?? txError ?? ""} />
+            )}
 
             <div className="flex flex-wrap items-center justify-between gap-4 border-t border-sd-line pt-5">
               <p className="text-xs text-sd-inkMuted">

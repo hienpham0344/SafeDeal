@@ -7,6 +7,7 @@ import { AppShell } from "@/components/layout/AppShell";
 import { AlertBanner, EmptyState, LoadingState, Panel, StatusBadge } from "@/components/ui/Primitives";
 import { Button } from "@/components/ui/Button";
 import { CopyableHash } from "@/components/ui/CopyableHash";
+import { useToast } from "@/components/ui/toast-context";
 import { dealPath, ROUTES } from "@/config/routes";
 import { useAuthSession } from "@/features/authentication/hooks/useAuthSession";
 import {
@@ -61,6 +62,7 @@ function getSubmitterRole(submittedBy: string, dispute: DisputeDetail): {
 export function DisputePage() {
   const { id } = useParams<{ id: string }>();
   const { address, isConnected, isAuthenticated, openWalletModal, signInWithWallet } = useAuthSession();
+  const toast = useToast();
 
   const disputeQuery = useDisputeQuery(id, isAuthenticated);
   const evidenceQuery = useDisputeEvidenceQuery(id, isAuthenticated);
@@ -108,6 +110,7 @@ export function DisputePage() {
     const validationErr = validateEvidenceFile(selectedFile);
     if (validationErr) {
       setFileError(validationErr);
+      toast.error("Invalid Attachment", validationErr);
       return;
     }
     try {
@@ -119,7 +122,12 @@ export function DisputePage() {
       reset();
       handleClearFile();
       setSubmitSuccess("Evidence recorded securely and restricted to case participants.");
-    } catch {
+      toast.success("Evidence Recorded", "Evidence recorded securely and restricted to case participants.");
+    } catch (err) {
+      toast.error(
+        "Evidence Upload Failed",
+        err instanceof Error ? err.message : "Failed to submit evidence."
+      );
       // Mutation errors are surfaced via submitEvidence.isError AlertBanner
     }
   }

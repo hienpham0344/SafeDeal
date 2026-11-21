@@ -7,6 +7,7 @@ import { AlertBanner, EmptyState, LoadingState, Panel, StatusBadge } from "@/com
 import { Button } from "@/components/ui/Button";
 import { CopyableHash } from "@/components/ui/CopyableHash";
 import { DealLifecycleStepper } from "@/components/ui/DealLifecycleStepper";
+import { useToast } from "@/components/ui/toast-context";
 import { getExplorerAddressUrl, getExplorerTxUrl } from "@/config/network.config";
 import { disputePath, ROUTES } from "@/config/routes";
 import { useAuthSession } from "@/features/authentication/hooks/useAuthSession";
@@ -81,6 +82,20 @@ export function DealDetailsPage() {
   const { waitForHash, clearTxError } = executor;
   const { mutateAsync: bindDealTxAsync } = bindTxMutation;
   const { mutateAsync: syncDealAsync } = syncMutation;
+  const toast = useToast();
+
+  const displayedError = actionError ?? executor.txError;
+  useEffect(() => {
+    if (displayedError) {
+      toast.error("Transaction Issue", displayedError);
+    }
+  }, [displayedError, toast]);
+
+  useEffect(() => {
+    if (actionSuccess) {
+      toast.success("Verified", actionSuccess);
+    }
+  }, [actionSuccess, toast]);
 
   const mountedRef = useRef(true);
   const inFlightActionRef = useRef(false);
@@ -481,10 +496,6 @@ export function DealDetailsPage() {
         />
       ) : (
         <div className="space-y-6">
-          {(actionError || executor.txError) && (
-            <AlertBanner tone="error" title="Transaction Issue" message={actionError ?? executor.txError ?? ""} />
-          )}
-          {actionSuccess && <AlertBanner tone="success" title="Verified" message={actionSuccess} />}
           {pendingTx && (
             <AlertBanner
               tone="info"
@@ -565,6 +576,11 @@ export function DealDetailsPage() {
 
               <div className="space-y-3 border-t border-sd-line pt-5">
                 <h2 className="text-sm font-medium text-white">Available Actions</h2>
+
+                {(actionError || executor.txError) && (
+                  <AlertBanner tone="error" title="Transaction Issue" message={actionError ?? executor.txError ?? ""} />
+                )}
+                {actionSuccess && <AlertBanner tone="success" title="Verified" message={actionSuccess} />}
 
                 {effectiveStatus === "CREATED" && (isBuyer || isOpenBuyerEligible) && nowSeconds <= fundingDeadlineEpoch && (
                   <label className="flex cursor-pointer items-center gap-3 rounded-xl border border-sd-lineStrong bg-sd-inset px-3.5 py-3 text-sm text-sd-ink transition-colors hover:border-sd-accent/50">

@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { WalletModal } from "@/components/wallet/WalletModal";
+import { ToastProvider } from "@/components/ui/ToastProvider";
 import { ArbiterPage } from "@/pages/ArbiterPage";
 import { CreateDealPage } from "@/pages/CreateDealPage";
 import { DashboardPage } from "@/pages/DashboardPage";
@@ -1378,6 +1379,30 @@ describe("SafeDeal Dashboard, DealDetails & Arbiter Pages", () => {
     const hourSelect = screen.getByLabelText("Funding Deadline hour");
     await user.selectOptions(hourSelect, "15");
     expect(fundingInput.value.endsWith("T15:" + fundingInput.value.slice(-2))).toBe(true);
+  });
+
+  it("surfaces floating Toast notification when DealDetailsPage action fails", async () => {
+    const user = userEvent.setup();
+    mockSessionState.address = SELLER;
+    getDealMock.mockResolvedValue({ ...sampleDealDetail, status: "FUNDED" });
+    getDealHistoryMock.mockResolvedValue({ events: [], transactions: [] });
+    mockOnChainTrade = { data: { status: 2 }, refetch: vi.fn().mockResolvedValue(undefined) };
+    mockExecutor.markDelivered.mockRejectedValueOnce(new Error("Wallet signature rejected by user"));
+
+    renderWithQuery(
+      <ToastProvider>
+        <Routes>
+          <Route path="/deals/:id" element={<DealDetailsPage />} />
+        </Routes>
+      </ToastProvider>,
+      `/deals/${TRADE_ID}`
+    );
+
+    await user.click(await screen.findByRole("button", { name: "Mark Delivered" }));
+
+    const notificationsRegion = await screen.findByLabelText("Notifications");
+    expect(notificationsRegion).toHaveTextContent("Transaction Issue");
+    expect(notificationsRegion).toHaveTextContent("Wallet signature rejected by user");
   });
 });
 

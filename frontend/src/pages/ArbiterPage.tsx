@@ -6,6 +6,7 @@ import { AppShell } from "@/components/layout/AppShell";
 import { AlertBanner, EmptyState, LoadingState, Panel, StatusBadge } from "@/components/ui/Primitives";
 import { Button } from "@/components/ui/Button";
 import { CopyableHash } from "@/components/ui/CopyableHash";
+import { useToast } from "@/components/ui/toast-context";
 import { disputePath, ROUTES } from "@/config/routes";
 import {
   validateSplitAllocation,
@@ -60,6 +61,19 @@ function ArbiterDisputeCard({ dispute }: { readonly dispute: DisputeDetail }) {
   const recordResolution = useRecordResolutionMutation();
   const { waitForHash } = executor;
   const { pendingTx, setPending, clearPending } = usePendingTxPersistence(`arbiter-resolve-${dispute.id}`);
+  const toast = useToast();
+
+  useEffect(() => {
+    if (errorMsg) {
+      toast.error("Settlement Issue", errorMsg);
+    }
+  }, [errorMsg, toast]);
+
+  useEffect(() => {
+    if (successMsg) {
+      toast.success("Settlement Recorded", successMsg);
+    }
+  }, [successMsg, toast]);
 
   const mountedRef = useRef(true);
   const inFlightRef = useRef(false);
