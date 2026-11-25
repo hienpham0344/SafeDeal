@@ -65,28 +65,28 @@ CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", 
 
 ---
 
-## 3. Java 17 (Spring Boot) Multi-Stage Dockerfile
+## 3. Rust (Axum / Cargo Workspace) Multi-Stage Dockerfile
 
 ```dockerfile
-# Stage 1: Build JAR
-FROM eclipse-temurin:17-jdk-alpine AS builder
+# Stage 1: Build Native Release Binary
+FROM rust:1.91-bookworm AS builder
 WORKDIR /app
-COPY mvnw pom.xml ./
-COPY .mvn .mvn
-RUN ./mvnw dependency:go-offline -B
+COPY Cargo.toml Cargo.lock ./
+COPY crates crates
 COPY src src
-RUN ./mvnw clean package -DskipTests
+COPY migrations migrations
+RUN cargo build --release --bin safedeal-api
 
-# Stage 2: Runtime JRE
-FROM eclipse-temurin:17-jre-alpine AS runner
+# Stage 2: Minimal Debian Runtime
+FROM debian:bookworm-slim AS runner
 WORKDIR /app
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
-COPY --from=builder --chown=appuser:appgroup /app/target/*.jar app.jar
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/*
+RUN groupadd --system safedeal && useradd --system --gid safedeal --create-home safedeal
+COPY --from=builder --chown=safedeal:safedeal /app/target/release/safedeal-api /usr/local/bin/safedeal-api
 
-USER appuser
+USER safedeal
 EXPOSE 8080
-ENV JAVA_OPTS="-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0"
-ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar app.jar"]
+ENTRYPOINT ["/usr/local/bin/safedeal-api"]
 ```
 
 ---

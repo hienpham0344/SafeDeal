@@ -15,7 +15,7 @@ stateDiagram-v2
     FUNDED --> DISPUTED : Buyer or Seller calls openDispute(tradeId)
     DELIVERED --> RELEASED : Buyer calls releaseFunds(tradeId)
     DELIVERED --> DISPUTED : Buyer anytime OR Seller after deliveredAt + inspectionWindow
-    DISPUTED --> RESOLVED : Assigned Arbiter calls resolveDispute(tradeId, buyerAmount, sellerAmount)
+    DISPUTED --> RESOLVED : 2-of-3 matching submitResolutionVote(tradeId, buyerAmount, sellerAmount) OR 14-day resolveDisputeByTimeout(tradeId)
 
     CANCELLED --> [*]
     RELEASED --> [*]
@@ -34,18 +34,18 @@ Implemented identically in [`SafeDealEscrow.sol`](../blockchain/src/SafeDealEscr
 | `CREATED` | Buyer `fundTrade{value: amount}()` (before `fundingDeadline`) | `FUNDED` | No (`_totalLockedEscrow += amount`; binds open buyer if `buyer == address(0)`) |
 | `FUNDED` | Seller `markDelivered()` | `DELIVERED` | No (`deliveredAt` stamped) |
 | `FUNDED` | Seller `refundBySeller()` or Buyer `refundAfterDeadline()` (`now > deliveryDeadline`) | `REFUNDED` | Yes: `_claimableBalances[buyer] += amount`, `settled = true` |
-| `FUNDED` | Buyer or Seller `openDispute()` | `DISPUTED` | No |
+| `FUNDED` | Buyer or Seller `openDispute()` | `DISPUTED` | No (`disputedAt` stamped) |
 | `DELIVERED` | Buyer `releaseFunds()` | `RELEASED` | Yes: `_claimableBalances[seller] += amount`, `settled = true` |
-| `DELIVERED` | Buyer (anytime) or Seller (`now > deliveredAt + inspectionWindow`) `openDispute()` | `DISPUTED` | No |
-| `DISPUTED` | Arbiter `resolveDispute(tradeId, buyerAmount, sellerAmount)` (`sum == amount`) | `RESOLVED` | Yes: credits buyer & seller claimables, `settled = true` |
+| `DELIVERED` | Buyer (anytime) or Seller (`now > deliveredAt + inspectionWindow`) `openDispute()` | `DISPUTED` | No (`disputedAt` stamped) |
+| `DISPUTED` | Any 2 of `[buyer, seller, arbiter]` submit matching `submitResolutionVote(tradeId, buyerAmount, sellerAmount)` (`sum == amount`), OR anyone calls `resolveDisputeByTimeout(tradeId)` after `disputedAt + 14 days` (50/50 split) | `RESOLVED` | Yes: credits buyer & seller `_claimableBalances`, `settled = true` |
 
-### Authoritative Catch-Up Reconciliation (`canReconcileTo`)
+### Authoritative Catch-Up Reconciliation (`can_reconcile_to`)
 
-If multiple transactions confirm quickly on-chain before an intermediate UI `/sync` call completes (for example, `CREATED -> FUNDED -> DELIVERED`), `DealStatus.canReconcileTo(next)` validates forward graph reachability along legal `SafeDealEscrow` edges while strictly forbidding backwards transitions or transitions out of terminal settled states (`RELEASED`, `REFUNDED`, `RESOLVED`, `CANCELLED`).
+If multiple transactions confirm quickly on-chain before an intermediate UI `/sync` call completes (for example, `CREATED -> FUNDED -> DELIVERED`), `DealStatus::can_reconcile_to(next)` validates forward graph reachability along legal `SafeDealEscrow` edges while strictly forbidding backwards transitions or transitions out of terminal settled states (`RELEASED`, `REFUNDED`, `RESOLVED`, `CANCELLED`).
 
 ## 3. `DisputeStatus` Lifecycle
 
-| Status | Trigger | Mutable Evidence Uploads? |
+| Status | Trigger | Mutable Evidence Uploads & Consensus Voting? |
 |---|---|---|
-| `OPEN` | Buyer or Seller invokes `/api/v1/deals/{tradeId}/disputes` after confirming on-chain `DISPUTED` state | Yes (Buyer & Seller only) |
-| `RESOLVED` | Arbiter records verified `DisputeResolved` tx (`/arbitration/disputes/{id}/resolution`) or background `BlockchainEventIndexerService` indexes `DISPUTE_RESOLVED` | No (immutable read-only archive for Seller, Buyer, Arbiter) |
+| `OPEN` | Buyer or Seller invokes `/api/v1/deals/{tradeId}/disputes` after confirming on-chain `DISPUTED` state (or `BlockchainEventIndexerService` / `SyncDealUseCase` auto-creates a fallback dispute from on-chain `DisputeOpened`) | Yes (Buyer & Seller upload evidence; Buyer, Seller, and Arbiter submit split votes via `submitResolutionVote`) |
+| `RESOLVED` | 2-of-3 consensus reached via `submitResolutionVote` (`/disputes/{id}/votes` or `/arbitration/disputes/{id}/resolution`), 14-day stalemate timeout triggered via `resolveDisputeByTimeout` (`/disputes/{id}/timeout`), or `BlockchainEventIndexerService` indexes `DisputeResolved` / `DisputeResolvedByTimeout` | No (immutable read-only archive for Seller, Buyer, Arbiter) |

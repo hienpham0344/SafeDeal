@@ -25,9 +25,9 @@ Create from root `.env.example` when running the containerized compose stack:
 
 | Variable | Default (`config.rs` / `.env.example`) | Notes |
 |---|---|---|
-| `APP_ENV` | `local` | Supported: `local`, `test`, `staging`, `prod` (`SPRING_PROFILES_ACTIVE` accepted as legacy alias) |
+| `APP_ENV` | `local` | Supported: `local`, `test`, `staging`, `prod` |
 | `SERVER_HOST` / `SERVER_PORT` | `0.0.0.0` / `8080` | HTTP bind address (`PORT` accepted as fallback, e.g. Railway) |
-| `DATABASE_URL` (or `DB_URL`) | `postgresql://localhost:5432/safedeal` (`local` only) | PostgreSQL URL (`postgres://`, `postgresql://`, or legacy `jdbc:postgresql://`); required in `staging`/`prod` |
+| `DATABASE_URL` (or `DB_URL`) | `postgresql://localhost:5432/safedeal` (`local` only) | SQLx PostgreSQL connection URL (`postgres://` or `postgresql://`); required in `staging`/`prod` |
 | `DB_USERNAME` / `DB_PASSWORD` | `safedeal` / `safedeal` (`local`) | Database user credentials |
 | `DB_POOL_MAX_CONNECTIONS` / `DB_POOL_MIN_CONNECTIONS` / `DB_ACQUIRE_TIMEOUT_MS` | `20` / `2` / `5000` | SQLx `PgPool` sizing |
 | `JWT_SECRET` | *(required, no fallback)* | Must be `>= 32` chars; `prod`/`staging` fail startup on placeholders (`replace-with`, `placeholder`, `changeme`, `change-me`, `dev-only`, `test-only`, `example`) |

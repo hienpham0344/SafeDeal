@@ -1,21 +1,21 @@
 # Railway & Firebase Production Deployment Guide (Setup Steps 14–19)
 
-This guide completes the 19-step setup sequence (Steps **14–19**), connecting your Fuji `SafeDealEscrow` contract from [`13-fuji-setup.md`](./13-fuji-setup.md) to **Railway** (Rust Axum API + Managed PostgreSQL) and **Firebase Hosting** (React + Vite SPA).
+This guide completes the 19-step setup sequence (Steps **14–19**), connecting your Fuji `SafeDealEscrow` contract from [`13-fuji-setup.md`](./13-fuji-setup.md) to **Railway** (Rust Axum `safedeal-api` binary + Managed PostgreSQL 16) and **Firebase Hosting** (React + Vite SPA).
 
 ---
 
 ### Step 14: Provision Railway Project & Managed PostgreSQL
 
 1. Create a new project on Railway and attach the **PostgreSQL** plugin.
-2. Note the generated JDBC parameters (`<PGHOST>`, `<PGPORT>`, `<PGDATABASE>`, `<PGUSER>`, `<PGPASSWORD>`).
+2. Note the generated PostgreSQL connection parameters (`<PGHOST>`, `<PGPORT>`, `<PGDATABASE>`, `<PGUSER>`, `<PGPASSWORD>` or `DATABASE_URL`).
 
 ---
 
 ### Step 15: Configure Backend Service & Persistent Evidence Volume
 
 1. Add a GitHub-linked service in Railway with **Root Directory** set to `backend`.
-   - [`backend/railway.json`](../backend/railway.json) automatically builds [`backend/Dockerfile`](../backend/Dockerfile) and configures healthcheck `/api/v1/health`.
-2. Attach a persistent **Railway Volume** mounted at `/app/storage/evidence` so uploaded dispute files persist across redeploys.
+   - [`backend/railway.json`](../backend/railway.json) automatically builds the multi-stage Rust [`backend/Dockerfile`](../backend/Dockerfile) (`debian:bookworm-slim` runtime running `safedeal-api`) and configures healthcheck `/api/v1/health`.
+2. Attach a persistent **Railway Volume** mounted at `/app/storage/evidence` (or configure S3/Cloudflare R2 credentials) so uploaded dispute files persist across redeploys.
 
 ---
 
@@ -32,7 +32,8 @@ Configure these environment variables on the Railway backend service:
 ```env
 APP_ENV=prod
 SERVER_PORT=8080
-DB_URL=jdbc:postgresql://<PGHOST>:<PGPORT>/<PGDATABASE>?sslmode=require
+DATABASE_URL=postgres://<PGUSER>:<PGPASSWORD>@<PGHOST>:<PGPORT>/<PGDATABASE>?sslmode=require
+DB_URL=postgres://<PGUSER>:<PGPASSWORD>@<PGHOST>:<PGPORT>/<PGDATABASE>?sslmode=require
 DB_USERNAME=<PGUSER>
 DB_PASSWORD=<PGPASSWORD>
 JWT_SECRET=<OUTPUT_FROM_OPENSSL_RAND_HEX_32>
@@ -53,7 +54,7 @@ RATE_LIMIT_ENABLED=true
 AUTH_RATE_LIMIT_PER_MINUTE=30
 ```
 
-> `prod` startup enforces [`validate_production_configuration`](../backend/crates/infrastructure/src/config.rs): placeholder secrets, `<32` char `JWT_SECRET`, `COOKIE_SECURE=false`, wildcard CORS `*`, or loopback URLs immediately fail boot.
+> `prod` startup enforces [`AppConfig::validate()` / `validate_production_configuration()`](../backend/crates/infrastructure/src/config.rs): placeholder secrets, `<32` char `JWT_SECRET`, `COOKIE_SECURE=false`, wildcard CORS `*`, or loopback URLs immediately fail boot.
 
 ---
 
@@ -113,4 +114,4 @@ FRONTEND_BASE_URL="https://<YOUR_FIREBASE_DOMAIN>" \
   bash scripts/smoke-test.sh
 ```
 
-Then open `https://<YOUR_FIREBASE_DOMAIN>/support` in a browser with MetaMask/Core on Avalanche Fuji (`43113`), confirm API Status reports healthy, and sign in via SIWE on `/dashboard` to confirm cross-site `HttpOnly` cookie + CSRF headers work end-to-end.
+Then open `https://<YOUR_FIREBASE_DOMAIN>/support` in a browser with MetaMask/Core on Avalanche Fuji (`43113`), confirm API Status reports healthy, and sign in via SIWE on `/dashboard` to confirm dual-mode session authentication (`HttpOnly` cookie + `X-CSRF-Token` and cross-origin `Authorization: Bearer` fallback) works end-to-end.
