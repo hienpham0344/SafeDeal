@@ -1,0 +1,397 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SafeDeal Escrow Companion — Avalanche P2P Verifier</title>
+    <link rel="stylesheet" href="sidepanel.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand-row">
+        <div class="brand-title-group">
+          <img src="../icons/icon-48.png" alt="SafeDeal Shield" class="brand-icon" width="24" height="24" />
+          <div>
+            <h1 class="brand-title">SafeDeal Companion</h1>
+            <p class="brand-subtitle">Avalanche Fuji C-Chain • Non-Custodial Verifier</p>
+          </div>
+        </div>
+        <span class="network-pill" id="network-pill">Fuji 43113</span>
+      </div>
+
+      <nav class="tab-bar" role="tablist" aria-label="SafeDeal Views">
+        <button
+          type="button"
+          class="tab-btn active"
+          data-tab="verify"
+          role="tab"
+          aria-selected="true"
+          id="tab-btn-verify"
+        >
+          Verify On-Chain
+        </button>
+        <button
+          type="button"
+          class="tab-btn"
+          data-tab="hash"
+          role="tab"
+          aria-selected="false"
+          id="tab-btn-hash"
+        >
+          RFC 8785 &amp; Draft
+        </button>
+        <button
+          type="button"
+          class="tab-btn"
+          data-tab="watched"
+          role="tab"
+          aria-selected="false"
+          id="tab-btn-watched"
+        >
+          Watched &amp; AVAX
+        </button>
+      </nav>
+    </header>
+
+    <main class="panel-main">
+      <!-- VIEW 1: VERIFY DEAL ON-CHAIN -->
+      <section class="tab-panel active" id="panel-verify" role="tabpanel" aria-labelledby="tab-btn-verify">
+        <div class="card">
+          <div class="card-header">
+            <h2 class="card-title">On-Chain Escrow Inspector</h2>
+            <button type="button" class="ghost-btn" id="btn-fill-sample-trade">
+              Sample Trade ID
+            </button>
+          </div>
+          <p class="card-hint">
+            Query <code>SafeDealEscrow.getTrade(bytes32)</code> &amp; 2-of-3 dispute votes directly on
+            Avalanche Fuji RPC — no wallet connection required.
+          </p>
+
+          <form id="form-verify-deal" class="stack-form">
+            <label class="field-label" for="input-trade-id">Trade ID (0x…) or SafeDeal Deal URL</label>
+            <input
+              type="text"
+              id="input-trade-id"
+              class="text-input mono"
+              placeholder="0xbf5ef59687168af6140d2ebd15e63b94df1ac4d3206e45f3a2f681cb962ade62"
+              autocomplete="off"
+              required
+            />
+            <div class="btn-row">
+              <button type="submit" class="primary-btn" id="btn-verify-deal">
+                Verify On-Chain State
+              </button>
+              <button type="button" class="secondary-btn" id="btn-watch-current" disabled>
+                + Watch Deal
+              </button>
+            </div>
+          </form>
+
+          <div id="verify-status-banner" class="status-banner hidden" role="status"></div>
+        </div>
+
+        <div id="verify-result-card" class="card hidden">
+          <div class="result-top">
+            <div>
+              <span class="micro-label">ON-CHAIN ESCROW STATUS</span>
+              <div class="status-pill-row">
+                <span id="res-status-badge" class="deal-status-badge">NONE</span>
+                <span id="res-amount-avax" class="amount-highlight">0 AVAX</span>
+              </div>
+            </div>
+            <a
+              id="res-snowtrace-link"
+              class="external-link"
+              href="https://testnet.snowtrace.io/address/0xF30E863b0Cfe8fBFE05E65c21878F8B621B3FE29"
+              target="_blank"
+              rel="noreferrer"
+            >
+              Snowtrace ↗
+            </a>
+          </div>
+
+          <dl class="kv-grid">
+            <div class="kv-item full">
+              <dt>Trade ID (bytes32)</dt>
+              <dd id="res-trade-id" class="mono break-all">—</dd>
+            </div>
+            <div class="kv-item full">
+              <dt>On-Chain RFC 8785 termsHash</dt>
+              <dd id="res-terms-hash" class="mono break-all">—</dd>
+            </div>
+            <div class="kv-item">
+              <dt>Seller</dt>
+              <dd id="res-seller" class="mono">—</dd>
+            </div>
+            <div class="kv-item">
+              <dt>Buyer</dt>
+              <dd id="res-buyer" class="mono">—</dd>
+            </div>
+            <div class="kv-item">
+              <dt>Arbiter</dt>
+              <dd id="res-arbiter" class="mono">—</dd>
+            </div>
+            <div class="kv-item">
+              <dt>Settled / Pull-Pay</dt>
+              <dd id="res-settled" class="mono">—</dd>
+            </div>
+            <div class="kv-item">
+              <dt>Funding Deadline</dt>
+              <dd id="res-funding-deadline">—</dd>
+            </div>
+            <div class="kv-item">
+              <dt>Delivery Deadline</dt>
+              <dd id="res-delivery-deadline">—</dd>
+            </div>
+            <div class="kv-item">
+              <dt>Inspection Window</dt>
+              <dd id="res-inspection-window">—</dd>
+            </div>
+            <div class="kv-item">
+              <dt>2-of-3 Dispute Votes</dt>
+              <dd id="res-dispute-votes" class="mono">—</dd>
+            </div>
+          </dl>
+        </div>
+      </section>
+
+      <!-- VIEW 2: RFC 8785 HASH & DRAFT -->
+      <section class="tab-panel" id="panel-hash" role="tabpanel" aria-labelledby="tab-btn-hash">
+        <div id="captured-selection-banner" class="selection-banner hidden">
+          <div class="selection-banner-header">
+            <span class="selection-badge">Captured from Webpage</span>
+            <button type="button" class="ghost-btn" id="btn-clear-selection">Clear</button>
+          </div>
+          <p id="captured-source-title" class="selection-source"></p>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h2 class="card-title">RFC 8785 Terms Hash &amp; Draft</h2>
+            <div class="template-pills">
+              <button type="button" class="ghost-btn" id="btn-template-uit-freelance">
+                UIT Đồ Án
+              </button>
+              <button type="button" class="ghost-btn" id="btn-template-vector">
+                RFC Vector
+              </button>
+            </div>
+          </div>
+          <p class="card-hint">
+            Deterministic UTF-16 key-sorted JSON + Web Crypto SHA-256 fingerprint matching
+            <code>SafeDealEscrow.sol</code>.
+          </p>
+
+          <form id="form-terms-hash" class="stack-form">
+            <div class="grid-2">
+              <div>
+                <label class="field-label" for="hash-title">Deal Title</label>
+                <input
+                  type="text"
+                  id="hash-title"
+                  class="text-input"
+                  value="Hardware Wallet Sale"
+                  required
+                />
+              </div>
+              <div>
+                <label class="field-label" for="hash-amount-wei">Amount (Wei)</label>
+                <input
+                  type="text"
+                  id="hash-amount-wei"
+                  class="text-input mono"
+                  value="1500000000000000000"
+                  required
+                />
+              </div>
+            </div>
+
+            <div>
+              <label class="field-label" for="hash-description">Description</label>
+              <input
+                type="text"
+                id="hash-description"
+                class="text-input"
+                value="Sealed device with tracking"
+                required
+              />
+            </div>
+
+            <div>
+              <label class="field-label" for="hash-terms">Commercial Terms &amp; Milestones</label>
+              <textarea
+                id="hash-terms"
+                class="text-area"
+                rows="3"
+                required
+              >Shipped within 24 hours</textarea>
+            </div>
+
+            <div class="grid-2">
+              <div>
+                <label class="field-label" for="hash-seller">Seller Address</label>
+                <input
+                  type="text"
+                  id="hash-seller"
+                  class="text-input mono"
+                  value="0x70997970C51812DC3A010C7D01B50E0D17DC79C8"
+                  required
+                />
+              </div>
+              <div>
+                <label class="field-label" for="hash-buyer">Buyer Address (Optional)</label>
+                <input
+                  type="text"
+                  id="hash-buyer"
+                  class="text-input mono"
+                  placeholder="Open Buyer (null)"
+                  value=""
+                />
+              </div>
+            </div>
+
+            <div class="grid-2">
+              <div>
+                <label class="field-label" for="hash-arbiter">Arbiter Address</label>
+                <input
+                  type="text"
+                  id="hash-arbiter"
+                  class="text-input mono"
+                  value="0x90F79bf6EB2c4f870365E785982E1f101E93b906"
+                  required
+                />
+              </div>
+              <div>
+                <label class="field-label" for="hash-chain-id">Chain ID</label>
+                <input
+                  type="number"
+                  id="hash-chain-id"
+                  class="text-input mono"
+                  value="43113"
+                  required
+                />
+              </div>
+            </div>
+
+            <div class="grid-3">
+              <div>
+                <label class="field-label" for="hash-funding-dl">Funding Epoch</label>
+                <input
+                  type="number"
+                  id="hash-funding-dl"
+                  class="text-input mono"
+                  value="1800000000"
+                  required
+                />
+              </div>
+              <div>
+                <label class="field-label" for="hash-delivery-dl">Delivery Epoch</label>
+                <input
+                  type="number"
+                  id="hash-delivery-dl"
+                  class="text-input mono"
+                  value="1800086400"
+                  required
+                />
+              </div>
+              <div>
+                <label class="field-label" for="hash-inspection">Inspect (sec)</label>
+                <input
+                  type="number"
+                  id="hash-inspection"
+                  class="text-input mono"
+                  value="259200"
+                  required
+                />
+              </div>
+            </div>
+
+            <div class="btn-row">
+              <button type="submit" class="primary-btn" id="btn-compute-hash">
+                Compute RFC 8785 Hash
+              </button>
+              <button type="button" class="secondary-btn" id="btn-open-create-dapp">
+                Open SafeDeal /create ↗
+              </button>
+            </div>
+          </form>
+        </div>
+
+        <div class="card" id="hash-output-card">
+          <div class="card-header">
+            <span class="micro-label">SHA-256 TERMS HASH (BYTES32)</span>
+            <button type="button" class="ghost-btn" id="btn-copy-terms-hash">Copy Hash</button>
+          </div>
+          <div id="output-terms-hash" class="hash-box mono break-all">
+            0xbf5ef59687168af6140d2ebd15e63b94df1ac4d3206e45f3a2f681cb962ade62
+          </div>
+          <details class="canonical-details">
+            <summary>View RFC 8785 Canonical JSON Payload</summary>
+            <pre id="output-canonical-json" class="canonical-pre mono"></pre>
+          </details>
+        </div>
+      </section>
+
+      <!-- VIEW 3: WATCHED DEALS & CLAIMABLE AVAX -->
+      <section class="tab-panel" id="panel-watched" role="tabpanel" aria-labelledby="tab-btn-watched">
+        <div class="card">
+          <div class="card-header">
+            <h2 class="card-title">Pull-Payment Claimable AVAX</h2>
+          </div>
+          <p class="card-hint">
+            Check <code>SafeDealEscrow.claimableBalances(address)</code> on Avalanche Fuji before
+            calling <code>withdraw()</code>.
+          </p>
+          <form id="form-claimable" class="stack-form">
+            <label class="field-label" for="input-wallet-address">Wallet Address (0x…)</label>
+            <div class="input-action-row">
+              <input
+                type="text"
+                id="input-wallet-address"
+                class="text-input mono"
+                placeholder="0x70997970C51812DC3A010C7D01B50E0D17DC79C8"
+                required
+              />
+              <button type="submit" class="primary-btn compact">Check</button>
+            </div>
+          </form>
+          <div id="claimable-result" class="status-banner hidden" role="status"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h2 class="card-title">Watched Deals</h2>
+            <button type="button" class="ghost-btn" id="btn-refresh-watched">Refresh All</button>
+          </div>
+          <div id="watched-deals-list" class="watched-list">
+            <p class="empty-state">No watched deals yet. Verify a deal and click "+ Watch Deal".</p>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h2 class="card-title">Marketplace Link Scanner</h2>
+          </div>
+          <p class="card-hint">
+            Enable optional cross-site permission to highlight SafeDeal escrow links inside
+            third-party chats &amp; marketplaces.
+          </p>
+          <button type="button" class="secondary-btn full-width" id="btn-request-scan-permission">
+            Enable All-Site Link Scanner
+          </button>
+          <div id="permission-status" class="status-banner hidden" role="status"></div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="panel-footer">
+      <span>Contract: <code class="mono">0xF30E…FE29</code></span>
+      <a href="https://avalanche-9b099.web.app" target="_blank" rel="noreferrer" class="external-link">
+        avalanche-9b099.web.app ↗
+      </a>
+    </footer>
+
+    <script type="module" src="sidepanel.js"></script>
+  </body>
+</html>

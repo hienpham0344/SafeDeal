@@ -1,0 +1,56 @@
+{
+  "manifest_version": 3,
+  "name": "SafeDeal Escrow Companion — Avalanche P2P Verifier",
+  "version": "1.0.0",
+  "description": "Verify on-chain Avalanche P2P escrow status, check RFC 8785 deal terms hashes, and draft SafeDeal escrow links from any webpage.",
+  "icons": {
+    "16": "icons/icon-16.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "action": {
+    "default_title": "Open SafeDeal Escrow Companion",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
+  },
+  "side_panel": {
+    "default_path": "sidepanel/sidepanel.html"
+  },
+  "background": {
+    "service_worker": "service-worker.js",
+    "type": "module"
+  },
+  "permissions": [
+    "storage",
+    "sidePanel",
+    "contextMenus",
+    "alarms",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://avalanche-9b099.web.app/*",
+    "https://safedeal-production.up.railway.app/*",
+    "https://api.avax-test.network/*",
+    "http://localhost:5173/*",
+    "http://localhost:8080/*",
+    "http://127.0.0.1:8545/*"
+  ],
+  "optional_host_permissions": [
+    "https://*/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://avalanche-9b099.web.app/*",
+        "http://localhost:5173/*"
+      ],
+      "js": [
+        "content/deal-verifier.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}
