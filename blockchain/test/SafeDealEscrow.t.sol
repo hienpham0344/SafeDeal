@@ -32,8 +32,9 @@ contract SafeDealEscrowTest is Test {
         internal
         returns (uint64 fundingDeadline, uint64 deliveryDeadline)
     {
-        fundingDeadline = uint64(block.timestamp + 1 days);
-        deliveryDeadline = uint64(block.timestamp + 7 days);
+        uint256 nowTs = vm.getBlockTimestamp();
+        fundingDeadline = uint64(nowTs + 1 days);
+        deliveryDeadline = uint64(nowTs + 7 days);
 
         vm.prank(seller);
         escrow.createTrade(
@@ -317,8 +318,9 @@ contract SafeDealEscrowTest is Test {
 
     function testResolveDisputeByTimeoutSplitsOddWeiDeterministically() public {
         uint256 oddAmount = 2 ether + 1;
-        uint64 fundingDeadline = uint64(block.timestamp + 1 days);
-        uint64 deliveryDeadline = uint64(block.timestamp + 7 days);
+        uint256 nowTs = vm.getBlockTimestamp();
+        uint64 fundingDeadline = uint64(nowTs + 1 days);
+        uint64 deliveryDeadline = uint64(nowTs + 7 days);
 
         vm.prank(seller);
         escrow.createTrade(

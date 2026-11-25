@@ -1,0 +1,7 @@
+{
+  "chainId": 43113,
+  "network": "avalanche-fuji",
+  "contractName": "SafeDealEscrow",
+  "address": "0xF30E863b0Cfe8fBFE05E65c21878F8B621B3FE29",
+  "rpcUrl": "https://api.avax-test.network/ext/bc/C/rpc"
+}

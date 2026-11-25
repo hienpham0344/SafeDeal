@@ -9,6 +9,19 @@
   },
   {
     "type": "function",
+    "name": "DISPUTE_TIMEOUT",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "cancelUnfundedTrade",
     "inputs": [
       {
@@ -102,6 +115,52 @@
   },
   {
     "type": "function",
+    "name": "getDisputeVotes",
+    "inputs": [
+      {
+        "name": "tradeId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "tuple",
+        "internalType": "struct ISafeDealEscrow.DisputeVoteSummary",
+        "components": [
+          {
+            "name": "buyerVoteHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "sellerVoteHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "arbiterVoteHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "disputedAt",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "timeoutAt",
+            "type": "uint64",
+            "internalType": "uint64"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "getTrade",
     "inputs": [
       {
@@ -127,14 +186,39 @@
             "internalType": "address"
           },
           {
+            "name": "createdAt",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "status",
+            "type": "uint8",
+            "internalType": "enum ISafeDealEscrow.TradeStatus"
+          },
+          {
+            "name": "settled",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
             "name": "buyer",
             "type": "address",
             "internalType": "address"
           },
           {
+            "name": "fundedAt",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
             "name": "arbiter",
             "type": "address",
             "internalType": "address"
+          },
+          {
+            "name": "fundingDeadline",
+            "type": "uint64",
+            "internalType": "uint64"
           },
           {
             "name": "amount",
@@ -147,22 +231,7 @@
             "internalType": "bytes32"
           },
           {
-            "name": "createdAt",
-            "type": "uint64",
-            "internalType": "uint64"
-          },
-          {
-            "name": "fundedAt",
-            "type": "uint64",
-            "internalType": "uint64"
-          },
-          {
             "name": "deliveredAt",
-            "type": "uint64",
-            "internalType": "uint64"
-          },
-          {
-            "name": "fundingDeadline",
             "type": "uint64",
             "internalType": "uint64"
           },
@@ -177,14 +246,9 @@
             "internalType": "uint64"
           },
           {
-            "name": "status",
-            "type": "uint8",
-            "internalType": "enum ISafeDealEscrow.TradeStatus"
-          },
-          {
-            "name": "settled",
-            "type": "bool",
-            "internalType": "bool"
+            "name": "disputedAt",
+            "type": "uint64",
+            "internalType": "uint64"
           }
         ]
       }
@@ -258,7 +322,20 @@
   },
   {
     "type": "function",
-    "name": "resolveDispute",
+    "name": "resolveDisputeByTimeout",
+    "inputs": [
+      {
+        "name": "tradeId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "submitResolutionVote",
     "inputs": [
       {
         "name": "tradeId",
@@ -352,6 +429,12 @@
         "type": "address",
         "indexed": true,
         "internalType": "address"
+      },
+      {
+        "name": "disputedAt",
+        "type": "uint64",
+        "indexed": false,
+        "internalType": "uint64"
       }
     ],
     "anonymous": false
@@ -367,7 +450,7 @@
         "internalType": "bytes32"
       },
       {
-        "name": "arbiter",
+        "name": "settledBy",
         "type": "address",
         "indexed": true,
         "internalType": "address"
@@ -395,6 +478,80 @@
         "type": "uint256",
         "indexed": false,
         "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "DisputeResolvedByTimeout",
+    "inputs": [
+      {
+        "name": "tradeId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "triggeredBy",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "buyerAmount",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "sellerAmount",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "DisputeVoteSubmitted",
+    "inputs": [
+      {
+        "name": "tradeId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "voter",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "buyerAmount",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "sellerAmount",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "proposalHash",
+        "type": "bytes32",
+        "indexed": false,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "matchCount",
+        "type": "uint8",
+        "indexed": false,
+        "internalType": "uint8"
       }
     ],
     "anonymous": false
@@ -608,8 +765,40 @@
   },
   {
     "type": "error",
+    "name": "DeliveryDeadlinePassed",
+    "inputs": [
+      {
+        "name": "deliveryDeadline",
+        "type": "uint64",
+        "internalType": "uint64"
+      },
+      {
+        "name": "currentTimestamp",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "DirectTransfersNotAllowed",
     "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "DisputeTimeoutNotReached",
+    "inputs": [
+      {
+        "name": "timeoutAt",
+        "type": "uint64",
+        "internalType": "uint64"
+      },
+      {
+        "name": "currentTimestamp",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ]
   },
   {
     "type": "error",

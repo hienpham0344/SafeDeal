@@ -11,14 +11,14 @@ Foundry-based Solidity smart contracts for native testnet AVAX peer-to-peer escr
 ## Settlement Architecture
 
 SafeDeal strictly separates three settlement phases:
-1. **Escrow Settled**: `releaseFunds`, `refundBySeller`, `refundAfterDeadline`, or `resolveDispute` transitions the trade to `RELEASED`, `REFUNDED`, or `RESOLVED` and sets `settled = true`.
+1. **Escrow Settled**: `releaseFunds`, `refundBySeller`, `refundAfterDeadline`, `submitResolutionVote` (upon reaching 2-of-3 consensus), or `resolveDisputeByTimeout` (after the 14-day dispute stalemate window) transitions the trade to `RELEASED`, `REFUNDED`, or `RESOLVED` and sets `settled = true`.
 2. **Funds Available to Claim**: The contract credits `_claimableBalances[beneficiary]` without transferring AVAX inline, preventing reverting recipient contracts from blocking counterparty settlement.
 3. **Funds Successfully Withdrawn**: Beneficiaries invoke `withdraw()` (`nonReentrant`, Checks-Effects-Interactions) to pull their AVAX balance.
 
 ## Trust Model
 
 - **Custody & Settlement Rules**: Enforced deterministically on-chain by `SafeDealEscrow`. There is no admin sweep or backdoor withdrawal.
-- **Human Arbiter Limitation**: For disputed trades, the designated `arbiter` is a trusted off-chain human decision-maker. If an arbiter becomes permanently unavailable while a trade is `DISPUTED`, funds in that disputed trade remain locked until the arbiter calls `resolveDispute`.
+- **2-of-3 Multi-Party Dispute Consensus & 14-Day Stalemate Fallback**: For disputed trades, settlement requires a **2-of-3 majority vote** (`submitResolutionVote(tradeId, buyerAmount, sellerAmount)`) across `[buyer, seller, arbiter]`, preventing unilateral arbiter collusion and enabling buyer-seller self-settlement without waiting for the arbiter. If no 2-of-3 consensus is reached within `DISPUTE_TIMEOUT` (`14 days`), anyone may invoke `resolveDisputeByTimeout(tradeId)` to execute a deterministic 50/50 split so funds are never permanently locked.
 
 ## Commands
 
