@@ -1432,5 +1432,114 @@ describe("SafeDeal Dashboard, DealDetails & Arbiter Pages", () => {
       await screen.findByText(new RegExp(`14-day stalemate 50/50 fallback settled on-chain \\(${timeoutTxHash}\\)`))
     ).toBeInTheDocument();
   });
+
+  it("paginates Dashboard deals when totalPages > 1 and resets page to 0 when switching filter tabs", async () => {
+    const user = userEvent.setup();
+    listDealsMock.mockImplementation(async (filters: { page?: number; size?: number }) => ({
+      items: [
+        {
+          ...sampleDealSummary,
+          title: `Page ${(filters.page ?? 0) + 1} Escrow Deal`,
+        },
+      ],
+      page: filters.page ?? 0,
+      size: filters.size ?? 20,
+      totalItems: 25,
+      totalPages: 2,
+    }));
+
+    renderWithQuery(<DashboardPage />);
+
+    expect(await screen.findByText("Page 1 Escrow Deal")).toBeInTheDocument();
+    expect(listDealsMock).toHaveBeenCalledWith({ page: 0, size: 20 });
+
+    const nextBtn = screen.getByRole("button", { name: "Next" });
+    const prevBtn = screen.getByRole("button", { name: "Previous" });
+    expect(prevBtn).toBeDisabled();
+    expect(nextBtn).toBeEnabled();
+
+    await user.click(nextBtn);
+    expect(await screen.findByText("Page 2 Escrow Deal")).toBeInTheDocument();
+    expect(listDealsMock).toHaveBeenLastCalledWith({ page: 1, size: 20 });
+
+    // Switching tabs resets page back to 0
+    await user.click(screen.getByRole("tab", { name: "My Created" }));
+    expect(await screen.findByText("Page 1 Escrow Deal")).toBeInTheDocument();
+    expect(listDealsMock).toHaveBeenLastCalledWith({ page: 0, size: 20 });
+  });
+
+  it("populates CreateDealPage fields when clicking SEApp UIT Quick-Fill Deal Templates", async () => {
+    const user = userEvent.setup();
+    renderWithQuery(<CreateDealPage />);
+
+    const freelanceBtn = await screen.findByRole("button", { name: "Freelance Đồ án / UI-UX" });
+    await user.click(freelanceBtn);
+
+    expect(screen.getByLabelText("Deal Title")).toHaveValue(
+      "Thiết kế UI/UX & Frontend Prototype Đồ án SEApp UIT"
+    );
+    expect(screen.getByLabelText(/Amount/)).toHaveValue("0.25");
+
+    const laptopBtn = screen.getByRole("button", { name: "Mua bán Laptop / Giáo trình UIT" });
+    await user.click(laptopBtn);
+
+    expect(screen.getByLabelText("Deal Title")).toHaveValue(
+      "Pass Laptop Sinh viên & Combo Giáo trình CNPM UIT"
+    );
+    expect(screen.getByLabelText(/Amount/)).toHaveValue("0.5");
+  });
+
+  it("downloads evidence attachment via authenticated button on DisputePage and surfaces errors cleanly", async () => {
+    const user = userEvent.setup();
+    mockSessionState.address = BUYER;
+    getDisputeMock.mockResolvedValue(sampleDispute);
+    listDisputeEvidenceMock.mockResolvedValue([
+      {
+        id: 42,
+        disputeId: 7,
+        submittedBy: SELLER,
+        title: "Delivery Archive Log",
+        notes: "Signed SHA-256 manifest.",
+        fileName: "manifest.txt",
+        mimeType: "text/plain",
+        sizeBytes: 128,
+        sha256Hex: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        hasAttachment: true,
+        createdAt: "2026-12-02T01:00:00Z",
+      },
+    ]);
+
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ code: "FORBIDDEN", message: "Attachment integrity check failed" }), {
+          status: 403,
+          headers: { "Content-Type": "application/json" },
+        })
+      );
+
+    try {
+      renderWithQuery(
+        <Routes>
+          <Route path="/disputes/:id" element={<DisputePage />} />
+        </Routes>,
+        "/disputes/7"
+      );
+
+      const downloadBtn = await screen.findByRole("button", { name: "manifest.txt" });
+      await user.click(downloadBtn);
+
+      expect(await screen.findByText("Attachment integrity check failed")).toBeInTheDocument();
+      expect(fetchSpy).toHaveBeenCalledWith(
+        expect.stringContaining("/api/v1/disputes/7/evidence/42/download"),
+        expect.objectContaining({
+          method: "GET",
+          credentials: "include",
+        })
+      );
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
 });
 

@@ -17,6 +17,53 @@ import { clearAllPersistedCreateDrafts } from "@/features/deals/hooks/useCreateD
 import { clearAllPendingTxs } from "@/features/deals/hooks/usePendingTransactions";
 import type { AuthSessionUser } from "@/types/api";
 
+interface Eip1193Provider {
+  request: (args: { method: string; params?: readonly unknown[] }) => Promise<unknown>;
+}
+
+function getInjectedEthereumProvider(): Eip1193Provider | null {
+  if (typeof window === "undefined") return null;
+  const candidate = (window as Window & { ethereum?: unknown }).ethereum;
+  if (
+    typeof candidate === "object" &&
+    candidate !== null &&
+    "request" in candidate &&
+    typeof (candidate as { request?: unknown }).request === "function"
+  ) {
+    return candidate as Eip1193Provider;
+  }
+  return null;
+}
+
+function isUnrecognizedChainError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const errObj = error as {
+    code?: unknown;
+    message?: unknown;
+    cause?: { code?: unknown; message?: unknown; cause?: { code?: unknown } };
+    data?: { originalError?: { code?: unknown } };
+  };
+  if (
+    errObj.code === 4902 ||
+    errObj.cause?.code === 4902 ||
+    errObj.cause?.cause?.code === 4902 ||
+    errObj.data?.originalError?.code === 4902
+  ) {
+    return true;
+  }
+  const message =
+    typeof errObj.message === "string"
+      ? errObj.message
+      : typeof errObj.cause?.message === "string"
+        ? errObj.cause.message
+        : "";
+  return (
+    message.includes("4902") ||
+    /unrecognized chain/i.test(message) ||
+    message.includes("wallet_addEthereumChain")
+  );
+}
+
 export function AuthSessionProvider({ children }: { readonly children: ReactNode }) {
   const queryClient = useQueryClient();
   const {
@@ -145,6 +192,42 @@ export function AuthSessionProvider({ children }: { readonly children: ReactNode
     try {
       await switchChainAsync({ chainId: env.chainId });
     } catch (error) {
+      const ethereum = getInjectedEthereumProvider();
+      if (isUnrecognizedChainError(error) && ethereum) {
+        try {
+          const envWithAliases = env as typeof env & {
+            readonly avalancheRpcUrl?: string;
+            readonly blockExplorerBaseUrl?: string;
+          };
+          const rpcTarget = envWithAliases.avalancheRpcUrl ?? env.rpcUrl;
+          const explorerTarget = envWithAliases.blockExplorerBaseUrl ?? env.explorerBaseUrl;
+          await ethereum.request({
+            method: "wallet_addEthereumChain",
+            params: [
+              {
+                chainId: `0x${env.chainId.toString(16)}`,
+                chainName: env.chainName,
+                nativeCurrency: {
+                  name: "Avalanche",
+                  symbol: "AVAX",
+                  decimals: 18,
+                },
+                rpcUrls: [rpcTarget],
+                blockExplorerUrls: explorerTarget ? [explorerTarget] : undefined,
+              },
+            ],
+          });
+          await switchChainAsync({ chainId: env.chainId });
+          return;
+        } catch (addError) {
+          setAuthError(
+            addError instanceof Error
+              ? addError.message
+              : `Failed to switch to ${env.chainName} (${env.chainId}).`
+          );
+          return;
+        }
+      }
       setAuthError(
         error instanceof Error
           ? error.message

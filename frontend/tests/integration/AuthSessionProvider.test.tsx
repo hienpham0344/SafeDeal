@@ -57,15 +57,20 @@ vi.mock("@/features/authentication/api/auth-api", () => ({
 }));
 
 function SessionProbe() {
-  const { isAuthenticated, sessionUser, signInWithWallet, disconnectAndSignOut } = useAuthSession();
+  const { isAuthenticated, sessionUser, authError, signInWithWallet, disconnectAndSignOut, switchToExpectedNetwork } =
+    useAuthSession();
   return (
     <div>
       <span data-testid="auth-state">{isAuthenticated ? sessionUser?.address : "anon"}</span>
+      <span data-testid="auth-error">{authError ?? ""}</span>
       <button type="button" onClick={() => void signInWithWallet()}>
         SignIn
       </button>
       <button type="button" onClick={() => void disconnectAndSignOut()}>
         SignOut
+      </button>
+      <button type="button" onClick={() => void switchToExpectedNetwork()}>
+        SwitchNetwork
       </button>
     </div>
   );
@@ -297,5 +302,54 @@ describe("AuthSessionProvider race & cache isolation", () => {
       expect(screen.getByTestId("auth-state")).toHaveTextContent("anon");
     });
     expect(queryClient.getQueryData(["deals", "list", {}])).toBeUndefined();
+  });
+
+  it("automatically invokes wallet_addEthereumChain and retries switchChainAsync on EIP-1193 4902 unrecognized chain error", async () => {
+    fetchCurrentSessionMock.mockResolvedValue(null);
+    const unrecognizedChainErr = Object.assign(new Error("Unrecognized chain ID 0x7a69"), {
+      code: 4902,
+    });
+    switchChainAsyncMock
+      .mockRejectedValueOnce(unrecognizedChainErr)
+      .mockResolvedValueOnce({ id: 31337 });
+
+    const requestMock = vi.fn().mockResolvedValue(null);
+    Object.defineProperty(window, "ethereum", {
+      value: { request: requestMock },
+      configurable: true,
+      writable: true,
+    });
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AuthSessionProvider>
+          <SessionProbe />
+        </AuthSessionProvider>
+      </QueryClientProvider>
+    );
+
+    await act(async () => {
+      screen.getByRole("button", { name: "SwitchNetwork" }).click();
+    });
+
+    await waitFor(() => {
+      expect(requestMock).toHaveBeenCalledTimes(1);
+    });
+    expect(requestMock).toHaveBeenCalledWith({
+      method: "wallet_addEthereumChain",
+      params: [
+        expect.objectContaining({
+          chainId: "0x7a69",
+          chainName: "Anvil Local",
+          nativeCurrency: { name: "Avalanche", symbol: "AVAX", decimals: 18 },
+        }),
+      ],
+    });
+    expect(switchChainAsyncMock).toHaveBeenCalledTimes(2);
+    expect(screen.getByTestId("auth-error")).toHaveTextContent("");
   });
 });

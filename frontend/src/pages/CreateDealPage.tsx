@@ -3,7 +3,8 @@ import { Link, useNavigate } from "react-router-dom";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { zeroAddress } from "viem";
-import { ArrowRight, Check, Copy } from "lucide-react";
+import { useBalance } from "wagmi";
+import { ArrowRight, Check, Copy, ExternalLink, Sparkles } from "lucide-react";
 import { AppShell } from "@/components/layout/AppShell";
 import { AlertBanner, Panel } from "@/components/ui/Primitives";
 import { Button } from "@/components/ui/Button";
@@ -21,8 +22,53 @@ import {
 } from "@/features/deals/schemas/create-deal.schema";
 import { useEscrowContractExecutor } from "@/features/escrow/hooks/useEscrowActions";
 import type { CreateDealDraftResponse } from "@/types/api";
+import { wagmiConfig } from "@/services/blockchain/wagmi";
 import { computeCanonicalTermsHash } from "@/utils/canonical-terms";
 import { formatAvax, formatTimestamp, parseAvaxToWei } from "@/utils/format";
+
+const FUJI_FAUCET_URL = "https://core.app/tools/testnet-faucet/?subnet=c&token=c";
+
+interface SeappDealTemplate {
+  readonly id: string;
+  readonly label: string;
+  readonly title: string;
+  readonly amountAvax: string;
+  readonly description: string;
+  readonly terms: string;
+}
+
+const SEAPP_UIT_DEAL_TEMPLATES: readonly SeappDealTemplate[] = [
+  {
+    id: "freelance-uiux",
+    label: "Freelance Đồ án / UI-UX",
+    title: "Thiết kế UI/UX & Frontend Prototype Đồ án SEApp UIT",
+    amountAvax: "0.25",
+    description:
+      "Thiết kế bộ giao diện Figma (Design System + 8 màn hình chính) và cắt giao diện React + Tailwind CSS responsive cho nhóm đồ án Khoa Công nghệ Phần mềm UIT.",
+    terms:
+      "1. Bàn giao link Figma full quyền edit + source code GitHub repository.\n2. Giao diện đạt chuẩn WCAG AA, không lỗi layout trên Desktop (1440px) và Mobile (375px).\n3. Buyer nghiệm thu trong cửa sổ kiểm tra; nếu đúng cam kết sẽ giải ngân 100% AVAX.",
+  },
+  {
+    id: "laptop-textbook-uit",
+    label: "Mua bán Laptop / Giáo trình UIT",
+    title: "Pass Laptop Sinh viên & Combo Giáo trình CNPM UIT",
+    amountAvax: "0.5",
+    description:
+      "Giao dịch P2P máy tính xách tay học lập trình (RAM 16GB, SSD 512GB, pin > 85%) kèm bộ tài liệu ôn tập Cấu trúc dữ liệu, Thiết kế Phần mềm tại Làng Đại học Thủ Đức.",
+    terms:
+      "1. Giao nhận trực tiếp tại Sảnh Tầng 7 Tòa E - Trường ĐH Công nghệ Thông tin (UIT) hoặc ship COD đồng kiểm.\n2. Máy nguyên bản chưa qua sửa chữa mainboard, bao test phần cứng và màn hình trong thời gian nghiệm thu.\n3. Hoàn tiền 100% qua smart contract nếu cấu hình hoặc tình trạng thực tế sai mô tả.",
+  },
+  {
+    id: "software-license",
+    label: "Tài khoản / Bản quyền Phần mềm",
+    title: "Chuyển nhượng License Phần mềm & Cloud Credits Học tập",
+    amountAvax: "0.1",
+    description:
+      "Bàn giao mã kích hoạt bản quyền IDE / bộ công cụ phát triển phần mềm chính hãng thời hạn 12 tháng cho nhóm sinh viên thực hiện đồ án.",
+    terms:
+      "1. Seller gửi license key chính chủ và hướng dẫn kích hoạt qua kênh liên lạc đã xác thực.\n2. Key kích hoạt thành công trên tài khoản email của Buyer và hiển thị đủ hạn dùng 12 tháng.\n3. Không chia sẻ lại key cho bên thứ ba; tranh chấp (nếu có) phân xử 2-of-3 cùng Arbiter với bằng chứng SHA-256.",
+  },
+] as const;
 
 function toLocalDateTimeInput(offsetHours: number): string {
   const date = new Date(Date.now() + offsetHours * 3600 * 1000);
@@ -82,10 +128,21 @@ export function CreateDealPage() {
     submittedCreateTxHash ?? (pendingTx?.action === "createTrade" ? pendingTx.txHash : null);
 
   const defaultInspectionHours = Math.max(1, Math.round(appConfig.escrow.defaultInspectionWindowSeconds / 3600));
+  const balanceQuery = useBalance({
+    address,
+    chainId: env.chainId,
+    config: wagmiConfig,
+    query: {
+      enabled: Boolean(isConnected && address),
+    },
+  });
+  const balanceData = balanceQuery?.data;
+  const [activeTemplateId, setActiveTemplateId] = useState<string | null>(null);
 
   const {
     register,
     handleSubmit,
+    setValue,
     formState: { errors, isSubmitting },
   } = useForm<CreateDealFormValues>({
     resolver: zodResolver(createDealSchema),
@@ -398,6 +455,25 @@ export function CreateDealPage() {
         <AlertBanner tone="warning" title="Contract Not Configured" message={appConfig.messages.contractUnconfigured} />
       )}
 
+      {balanceData && balanceData.value === 0n && (
+        <AlertBanner
+          tone="warning"
+          title="0 AVAX Gas Balance Detected"
+          message={`Your connected wallet currently holds 0 AVAX on ${env.chainName}. Claim free test AVAX from the Avalanche Faucet before deploying or funding an escrow deal on-chain.`}
+          action={
+            <a
+              href={FUJI_FAUCET_URL}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex min-h-[32px] items-center gap-1.5 rounded-lg border border-amber-300/40 bg-amber-400/15 px-3 py-1.5 text-xs font-medium text-amber-100 transition-colors hover:border-amber-300/70 hover:bg-amber-400/25"
+            >
+              <span>Avalanche Fuji Faucet</span>
+              <ExternalLink size={12} aria-hidden="true" />
+            </a>
+          }
+        />
+      )}
+
       {(submitError || txError) && (
         <AlertBanner tone="error" title="Action Blocked" message={submitError ?? txError ?? ""} />
       )}
@@ -593,6 +669,50 @@ export function CreateDealPage() {
         </Panel>
       ) : (
         <Panel>
+          <div className="mb-6 rounded-xl border border-sd-line bg-sd-inset p-4 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Sparkles size={14} className="text-sd-accent" aria-hidden="true" />
+                <span className="font-mono text-xs font-medium uppercase tracking-wider text-white">
+                  Quick-Fill SEApp UIT Templates
+                </span>
+              </div>
+              <span className="text-xs text-sd-inkSubtle">
+                1-click presets for live booth demos
+              </span>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {SEAPP_UIT_DEAL_TEMPLATES.map((template) => {
+                const isSelected = activeTemplateId === template.id;
+                return (
+                  <button
+                    key={template.id}
+                    type="button"
+                    onClick={() => {
+                      const opts = {
+                        shouldDirty: true,
+                        shouldTouch: true,
+                        shouldValidate: true,
+                      } as const;
+                      setValue("title", template.title, opts);
+                      setValue("amountAvax", template.amountAvax, opts);
+                      setValue("description", template.description, opts);
+                      setValue("terms", template.terms, opts);
+                      setActiveTemplateId(template.id);
+                    }}
+                    className={`inline-flex min-h-[36px] items-center gap-2 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${
+                      isSelected
+                        ? "border-sd-accent bg-emerald-500/15 text-emerald-200"
+                        : "border-sd-lineStrong bg-sd-elevated/70 text-sd-ink hover:border-white/30 hover:bg-sd-elevated"
+                    }`}
+                  >
+                    <span>{template.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
           <form onSubmit={handleSubmit(onDraftPreview)} className="space-y-8" noValidate>
             <fieldset className="space-y-4">
               <legend className="w-full border-b border-sd-line pb-2 text-xs font-mono uppercase tracking-wider text-sd-inkSubtle">

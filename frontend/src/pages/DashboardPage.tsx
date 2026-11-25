@@ -12,6 +12,7 @@ import { useClaimableBalance, useEscrowContractExecutor } from "@/features/escro
 import { formatAvax, formatTimestamp, shortenAddress } from "@/utils/format";
 
 const ACTIVE_ESCROW_STATUSES = new Set(["FUNDED", "DELIVERED", "DISPUTED"]);
+const DASHBOARD_PAGE_SIZE = 20;
 
 function parseSafeWei(wei: string): bigint {
   try {
@@ -23,11 +24,13 @@ function parseSafeWei(wei: string): bigint {
 
 export function DashboardPage() {
   const [activeTab, setActiveTab] = useState<DashboardTab>("ALL");
+  const [page, setPage] = useState(0);
   const { address, isConnected, isAuthenticated, isSessionLoading, openWalletModal, signInWithWallet } = useAuthSession();
-  const dealsQuery = useDealsQuery({ page: 0, size: 50 }, isAuthenticated);
+  const dealsQuery = useDealsQuery({ page, size: DASHBOARD_PAGE_SIZE }, isAuthenticated);
   const claimableQuery = useClaimableBalance(address);
   const { withdraw, activeAction, txError } = useEscrowContractExecutor();
   const [withdrawSuccess, setWithdrawSuccess] = useState<string | null>(null);
+  const totalPages = dealsQuery.data?.totalPages ?? 0;
 
   const filteredDeals = useMemo(
     () => filterDealsForTab(dealsQuery.data?.items ?? [], activeTab, address),
@@ -121,7 +124,10 @@ export function DashboardPage() {
               type="button"
               role="tab"
               aria-selected={activeTab === tab.id}
-              onClick={() => setActiveTab(tab.id)}
+              onClick={() => {
+                setActiveTab(tab.id);
+                setPage(0);
+              }}
               className={`inline-flex min-h-[44px] sm:min-h-[38px] items-center border-b-2 px-3.5 py-2.5 text-xs font-medium whitespace-nowrap transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sd-accent focus-visible:ring-offset-2 focus-visible:ring-offset-sd-canvas ${
                 activeTab === tab.id
                   ? "border-sd-accent text-white"
@@ -257,6 +263,43 @@ export function DashboardPage() {
             </Link>
           ))}
         </div>
+      )}
+
+      {isAuthenticated && !dealsQuery.isLoading && !dealsQuery.isError && totalPages > 1 && (
+        <nav
+          aria-label="Deals pagination"
+          className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-sd-line bg-sd-surface px-4 py-3 text-xs"
+        >
+          <p className="font-mono text-sd-inkMuted tabular-nums">
+            Page <span className="font-semibold text-white">{page + 1}</span> of{" "}
+            <span className="font-semibold text-white">{totalPages}</span>
+            {typeof dealsQuery.data?.totalItems === "number" && (
+              <span className="ml-2 text-sd-inkSubtle">
+                ({dealsQuery.data.totalItems} total deals)
+              </span>
+            )}
+          </p>
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              disabled={page <= 0}
+              onClick={() => setPage((current) => Math.max(0, current - 1))}
+            >
+              Previous
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              disabled={page + 1 >= totalPages}
+              onClick={() => setPage((current) => (current + 1 < totalPages ? current + 1 : current))}
+            >
+              Next
+            </Button>
+          </div>
+        </nav>
       )}
     </AppShell>
   );

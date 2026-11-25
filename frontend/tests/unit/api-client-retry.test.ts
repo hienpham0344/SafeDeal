@@ -4,6 +4,7 @@ import {
   ApiClientError,
   BEARER_TOKEN_KEY,
   apiRequest,
+  downloadAuthenticatedAttachment,
   isPendingReceiptApiError,
   resolveBearerToken,
   retryOnPendingReceipt,
@@ -221,5 +222,49 @@ describe("bearer token persistence across tabs", () => {
 
     setBearerToken("memory-only-jwt");
     expect(resolveBearerToken()).toBe("memory-only-jwt");
+  });
+
+  it("downloads authenticated evidence attachment with Bearer token and triggers temporary anchor download", async () => {
+    setBearerToken("evidence-download-jwt");
+    const sampleBlob = new Blob(["verified evidence bytes"], { type: "text/plain" });
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      headers: new Headers({ "content-type": "text/plain" }),
+      blob: async () => sampleBlob,
+    } as Response);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const createObjectUrlSpy = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:safedeal/evidence-1");
+    const revokeObjectUrlSpy = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+
+    await downloadAuthenticatedAttachment("/api/v1/disputes/7/evidence/1/download", "delivery-proof.txt");
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [requestUrl, requestInit] = fetchMock.mock.calls[0]!;
+    expect(String(requestUrl)).toContain("/api/v1/disputes/7/evidence/1/download");
+    expect(requestInit?.method).toBe("GET");
+    expect(requestInit?.credentials).toBe("include");
+    expect((requestInit?.headers as Record<string, string>)["Authorization"]).toBe("Bearer evidence-download-jwt");
+    expect(createObjectUrlSpy).toHaveBeenCalledWith(sampleBlob);
+    expect(clickSpy).toHaveBeenCalledTimes(1);
+    expect(revokeObjectUrlSpy).toHaveBeenCalledWith("blob:safedeal/evidence-1");
+  });
+
+  it("throws ApiClientError and clears session when downloadAuthenticatedAttachment receives 401", async () => {
+    setBearerToken("stale-download-jwt");
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValueOnce({
+      ok: false,
+      status: 401,
+      headers: new Headers({ "content-type": "application/json" }),
+      json: async () => ({ code: "UNAUTHORIZED", message: "Authentication required to download evidence" }),
+    } as Response);
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      downloadAuthenticatedAttachment("/api/v1/disputes/7/evidence/1/download", "proof.pdf")
+    ).rejects.toThrow("Authentication required to download evidence");
+    expect(resolveBearerToken()).toBeNull();
   });
 });

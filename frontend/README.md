@@ -11,7 +11,7 @@ Non-custodial Avalanche P2P escrow client preserving the Foldcraft editorial lan
 - `/deals/:id` — Role-gated escrow actions (`fundTrade`, `markDelivered`, `releaseFunds`, refunds, cancel, `withdraw`)
 - `/dashboard` — Participant deal filters & pull-payment withdrawal
 - `/disputes/:id` — Dispute timeline & evidence submission/download
-- `/arbiter` — Arbiter settlement console (`resolveDispute`)
+- `/arbiter` — Arbiter settlement console (`submitResolutionVote` 2-of-3 multi-party consensus & `resolveDisputeByTimeout` 14-day stalemate fallback)
 
 ## Commands
 

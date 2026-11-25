@@ -221,3 +221,53 @@ export async function apiRequest<T>(path: string, options: ApiRequestOptions = {
 export function buildDownloadUrl(path: string): string {
   return `${env.apiBaseUrl}${path}`;
 }
+
+export async function downloadAuthenticatedAttachment(
+  path: string,
+  fallbackFileName?: string
+): Promise<void> {
+  const headers: Record<string, string> = {};
+  const bearer = resolveBearerToken();
+  if (bearer) {
+    headers["Authorization"] = `Bearer ${bearer}`;
+  }
+
+  const response = await fetch(`${env.apiBaseUrl}${path}`, {
+    method: "GET",
+    headers,
+    credentials: "include",
+  });
+
+  if (!response.ok) {
+    if (response.status === 401) {
+      inMemoryCsrfToken = null;
+      setBearerToken(null);
+      unauthorizedHandler?.();
+    }
+    const contentType = response.headers?.get("content-type") ?? "";
+    const isJson = contentType.includes("application/json");
+    const payload = isJson ? await response.json().catch(() => null) : null;
+    const err = payload as Partial<ApiErrorPayload> | null;
+    throw new ApiClientError(
+      response.status,
+      err?.message || `Download failed with status ${response.status}`,
+      err?.code || "HTTP_ERROR",
+      err?.correlationId,
+      err?.fieldErrors
+    );
+  }
+
+  const blob = await response.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  try {
+    const anchor = document.createElement("a");
+    anchor.href = objectUrl;
+    anchor.download = fallbackFileName || "evidence";
+    anchor.rel = "noopener";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}

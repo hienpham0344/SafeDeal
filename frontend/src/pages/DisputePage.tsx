@@ -20,7 +20,7 @@ import {
   validateEvidenceFile,
   type SubmitEvidenceFormValues,
 } from "@/features/disputes/schemas/dispute.schema";
-import { buildDownloadUrl } from "@/services/http/api-client";
+import { downloadAuthenticatedAttachment } from "@/services/http/api-client";
 import type { DisputeDetail } from "@/types/api";
 import { formatAvax, formatTimestamp, shortenAddress } from "@/utils/format";
 
@@ -71,6 +71,8 @@ export function DisputePage() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [fileError, setFileError] = useState<string | null>(null);
   const [submitSuccess, setSubmitSuccess] = useState<string | null>(null);
+  const [downloadingEvidenceId, setDownloadingEvidenceId] = useState<number | null>(null);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
 
   const {
     register,
@@ -100,6 +102,23 @@ export function DisputePage() {
     setFileError(null);
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
+    }
+  }
+
+  async function handleDownloadEvidence(evidenceId: number, fileName: string | null) {
+    if (!dispute) return;
+    setDownloadError(null);
+    setDownloadingEvidenceId(evidenceId);
+    try {
+      await downloadAuthenticatedAttachment(
+        `/api/v1/disputes/${dispute.id}/evidence/${evidenceId}/download`,
+        fileName ?? `evidence-${evidenceId}`
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to download evidence attachment.";
+      setDownloadError(message);
+    } finally {
+      setDownloadingEvidenceId((current) => (current === evidenceId ? null : current));
     }
   }
 
@@ -203,6 +222,8 @@ export function DisputePage() {
                   )}
                 </div>
 
+                {downloadError && <AlertBanner tone="error" message={downloadError} />}
+
                 {evidenceQuery.isLoading ? (
                   <p className="text-sm text-sd-inkSubtle">Loading evidence...</p>
                 ) : !evidenceQuery.data || evidenceQuery.data.length === 0 ? (
@@ -233,17 +254,19 @@ export function DisputePage() {
                               </p>
                             </div>
                             {item.hasAttachment && (
-                              <a
-                                href={buildDownloadUrl(
-                                  `/api/v1/disputes/${dispute.id}/evidence/${item.id}/download`
-                                )}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="inline-flex min-h-[36px] shrink-0 items-center gap-1.5 rounded-lg border border-sd-lineStrong bg-sd-elevated/70 px-3 py-1.5 text-xs font-medium text-sd-ink transition-colors hover:border-white/30 hover:bg-sd-elevated"
+                              <button
+                                type="button"
+                                disabled={downloadingEvidenceId === item.id}
+                                onClick={() => void handleDownloadEvidence(item.id, item.fileName)}
+                                className="inline-flex min-h-[36px] shrink-0 items-center gap-1.5 rounded-lg border border-sd-lineStrong bg-sd-elevated/70 px-3 py-1.5 text-xs font-medium text-sd-ink transition-colors hover:border-white/30 hover:bg-sd-elevated disabled:cursor-not-allowed disabled:opacity-60"
                               >
                                 <Download size={13} aria-hidden="true" />
-                                <span>{item.fileName ?? "Download"}</span>
-                              </a>
+                                <span>
+                                  {downloadingEvidenceId === item.id
+                                    ? "Downloading..."
+                                    : (item.fileName ?? "Download")}
+                                </span>
+                              </button>
                             )}
                           </div>
 
