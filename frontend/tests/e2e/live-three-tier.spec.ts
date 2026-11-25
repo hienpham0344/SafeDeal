@@ -387,14 +387,21 @@ test.describe("Live Unmocked 3-Tier Browser -> Backend -> Anvil E2E", () => {
       await buyer.page.getByRole("button", { name: "Submit Evidence" }).click();
 
       await expect(buyer.page.getByText("Evidence recorded securely")).toBeVisible({ timeout: 15_000 });
-      const downloadLink = buyer.page.getByRole("link", { name: "proof-evidence.png" });
-      await expect(downloadLink).toBeVisible({ timeout: 15_000 });
-      const downloadHref = await downloadLink.getAttribute("href");
-      expect(downloadHref).toBeTruthy();
+      const downloadButton = buyer.page.getByRole("button", { name: "proof-evidence.png" });
+      await expect(downloadButton).toBeVisible({ timeout: 15_000 });
 
-      const downloadRes = await buyer.page.request.get(downloadHref!);
-      expect(downloadRes.status()).toBe(200);
-      const downloadedBytes = new Uint8Array(await downloadRes.body());
+      const [downloadResponse, browserDownload] = await Promise.all([
+        buyer.page.waitForResponse(
+          (res) =>
+            res.url().includes(`/api/v1/disputes/${disputeId}/evidence/`) &&
+            res.url().endsWith("/download")
+        ),
+        buyer.page.waitForEvent("download"),
+        downloadButton.click(),
+      ]);
+      expect(downloadResponse.status()).toBe(200);
+      expect(browserDownload.suggestedFilename()).toBe("proof-evidence.png");
+      const downloadedBytes = new Uint8Array(await downloadResponse.body());
       expect(Array.from(downloadedBytes)).toEqual(Array.from(VALID_PNG_BYTES));
 
       // Non-participant outsider must be rejected cleanly with 403 / access denied
