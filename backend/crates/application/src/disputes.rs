@@ -14,6 +14,7 @@ use safedeal_domain::ports::{
 use safedeal_shared::{CorrelationIdContext, DomainError, EthFormatValidator};
 
 use crate::deals::SyncDealUseCase;
+use crate::indexer::AUTO_INDEXED_DISPUTE_REASON;
 
 #[derive(Debug, Clone)]
 pub struct DisputeWithDeal {
@@ -106,10 +107,12 @@ impl DisputeUseCase {
                         "Only the deal buyer or seller can file dispute details.",
                     ));
                 }
-                if repos.disputes().find_by_trade_id(&tid_p1).await?.is_some() {
-                    return Err(DomainError::conflict(format!(
-                        "A dispute case already exists for trade {tid_p1}"
-                    )));
+                if let Some(existing) = repos.disputes().find_by_trade_id(&tid_p1).await? {
+                    if existing.reason != AUTO_INDEXED_DISPUTE_REASON {
+                        return Err(DomainError::conflict(format!(
+                            "A dispute case already exists for trade {tid_p1}"
+                        )));
+                    }
                 }
                 Ok(found)
             })
@@ -188,19 +191,23 @@ impl DisputeUseCase {
                         current_deal.status
                     )));
                 }
-                if repos
-                    .disputes()
-                    .find_by_trade_id(&trade_id)
-                    .await?
-                    .is_some()
-                {
-                    return Err(DomainError::conflict(format!(
-                        "A dispute case already exists for trade {trade_id}"
-                    )));
-                }
-                let created = repos
-                    .disputes()
-                    .save(&Dispute {
+                let to_save = match repos.disputes().find_by_trade_id(&trade_id).await? {
+                    Some(existing) if existing.reason != AUTO_INDEXED_DISPUTE_REASON => {
+                        return Err(DomainError::conflict(format!(
+                            "A dispute case already exists for trade {trade_id}"
+                        )));
+                    }
+                    Some(existing) => Dispute {
+                        opened_by: caller.clone(),
+                        reason: trimmed_reason,
+                        summary: trimmed_summary,
+                        open_tx_hash: tx_hash.or(existing.open_tx_hash),
+                        disputed_at: disputed_at_from_chain
+                            .or(existing.disputed_at)
+                            .or(Some(effective_disputed_at)),
+                        ..existing
+                    },
+                    None => Dispute {
                         id: None,
                         trade_id: trade_id.clone(),
                         opened_by: caller.clone(),
@@ -216,11 +223,13 @@ impl DisputeUseCase {
                         dispute_timeout_seconds: DEFAULT_DISPUTE_TIMEOUT_SECONDS,
                         created_at: now,
                         resolved_at: None,
-                    })
-                    .await?;
+                    },
+                };
+                let created = repos.disputes().save(&to_save).await?;
                 let created_id = created
                     .id
                     .ok_or_else(|| DomainError::internal("Saved dispute is missing id"))?;
+                let votes = repos.dispute_votes().find_by_dispute_id(created_id).await?;
                 repos
                     .audit_logs()
                     .append(&AuditLogEntry {
@@ -237,7 +246,7 @@ impl DisputeUseCase {
                 Ok(DisputeWithDeal {
                     dispute: created,
                     deal: current_deal,
-                    votes: Vec::new(),
+                    votes,
                 })
             })
         })
@@ -446,10 +455,17 @@ impl DisputeUseCase {
                 DomainError::not_found("Evidence item does not include a downloadable file.")
             })?;
 
-        let payload = self.evidence_storage.open_download(storage_key).await?;
-        if let EvidenceDownloadPayload::Bytes(ref bytes) = payload {
-            evidence.verify_bytes_integrity(bytes)?;
-        }
+        let payload = match self.evidence_storage.open_download(storage_key).await? {
+            EvidenceDownloadPayload::Bytes(bytes) => {
+                evidence.verify_bytes_integrity(&bytes)?;
+                EvidenceDownloadPayload::Bytes(bytes)
+            }
+            EvidenceDownloadPayload::LocalFile(_) => {
+                let bytes = self.evidence_storage.load(storage_key).await?;
+                evidence.verify_bytes_integrity(&bytes)?;
+                EvidenceDownloadPayload::Bytes(bytes)
+            }
+        };
         let correlation_id = CorrelationIdContext::get_or_default("n/a");
         self.audit_log_repo
             .append(&AuditLogEntry {
@@ -480,4 +496,199 @@ fn require_bounded(raw: &str, field: &str, min: usize, max: usize) -> Result<Str
         )));
     }
     Ok(trimmed.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::indexer::AUTO_INDEXED_DISPUTE_SUMMARY;
+    use crate::test_support::{
+        sample_bound_deal, FakeBlockchainGateway, FakeEvidenceStorage, InMemoryStore,
+    };
+    use safedeal_domain::ports::{DealRepository, DisputeRepository};
+
+    #[tokio::test]
+    async fn open_dispute_backfills_auto_created_fallback_dispute_and_rejects_duplicate_user_dispute(
+    ) {
+        let store = InMemoryStore::new();
+        let gateway = FakeBlockchainGateway::new(false);
+        let storage = FakeEvidenceStorage::new(true);
+        let sync_uc = Arc::new(SyncDealUseCase::new(
+            Arc::clone(&store) as Arc<dyn UnitOfWork>,
+            Arc::clone(&gateway) as Arc<dyn BlockchainGateway>,
+        ));
+        let dispute_uc = DisputeUseCase::new(
+            Arc::clone(&store) as Arc<dyn UnitOfWork>,
+            Arc::clone(&store) as Arc<dyn DisputeEvidenceRepository>,
+            Arc::clone(&store) as Arc<dyn AuditLogRepository>,
+            Arc::clone(&gateway) as Arc<dyn BlockchainGateway>,
+            sync_uc,
+            storage,
+        );
+
+        let trade_id = format!("0x{}", "b".repeat(64));
+        let deal = sample_bound_deal(&trade_id, DealStatus::Disputed);
+        let buyer = deal.buyer.clone().unwrap();
+        DealRepository::save(store.as_ref(), &deal).await.unwrap();
+
+        // Seed auto-indexed fallback dispute row
+        let fallback = DisputeRepository::save(
+            store.as_ref(),
+            &Dispute {
+                id: None,
+                trade_id: trade_id.clone(),
+                opened_by: deal.seller.clone(),
+                reason: AUTO_INDEXED_DISPUTE_REASON.to_string(),
+                summary: AUTO_INDEXED_DISPUTE_SUMMARY.to_string(),
+                status: DisputeStatus::Open,
+                buyer_award_wei: None,
+                seller_award_wei: None,
+                resolution_rationale: None,
+                open_tx_hash: None,
+                resolve_tx_hash: None,
+                disputed_at: Some(Utc::now()),
+                dispute_timeout_seconds: DEFAULT_DISPUTE_TIMEOUT_SECONDS,
+                created_at: Utc::now(),
+                resolved_at: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let tx_hash = format!("0x{}", "d".repeat(64));
+        let backfilled = dispute_uc
+            .open_dispute(
+                &trade_id,
+                &buyer,
+                "Missing milestone deliverables",
+                "Seller submitted incomplete build without unit test suite.",
+                Some(&tx_hash),
+            )
+            .await
+            .expect("backfill auto-created dispute");
+
+        assert_eq!(backfilled.dispute.id, fallback.id);
+        assert_eq!(backfilled.dispute.opened_by, buyer);
+        assert_eq!(backfilled.dispute.reason, "Missing milestone deliverables");
+        assert_eq!(
+            backfilled.dispute.summary,
+            "Seller submitted incomplete build without unit test suite."
+        );
+        assert_eq!(
+            backfilled.dispute.open_tx_hash.as_deref(),
+            Some(tx_hash.as_str())
+        );
+
+        // Subsequent open_dispute call must fail with Conflict because reason is now user-provided
+        let err = dispute_uc
+            .open_dispute(
+                &trade_id,
+                &buyer,
+                "Second attempt",
+                "Should fail with 409 Conflict now.",
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DomainError::Conflict { .. }));
+    }
+
+    #[tokio::test]
+    async fn prepare_evidence_download_verifies_sha256_integrity_for_local_file_payloads() {
+        let store = InMemoryStore::new();
+        let gateway = FakeBlockchainGateway::new(false);
+        let storage = FakeEvidenceStorage::new(true);
+        let sync_uc = Arc::new(SyncDealUseCase::new(
+            Arc::clone(&store) as Arc<dyn UnitOfWork>,
+            Arc::clone(&gateway) as Arc<dyn BlockchainGateway>,
+        ));
+        let dispute_uc = DisputeUseCase::new(
+            Arc::clone(&store) as Arc<dyn UnitOfWork>,
+            Arc::clone(&store) as Arc<dyn DisputeEvidenceRepository>,
+            Arc::clone(&store) as Arc<dyn AuditLogRepository>,
+            Arc::clone(&gateway) as Arc<dyn BlockchainGateway>,
+            sync_uc,
+            Arc::clone(&storage) as Arc<dyn EvidenceStoragePort>,
+        );
+
+        let trade_id = format!("0x{}", "e".repeat(64));
+        let deal = sample_bound_deal(&trade_id, DealStatus::Disputed);
+        let buyer = deal.buyer.clone().unwrap();
+        DealRepository::save(store.as_ref(), &deal).await.unwrap();
+
+        let dispute = DisputeRepository::save(
+            store.as_ref(),
+            &Dispute {
+                id: Some(10),
+                trade_id: trade_id.clone(),
+                opened_by: buyer.clone(),
+                reason: "Defective artifact".to_string(),
+                summary: "Verifying local file SHA-256 check.".to_string(),
+                status: DisputeStatus::Open,
+                buyer_award_wei: None,
+                seller_award_wei: None,
+                resolution_rationale: None,
+                open_tx_hash: None,
+                resolve_tx_hash: None,
+                disputed_at: Some(Utc::now()),
+                dispute_timeout_seconds: DEFAULT_DISPUTE_TIMEOUT_SECONDS,
+                created_at: Utc::now(),
+                resolved_at: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let original_bytes = b"hello".to_vec();
+        let sha256_hex =
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824".to_string();
+        let storage_key = "10/proof.txt".to_string();
+        storage
+            .files
+            .lock()
+            .unwrap()
+            .insert(storage_key.clone(), original_bytes.clone());
+
+        let evidence = DisputeEvidenceRepository::save(
+            store.as_ref(),
+            &DisputeEvidence {
+                id: Some(55),
+                dispute_id: dispute.id.unwrap(),
+                submitted_by: buyer.clone(),
+                title: "Proof".to_string(),
+                notes: "Original file".to_string(),
+                file_name: Some("proof.txt".to_string()),
+                mime_type: Some("text/plain".to_string()),
+                size_bytes: Some(original_bytes.len() as i64),
+                sha256_hex: Some(sha256_hex),
+                storage_key: Some(storage_key.clone()),
+                created_at: Utc::now(),
+            },
+        )
+        .await
+        .unwrap();
+
+        // Untampered LocalFile is loaded, verified, and returned as Bytes
+        let target = dispute_uc
+            .prepare_evidence_download(dispute.id.unwrap(), evidence.id.unwrap(), &buyer)
+            .await
+            .expect("valid local evidence download");
+        assert_eq!(
+            target.payload,
+            EvidenceDownloadPayload::Bytes(original_bytes)
+        );
+
+        // Tamper with stored file bytes -> prepare_evidence_download must reject with SHA-256 mismatch
+        storage
+            .files
+            .lock()
+            .unwrap()
+            .insert(storage_key, b"tampered-on-disk-bytes".to_vec());
+        let err = dispute_uc
+            .prepare_evidence_download(dispute.id.unwrap(), evidence.id.unwrap(), &buyer)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DomainError::Internal(_)));
+        assert!(err.to_string().contains("SHA-256 mismatch"));
+    }
 }

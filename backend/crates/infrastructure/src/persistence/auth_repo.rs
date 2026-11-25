@@ -150,6 +150,23 @@ async fn consume_nonce_conn(
     Ok(res.rows_affected() == 1)
 }
 
+async fn delete_expired_nonces_before_conn(
+    conn: &mut PgConnection,
+    cutoff: DateTime<Utc>,
+) -> Result<u64, DomainError> {
+    let res = sqlx::query(
+        r#"
+        DELETE FROM auth_nonces
+        WHERE expires_at < $1
+        "#,
+    )
+    .bind(cutoff)
+    .execute(conn)
+    .await
+    .map_err(map_sqlx_err)?;
+    Ok(res.rows_affected())
+}
+
 async fn upsert_user_conn(
     conn: &mut PgConnection,
     wallet_address: &str,
@@ -223,6 +240,11 @@ impl AuthNonceRepository for PgAuthNonceRepository {
         let mut conn = acquire_conn(&self.pool).await?;
         consume_nonce_conn(&mut conn, nonce, wallet_address, chain_id, now).await
     }
+
+    async fn delete_expired_before(&self, cutoff: DateTime<Utc>) -> Result<u64, DomainError> {
+        let mut conn = acquire_conn(&self.pool).await?;
+        delete_expired_nonces_before_conn(&mut conn, cutoff).await
+    }
 }
 
 pub(crate) struct PgTxAuthNonceRepository {
@@ -265,6 +287,14 @@ impl AuthNonceRepository for PgTxAuthNonceRepository {
             .as_mut()
             .ok_or_else(|| DomainError::internal("Transaction already finalized"))?;
         consume_nonce_conn(tx, nonce, wallet_address, chain_id, now).await
+    }
+
+    async fn delete_expired_before(&self, cutoff: DateTime<Utc>) -> Result<u64, DomainError> {
+        let mut guard = self.tx.lock().await;
+        let tx = guard
+            .as_mut()
+            .ok_or_else(|| DomainError::internal("Transaction already finalized"))?;
+        delete_expired_nonces_before_conn(tx, cutoff).await
     }
 }
 

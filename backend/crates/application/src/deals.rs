@@ -8,13 +8,17 @@ use safedeal_domain::blockchain::{
 };
 use safedeal_domain::canonical_terms::{trim_js_whitespace, CanonicalInput, CanonicalTermsHasher};
 use safedeal_domain::deal::{BlockchainTransaction, Deal, DealEvent, DealStatus};
-use safedeal_domain::dispute::AuditLogEntry;
+use safedeal_domain::dispute::{
+    AuditLogEntry, Dispute, DisputeStatus, DEFAULT_DISPUTE_TIMEOUT_SECONDS,
+};
 use safedeal_domain::ports::{
     in_tx, BlockchainGateway, DealEventRepository, DealRepository, DisputeRepository, PageSlice,
     UnitOfWork,
 };
 use safedeal_shared::{CorrelationIdContext, DomainError, EthFormatValidator, ZERO_ADDRESS};
 use std::str::FromStr;
+
+use crate::indexer::{AUTO_INDEXED_DISPUTE_REASON, AUTO_INDEXED_DISPUTE_SUMMARY};
 
 const MIN_INSPECTION_SECONDS: i64 = 3600;
 const MAX_INSPECTION_SECONDS: i64 = 30 * 86400;
@@ -686,6 +690,10 @@ impl SyncDealUseCase {
                 let mut seller_award = current.seller_award_wei;
                 let mut resolved_create_tx_hash = current.create_tx_hash;
                 let mut resolved_funded_at = current.funded_at;
+                let mut receipt_disputed_at: Option<DateTime<Utc>> = None;
+                let mut receipt_dispute_actor: Option<String> = None;
+                let mut receipt_dispute_open_tx: Option<String> = None;
+                let mut receipt_resolve_tx: Option<String> = None;
 
                 if let Some(ref rec) = receipt {
                     for ev in &rec.decoded_events {
@@ -708,6 +716,14 @@ impl SyncDealUseCase {
                             resolved_funded_at =
                                 DateTime::from_timestamp(ev.block_timestamp_epoch, 0);
                         }
+                        if ev.event_type == OnChainEventType::DisputeOpened {
+                            if ev.block_timestamp_epoch > 0 {
+                                receipt_disputed_at =
+                                    DateTime::from_timestamp(ev.block_timestamp_epoch, 0);
+                            }
+                            receipt_dispute_actor = ev.actor_address.clone();
+                            receipt_dispute_open_tx = Some(ev.tx_hash.clone());
+                        }
                         if matches!(
                             ev.event_type,
                             OnChainEventType::DisputeResolved
@@ -715,8 +731,20 @@ impl SyncDealUseCase {
                         ) {
                             buyer_award = ev.buyer_award_wei.clone();
                             seller_award = ev.seller_award_wei.clone();
+                            receipt_resolve_tx = Some(ev.tx_hash.clone());
                         }
                     }
+                }
+
+                if next_status == DealStatus::Resolved {
+                    buyer_award = preserve_non_zero_award(
+                        buyer_award.as_deref(),
+                        Some(snapshot.buyer_award_wei.as_str()),
+                    );
+                    seller_award = preserve_non_zero_award(
+                        seller_award.as_deref(),
+                        Some(snapshot.seller_award_wei.as_str()),
+                    );
                 }
 
                 let funded_at = if resolved_funded_at.is_none()
@@ -760,6 +788,77 @@ impl SyncDealUseCase {
                 };
 
                 let saved = repos.deals().save(&updated).await?;
+
+                if next_status == DealStatus::Disputed
+                    && repos
+                        .disputes()
+                        .find_by_trade_id(&trade_id)
+                        .await?
+                        .is_none()
+                {
+                    let disputed_at = receipt_disputed_at
+                        .or_else(|| {
+                            (snapshot.disputed_at_epoch > 0)
+                                .then(|| DateTime::from_timestamp(snapshot.disputed_at_epoch, 0))
+                                .flatten()
+                        })
+                        .unwrap_or(now);
+                    repos
+                        .disputes()
+                        .save(&Dispute {
+                            id: None,
+                            trade_id: trade_id.clone(),
+                            opened_by: receipt_dispute_actor.unwrap_or_else(|| caller.clone()),
+                            reason: AUTO_INDEXED_DISPUTE_REASON.to_string(),
+                            summary: AUTO_INDEXED_DISPUTE_SUMMARY.to_string(),
+                            status: DisputeStatus::Open,
+                            buyer_award_wei: None,
+                            seller_award_wei: None,
+                            resolution_rationale: None,
+                            open_tx_hash: receipt_dispute_open_tx.or_else(|| tx_hash.clone()),
+                            resolve_tx_hash: None,
+                            disputed_at: Some(disputed_at),
+                            dispute_timeout_seconds: DEFAULT_DISPUTE_TIMEOUT_SECONDS,
+                            created_at: now,
+                            resolved_at: None,
+                        })
+                        .await?;
+                } else if next_status == DealStatus::Resolved {
+                    if let Some(existing_dispute) =
+                        repos.disputes().find_by_trade_id(&trade_id).await?
+                    {
+                        if existing_dispute.status == DisputeStatus::Open {
+                            let resolved_buyer_award = preserve_non_zero_award(
+                                existing_dispute.buyer_award_wei.as_deref(),
+                                saved
+                                    .buyer_award_wei
+                                    .as_deref()
+                                    .or(Some(snapshot.buyer_award_wei.as_str())),
+                            );
+                            let resolved_seller_award = preserve_non_zero_award(
+                                existing_dispute.seller_award_wei.as_deref(),
+                                saved
+                                    .seller_award_wei
+                                    .as_deref()
+                                    .or(Some(snapshot.seller_award_wei.as_str())),
+                            );
+                            repos
+                                .disputes()
+                                .save(&Dispute {
+                                    status: DisputeStatus::Resolved,
+                                    buyer_award_wei: resolved_buyer_award,
+                                    seller_award_wei: resolved_seller_award,
+                                    resolve_tx_hash: existing_dispute
+                                        .resolve_tx_hash
+                                        .or(receipt_resolve_tx)
+                                        .or_else(|| tx_hash.clone()),
+                                    resolved_at: existing_dispute.resolved_at.or(Some(now)),
+                                    ..existing_dispute
+                                })
+                                .await?;
+                        }
+                    }
+                }
 
                 if let Some(rec) = receipt {
                     let mut operation_name = "SYNC".to_string();
@@ -974,6 +1073,26 @@ fn validate_snapshot_matches_deal(
     Ok(())
 }
 
+fn preserve_non_zero_award(existing: Option<&str>, candidate: Option<&str>) -> Option<String> {
+    let is_non_zero = |v: &str| {
+        let trimmed = v.trim();
+        !trimmed.is_empty() && trimmed != "0"
+    };
+    if let Some(e) = existing {
+        if is_non_zero(e) {
+            return Some(e.to_string());
+        }
+    }
+    if let Some(c) = candidate {
+        if is_non_zero(c) {
+            return Some(c.to_string());
+        }
+    }
+    existing
+        .map(str::to_string)
+        .or_else(|| candidate.map(str::to_string))
+}
+
 fn require_trimmed(raw: &str, field: &str, min: usize, max: usize) -> Result<String, DomainError> {
     let trimmed = trim_js_whitespace(raw);
     let char_len = trimmed.chars().count();
@@ -1012,6 +1131,7 @@ impl CleanupOrphanDraftsUseCase {
         in_tx(self.uow.as_ref(), move |repos| {
             Box::pin(async move {
                 let purged = repos.deals().purge_expired_drafts(cutoff).await?;
+                let purged_nonces = repos.auth_nonces().delete_expired_before(cutoff).await?;
                 if purged > 0 {
                     repos
                         .audit_logs()
@@ -1023,7 +1143,7 @@ impl CleanupOrphanDraftsUseCase {
                             resource_id: format!("purged_count={purged}"),
                             correlation_id: Some(correlation_id),
                             details: format!(
-                                "Purged {purged} orphan deal drafts created before {cutoff}"
+                                "Purged {purged} orphan deal drafts and {purged_nonces} expired auth nonces created before {cutoff}"
                             ),
                             created_at: Utc::now(),
                         })
@@ -1033,5 +1153,161 @@ impl CleanupOrphanDraftsUseCase {
             })
         })
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{sample_bound_deal, FakeBlockchainGateway, InMemoryStore};
+    use safedeal_domain::auth::AuthNonce;
+    use safedeal_domain::ports::AuthNonceRepository;
+
+    #[tokio::test]
+    async fn sync_deal_auto_inserts_fallback_dispute_and_resolves_open_dispute_preserving_awards() {
+        let store = InMemoryStore::new();
+        let gateway = FakeBlockchainGateway::new(true);
+        let sync_uc = SyncDealUseCase::new(
+            Arc::clone(&store) as Arc<dyn UnitOfWork>,
+            Arc::clone(&gateway) as Arc<dyn BlockchainGateway>,
+        );
+
+        let trade_id = format!("0x{}", "a".repeat(64));
+        let deal = sample_bound_deal(&trade_id, DealStatus::Funded);
+        DealRepository::save(store.as_ref(), &deal).await.unwrap();
+
+        let disputed_at_epoch = Utc::now().timestamp();
+        {
+            let mut gw = gateway.state.lock().unwrap();
+            gw.trades.insert(
+                trade_id.clone(),
+                OnChainTradeSnapshot {
+                    trade_id: trade_id.clone(),
+                    seller: deal.seller.clone(),
+                    buyer: deal.buyer.clone(),
+                    arbiter: deal.arbiter.clone(),
+                    amount_wei: deal.amount_wei.clone(),
+                    terms_hash: deal.terms_hash.clone(),
+                    funding_deadline_epoch: deal.funding_deadline.timestamp(),
+                    delivery_deadline_epoch: deal.delivery_deadline.timestamp(),
+                    inspection_window_seconds: deal.inspection_window_seconds,
+                    delivered_at_epoch: 0,
+                    disputed_at_epoch,
+                    chain_status_ordinal: 6, // DISPUTED
+                    settled: false,
+                    buyer_award_wei: "0".to_string(),
+                    seller_award_wei: "0".to_string(),
+                },
+            );
+        }
+
+        let synced_disputed = sync_uc
+            .execute(&trade_id, None, &deal.seller)
+            .await
+            .unwrap();
+        assert_eq!(synced_disputed.status, DealStatus::Disputed);
+
+        let auto_dispute = DisputeRepository::find_by_trade_id(store.as_ref(), &trade_id)
+            .await
+            .unwrap()
+            .expect("fallback dispute row created on sync");
+        assert_eq!(auto_dispute.reason, AUTO_INDEXED_DISPUTE_REASON);
+        assert_eq!(auto_dispute.status, DisputeStatus::Open);
+        assert_eq!(
+            auto_dispute.disputed_at.map(|d| d.timestamp()),
+            Some(disputed_at_epoch)
+        );
+
+        // Pre-populate non-zero awards on the open dispute and simulate RESOLVED snapshot with "0"
+        DisputeRepository::save(
+            store.as_ref(),
+            &Dispute {
+                buyer_award_wei: Some("1200000000000000000".to_string()),
+                seller_award_wei: Some("800000000000000000".to_string()),
+                ..auto_dispute
+            },
+        )
+        .await
+        .unwrap();
+
+        {
+            let mut gw = gateway.state.lock().unwrap();
+            if let Some(snap) = gw.trades.get_mut(&trade_id) {
+                snap.chain_status_ordinal = 7; // RESOLVED
+                snap.settled = true;
+                snap.buyer_award_wei = "0".to_string();
+                snap.seller_award_wei = "0".to_string();
+            }
+        }
+
+        let synced_resolved = sync_uc
+            .execute(&trade_id, None, &deal.seller)
+            .await
+            .unwrap();
+        assert_eq!(synced_resolved.status, DealStatus::Resolved);
+
+        let resolved_dispute = DisputeRepository::find_by_trade_id(store.as_ref(), &trade_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(resolved_dispute.status, DisputeStatus::Resolved);
+        assert_eq!(
+            resolved_dispute.buyer_award_wei.as_deref(),
+            Some("1200000000000000000")
+        );
+        assert_eq!(
+            resolved_dispute.seller_award_wei.as_deref(),
+            Some("800000000000000000")
+        );
+    }
+
+    #[tokio::test]
+    async fn cleanup_orphan_drafts_also_deletes_expired_auth_nonces() {
+        let store = InMemoryStore::new();
+        let cleanup_uc =
+            CleanupOrphanDraftsUseCase::new(Arc::clone(&store) as Arc<dyn UnitOfWork>, 86_400);
+
+        let now = Utc::now();
+        let expired_nonce = AuthNonce {
+            id: None,
+            nonce: "expired-nonce-1".to_string(),
+            wallet_address: "0x1111111111111111111111111111111111111111".to_string(),
+            chain_id: 43113,
+            siwe_message: "expired".to_string(),
+            issued_at: now - chrono::Duration::hours(30),
+            expires_at: now - chrono::Duration::hours(29),
+            consumed_at: None,
+        };
+        let active_nonce = AuthNonce {
+            id: None,
+            nonce: "active-nonce-2".to_string(),
+            wallet_address: "0x1111111111111111111111111111111111111111".to_string(),
+            chain_id: 43113,
+            siwe_message: "active".to_string(),
+            issued_at: now,
+            expires_at: now + chrono::Duration::minutes(5),
+            consumed_at: None,
+        };
+        AuthNonceRepository::save(store.as_ref(), &expired_nonce)
+            .await
+            .unwrap();
+        AuthNonceRepository::save(store.as_ref(), &active_nonce)
+            .await
+            .unwrap();
+
+        cleanup_uc.execute().await.unwrap();
+
+        assert!(
+            AuthNonceRepository::find_by_nonce(store.as_ref(), "expired-nonce-1")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            AuthNonceRepository::find_by_nonce(store.as_ref(), "active-nonce-2")
+                .await
+                .unwrap()
+                .is_some()
+        );
     }
 }

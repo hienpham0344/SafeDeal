@@ -1,5 +1,6 @@
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use safedeal_domain::ports::{EvidenceDownloadPayload, EvidenceStoragePort, StoredAttachment};
@@ -9,6 +10,8 @@ use uuid::Uuid;
 
 use crate::config::{EvidenceConfig, EvidenceStorageBackend};
 pub use crate::storage_s3::S3EvidenceStorageAdapter;
+
+const STORAGE_READINESS_CACHE_TTL: Duration = Duration::from_secs(5);
 
 /// Builds the configured evidence storage backend (`local` filesystem or `s3`-compatible object storage).
 pub fn build_evidence_storage(
@@ -122,6 +125,7 @@ pub(crate) fn validate_storage_key(storage_key: &str) -> Result<Vec<String>, Dom
 pub struct LocalEvidenceStorageAdapter {
     root_dir: PathBuf,
     max_bytes: usize,
+    readiness_cache: Mutex<Option<(Instant, bool)>>,
 }
 
 impl LocalEvidenceStorageAdapter {
@@ -140,6 +144,7 @@ impl LocalEvidenceStorageAdapter {
         Ok(Self {
             root_dir,
             max_bytes: config.max_bytes,
+            readiness_cache: Mutex::new(None),
         })
     }
 
@@ -273,7 +278,15 @@ impl EvidenceStoragePort for LocalEvidenceStorageAdapter {
     }
 
     async fn is_storage_ready(&self) -> bool {
-        match tokio::fs::metadata(&self.root_dir).await {
+        if let Ok(guard) = self.readiness_cache.lock() {
+            if let Some((checked_at, ready)) = *guard {
+                if checked_at.elapsed() < STORAGE_READINESS_CACHE_TTL {
+                    return ready;
+                }
+            }
+        }
+
+        let ready = match tokio::fs::metadata(&self.root_dir).await {
             Ok(meta) if meta.is_dir() && !meta.permissions().readonly() => {
                 let probe = self.root_dir.join(format!(".ready_{}", Uuid::new_v4()));
                 match tokio::fs::OpenOptions::new()
@@ -290,7 +303,13 @@ impl EvidenceStoragePort for LocalEvidenceStorageAdapter {
                 }
             }
             _ => false,
+        };
+
+        if let Ok(mut guard) = self.readiness_cache.lock() {
+            *guard = Some((Instant::now(), ready));
         }
+
+        ready
     }
 }
 
@@ -450,5 +469,24 @@ mod tests {
             storage.resolve_attachment_path(&stored.storage_key),
             Err(DomainError::NotFound { .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn caches_is_storage_ready_for_five_seconds_before_reprobing_disk() {
+        let dir = TempDir::new().unwrap();
+        let storage = adapter(dir.path(), 1024);
+
+        assert!(storage.is_storage_ready().await);
+
+        // Even if the underlying directory is removed while cache is fresh, cached result is returned
+        std::fs::remove_dir_all(dir.path()).unwrap();
+        assert!(storage.is_storage_ready().await);
+
+        // Expire cache entry manually and verify disk is re-probed
+        {
+            let mut guard = storage.readiness_cache.lock().unwrap();
+            *guard = Some((Instant::now() - Duration::from_secs(6), true));
+        }
+        assert!(!storage.is_storage_ready().await);
     }
 }

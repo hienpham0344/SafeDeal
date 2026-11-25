@@ -6,3 +6,6 @@ pub mod auth;
 pub mod deals;
 pub mod disputes;
 pub mod indexer;
+
+#[cfg(test)]
+pub(crate) mod test_support;

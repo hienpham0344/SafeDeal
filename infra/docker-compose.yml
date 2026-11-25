@@ -40,12 +40,12 @@ services:
       anvil:
         condition: service_healthy
     environment:
-      APP_ENV: ${APP_ENV:-${SPRING_PROFILES_ACTIVE:-local}}
+      APP_ENV: ${APP_ENV:-local}
       SERVER_PORT: 8080
       DB_URL: postgres://postgres:5432/${DB_NAME:-safedeal}
       DB_USERNAME: ${DB_USERNAME:-safedeal}
       DB_PASSWORD: ${DB_PASSWORD:-safedeal}
-      JWT_SECRET: ${JWT_SECRET:-}
+      JWT_SECRET: ${JWT_SECRET:-dev-only-local-docker-compose-jwt-secret-at-least-32-chars}
       SIWE_DOMAIN: ${SIWE_DOMAIN:-localhost:${FRONTEND_PORT:-5173}}
       SIWE_URI: ${SIWE_URI:-http://localhost:${FRONTEND_PORT:-5173}}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}

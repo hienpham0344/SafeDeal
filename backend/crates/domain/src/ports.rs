@@ -58,6 +58,8 @@ pub trait AuthNonceRepository: Send + Sync {
         chain_id: i64,
         now: DateTime<Utc>,
     ) -> Result<bool, DomainError>;
+    /// Deletes expired SIWE nonces where `expires_at < cutoff`.
+    async fn delete_expired_before(&self, cutoff: DateTime<Utc>) -> Result<u64, DomainError>;
 }
 
 #[async_trait]

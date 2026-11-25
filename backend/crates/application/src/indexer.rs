@@ -3,10 +3,16 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use safedeal_domain::blockchain::{ChainSyncState, OnChainEventType, VerifiedChainEvent};
 use safedeal_domain::deal::{Deal, DealEvent, DealStatus};
-use safedeal_domain::dispute::{Dispute, DisputeStatus, DisputeVote, VoterRole};
+use safedeal_domain::dispute::{
+    Dispute, DisputeStatus, DisputeVote, VoterRole, DEFAULT_DISPUTE_TIMEOUT_SECONDS,
+};
 use safedeal_domain::ports::{in_tx, BlockchainGateway, TxRepos, UnitOfWork};
 use safedeal_shared::{DomainError, EthFormatValidator, ZERO_ADDRESS};
 use tokio::sync::Mutex;
+
+pub const AUTO_INDEXED_DISPUTE_REASON: &str = "On-chain dispute opened";
+pub const AUTO_INDEXED_DISPUTE_SUMMARY: &str =
+    "Synced automatically from on-chain DisputeOpened event.";
 
 pub struct BlockchainEventIndexerService {
     uow: Arc<dyn UnitOfWork>,
@@ -315,22 +321,26 @@ async fn apply_event_to_deal_projection<'a>(
         .await?;
 
     if ev.event_type == OnChainEventType::DisputeOpened {
-        if let Some(existing) = repos.disputes().find_by_trade_id(trade_id).await? {
-            if existing.disputed_at.is_none() {
-                repos
-                    .disputes()
-                    .save(&Dispute {
-                        disputed_at: Some(event_time),
-                        ..existing
-                    })
-                    .await?;
-            }
+        let existing =
+            ensure_dispute_record_exists(repos, trade_id, &current, ev, event_time, timeline_time)
+                .await?;
+        if existing.disputed_at.is_none() || existing.open_tx_hash.is_none() {
+            repos
+                .disputes()
+                .save(&Dispute {
+                    disputed_at: existing.disputed_at.or(Some(event_time)),
+                    open_tx_hash: existing.open_tx_hash.or_else(|| Some(ev.tx_hash.clone())),
+                    ..existing
+                })
+                .await?;
         }
     }
 
     if ev.event_type == OnChainEventType::DisputeVoteSubmitted {
-        if let (Some(existing), Some(actor), Some(buyer_wei), Some(seller_wei), Some(prop_hash)) = (
-            repos.disputes().find_by_trade_id(trade_id).await?,
+        let existing =
+            ensure_dispute_record_exists(repos, trade_id, &current, ev, event_time, timeline_time)
+                .await?;
+        if let (Some(actor), Some(buyer_wei), Some(seller_wei), Some(prop_hash)) = (
             ev.actor_address.as_deref(),
             ev.buyer_award_wei.as_ref(),
             ev.seller_award_wei.as_ref(),
@@ -378,54 +388,206 @@ async fn apply_event_to_deal_projection<'a>(
     ) {
         const TIMEOUT_RATIONALE: &str =
             "Automatic 50/50 stalemate timeout fallback executed after 14-day dispute window.";
-        if let Some(existing) = repos.disputes().find_by_trade_id(trade_id).await? {
-            if existing.status == DisputeStatus::Open {
-                let rationale = existing.resolution_rationale.clone().or_else(|| {
-                    (ev.event_type == OnChainEventType::DisputeResolvedByTimeout)
-                        .then(|| TIMEOUT_RATIONALE.to_string())
-                });
-                repos
-                    .disputes()
-                    .save(&Dispute {
-                        id: existing.id,
-                        trade_id: existing.trade_id,
-                        opened_by: existing.opened_by,
-                        reason: existing.reason,
-                        summary: existing.summary,
-                        status: DisputeStatus::Resolved,
-                        buyer_award_wei: ev.buyer_award_wei.clone(),
-                        seller_award_wei: ev.seller_award_wei.clone(),
-                        resolution_rationale: rationale,
-                        open_tx_hash: existing.open_tx_hash,
-                        resolve_tx_hash: Some(ev.tx_hash.clone()),
-                        disputed_at: existing.disputed_at,
-                        dispute_timeout_seconds: existing.dispute_timeout_seconds,
-                        created_at: existing.created_at,
-                        resolved_at: Some(event_time),
-                    })
-                    .await?;
-            } else if existing.status == DisputeStatus::Resolved
-                && ev.event_type == OnChainEventType::DisputeResolvedByTimeout
-                && existing
-                    .resolution_rationale
-                    .as_deref()
-                    .is_none_or(|r| r.trim().is_empty())
-            {
-                let resolve_tx_hash = existing
-                    .resolve_tx_hash
-                    .clone()
-                    .or_else(|| Some(ev.tx_hash.clone()));
-                repos
-                    .disputes()
-                    .save(&Dispute {
-                        resolution_rationale: Some(TIMEOUT_RATIONALE.to_string()),
-                        resolve_tx_hash,
-                        ..existing
-                    })
-                    .await?;
-            }
+        let existing =
+            ensure_dispute_record_exists(repos, trade_id, &current, ev, event_time, timeline_time)
+                .await?;
+        if existing.status == DisputeStatus::Open {
+            let rationale = existing.resolution_rationale.clone().or_else(|| {
+                (ev.event_type == OnChainEventType::DisputeResolvedByTimeout)
+                    .then(|| TIMEOUT_RATIONALE.to_string())
+            });
+            repos
+                .disputes()
+                .save(&Dispute {
+                    id: existing.id,
+                    trade_id: existing.trade_id,
+                    opened_by: existing.opened_by,
+                    reason: existing.reason,
+                    summary: existing.summary,
+                    status: DisputeStatus::Resolved,
+                    buyer_award_wei: ev.buyer_award_wei.clone(),
+                    seller_award_wei: ev.seller_award_wei.clone(),
+                    resolution_rationale: rationale,
+                    open_tx_hash: existing.open_tx_hash,
+                    resolve_tx_hash: Some(ev.tx_hash.clone()),
+                    disputed_at: existing.disputed_at,
+                    dispute_timeout_seconds: existing.dispute_timeout_seconds,
+                    created_at: existing.created_at,
+                    resolved_at: Some(event_time),
+                })
+                .await?;
+        } else if existing.status == DisputeStatus::Resolved
+            && ev.event_type == OnChainEventType::DisputeResolvedByTimeout
+            && existing
+                .resolution_rationale
+                .as_deref()
+                .is_none_or(|r| r.trim().is_empty())
+        {
+            let resolve_tx_hash = existing
+                .resolve_tx_hash
+                .clone()
+                .or_else(|| Some(ev.tx_hash.clone()));
+            repos
+                .disputes()
+                .save(&Dispute {
+                    resolution_rationale: Some(TIMEOUT_RATIONALE.to_string()),
+                    resolve_tx_hash,
+                    ..existing
+                })
+                .await?;
         }
     }
 
     Ok(())
+}
+
+async fn ensure_dispute_record_exists<'a>(
+    repos: &(dyn TxRepos + 'a),
+    trade_id: &str,
+    current: &Deal,
+    ev: &VerifiedChainEvent,
+    event_time: DateTime<Utc>,
+    timeline_time: DateTime<Utc>,
+) -> Result<Dispute, DomainError> {
+    if let Some(existing) = repos.disputes().find_by_trade_id(trade_id).await? {
+        return Ok(existing);
+    }
+    repos
+        .disputes()
+        .save(&Dispute {
+            id: None,
+            trade_id: trade_id.to_string(),
+            opened_by: ev
+                .actor_address
+                .clone()
+                .unwrap_or_else(|| current.seller.clone()),
+            reason: AUTO_INDEXED_DISPUTE_REASON.to_string(),
+            summary: AUTO_INDEXED_DISPUTE_SUMMARY.to_string(),
+            status: DisputeStatus::Open,
+            buyer_award_wei: None,
+            seller_award_wei: None,
+            resolution_rationale: None,
+            open_tx_hash: Some(ev.tx_hash.clone()),
+            resolve_tx_hash: None,
+            disputed_at: Some(event_time),
+            dispute_timeout_seconds: DEFAULT_DISPUTE_TIMEOUT_SECONDS,
+            created_at: timeline_time,
+            resolved_at: None,
+        })
+        .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{
+        sample_bound_deal, FakeBlockchainGateway, InMemoryStore, TEST_CONTRACT,
+    };
+    use safedeal_domain::ports::{DealRepository, DisputeRepository, DisputeVoteRepository};
+
+    #[tokio::test]
+    async fn auto_creates_fallback_dispute_for_on_chain_dispute_opened_vote_and_resolution() {
+        let store = InMemoryStore::new();
+        let gateway = FakeBlockchainGateway::new(true);
+        let indexer = BlockchainEventIndexerService::new(
+            Arc::clone(&store) as Arc<dyn UnitOfWork>,
+            Arc::clone(&gateway) as Arc<dyn BlockchainGateway>,
+        );
+
+        let trade_id = format!("0x{}", "1".repeat(64));
+        let deal = sample_bound_deal(&trade_id, DealStatus::Funded);
+        DealRepository::save(store.as_ref(), &deal).await.unwrap();
+
+        let now_epoch = Utc::now().timestamp();
+        let open_tx = format!("0x{}", "2".repeat(64));
+        let vote_tx = format!("0x{}", "3".repeat(64));
+        let resolve_tx = format!("0x{}", "4".repeat(64));
+        let prop_hash = format!("0x{}", "5".repeat(64));
+
+        {
+            let mut gw = gateway.state.lock().unwrap();
+            gw.latest_block = 20;
+            gw.logs = vec![
+                VerifiedChainEvent {
+                    tx_hash: open_tx.clone(),
+                    log_index: 0,
+                    block_number: 10,
+                    block_timestamp_epoch: now_epoch,
+                    contract_address: TEST_CONTRACT.to_string(),
+                    event_type: OnChainEventType::DisputeOpened,
+                    trade_id: Some(trade_id.clone()),
+                    actor_address: deal.buyer.clone(),
+                    buyer_address: deal.buyer.clone(),
+                    amount_wei: None,
+                    buyer_award_wei: None,
+                    seller_award_wei: None,
+                    terms_hash: None,
+                    proposal_hash: None,
+                },
+                VerifiedChainEvent {
+                    tx_hash: vote_tx.clone(),
+                    log_index: 0,
+                    block_number: 11,
+                    block_timestamp_epoch: now_epoch + 5,
+                    contract_address: TEST_CONTRACT.to_string(),
+                    event_type: OnChainEventType::DisputeVoteSubmitted,
+                    trade_id: Some(trade_id.clone()),
+                    actor_address: Some(deal.arbiter.clone()),
+                    buyer_address: deal.buyer.clone(),
+                    amount_wei: None,
+                    buyer_award_wei: Some("1500000000000000000".to_string()),
+                    seller_award_wei: Some("500000000000000000".to_string()),
+                    terms_hash: None,
+                    proposal_hash: Some(prop_hash.clone()),
+                },
+                VerifiedChainEvent {
+                    tx_hash: resolve_tx.clone(),
+                    log_index: 0,
+                    block_number: 12,
+                    block_timestamp_epoch: now_epoch + 10,
+                    contract_address: TEST_CONTRACT.to_string(),
+                    event_type: OnChainEventType::DisputeResolved,
+                    trade_id: Some(trade_id.clone()),
+                    actor_address: deal.buyer.clone(),
+                    buyer_address: deal.buyer.clone(),
+                    amount_wei: None,
+                    buyer_award_wei: Some("1500000000000000000".to_string()),
+                    seller_award_wei: Some("500000000000000000".to_string()),
+                    terms_hash: None,
+                    proposal_hash: None,
+                },
+            ];
+        }
+
+        let count = indexer.poll_and_index().await.unwrap();
+        assert_eq!(count, 3);
+
+        let dispute = DisputeRepository::find_by_trade_id(store.as_ref(), &trade_id)
+            .await
+            .unwrap()
+            .expect("auto-created dispute row");
+        assert_eq!(dispute.reason, AUTO_INDEXED_DISPUTE_REASON);
+        assert_eq!(dispute.summary, AUTO_INDEXED_DISPUTE_SUMMARY);
+        assert_eq!(dispute.status, DisputeStatus::Resolved);
+        assert_eq!(dispute.open_tx_hash.as_deref(), Some(open_tx.as_str()));
+        assert_eq!(
+            dispute.resolve_tx_hash.as_deref(),
+            Some(resolve_tx.as_str())
+        );
+        assert_eq!(
+            dispute.buyer_award_wei.as_deref(),
+            Some("1500000000000000000")
+        );
+        assert_eq!(
+            dispute.seller_award_wei.as_deref(),
+            Some("500000000000000000")
+        );
+
+        let votes = DisputeVoteRepository::find_by_dispute_id(store.as_ref(), dispute.id.unwrap())
+            .await
+            .unwrap();
+        assert_eq!(votes.len(), 1);
+        assert_eq!(votes[0].voter_role, VoterRole::Arbiter);
+        assert_eq!(votes[0].proposal_hash, prop_hash);
+    }
 }
