@@ -58,7 +58,38 @@ const mockExecutor = {
   withdraw: vi.fn(),
 };
 
-let mockOnChainTrade: { data: { status: number } | undefined; refetch: ReturnType<typeof vi.fn> } = {
+let mockOnChainTrade: {
+  data:
+    | {
+        status: number;
+        seller?: `0x${string}`;
+        buyer?: `0x${string}`;
+        arbiter?: `0x${string}`;
+        amount?: bigint;
+        termsHash?: `0x${string}`;
+        deliveredAt?: bigint;
+      }
+    | undefined;
+  isSuccess?: boolean;
+  refetch: ReturnType<typeof vi.fn>;
+} = {
+  data: undefined,
+  refetch: vi.fn(),
+};
+
+let mockOnChainDisputeVotes: {
+  data:
+    | {
+        buyerVoteHash: `0x${string}`;
+        sellerVoteHash: `0x${string}`;
+        arbiterVoteHash: `0x${string}`;
+        disputedAt: bigint;
+        timeoutAt: bigint;
+      }
+    | undefined;
+  isSuccess?: boolean;
+  refetch: ReturnType<typeof vi.fn>;
+} = {
   data: undefined,
   refetch: vi.fn(),
 };
@@ -152,6 +183,7 @@ vi.mock("@/features/authentication/hooks/useAuthSession", () => ({
 vi.mock("@/features/escrow/hooks/useEscrowActions", () => ({
   useClaimableBalance: () => ({ data: 500000000000000000n, refetch: vi.fn() }),
   useOnChainTrade: () => mockOnChainTrade,
+  useOnChainDisputeVotes: () => mockOnChainDisputeVotes,
   useEscrowContractExecutor: () => mockExecutor,
 }));
 
@@ -201,6 +233,7 @@ describe("SafeDeal Dashboard, DealDetails & Arbiter Pages", () => {
     vi.clearAllMocks();
     window.sessionStorage.clear();
     mockOnChainTrade = { data: undefined, refetch: vi.fn() };
+    mockOnChainDisputeVotes = { data: undefined, refetch: vi.fn() };
     mockSessionState = {
       ...mockSessionState,
       address: SELLER,
@@ -1537,6 +1570,174 @@ describe("SafeDeal Dashboard, DealDetails & Arbiter Pages", () => {
           credentials: "include",
         })
       );
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("blocks DealDetailsPage actions on On-Chain Integrity Mismatch or Unverified On-Chain Escrow and renders 3-Way Verified badge when matched", async () => {
+    const { termsHash, canonicalJson } = await computeCanonicalTermsHash({
+      version: 1,
+      chainId: sampleDealDetail.chainId,
+      seller: sampleDealDetail.seller,
+      buyer: sampleDealDetail.buyer,
+      arbiter: sampleDealDetail.arbiter,
+      amountWei: sampleDealDetail.amountWei,
+      fundingDeadline: Math.floor(Date.parse(sampleDealDetail.fundingDeadline) / 1000),
+      deliveryDeadline: Math.floor(Date.parse(sampleDealDetail.deliveryDeadline) / 1000),
+      inspectionWindowSeconds: sampleDealDetail.inspectionWindowSeconds,
+      title: sampleDealDetail.title,
+      description: sampleDealDetail.description,
+      terms: sampleDealDetail.terms,
+    });
+    const verifiedDeal: DealDetail = {
+      ...sampleDealDetail,
+      status: "FUNDED",
+      termsHash,
+      canonicalTermsJson: canonicalJson,
+    };
+
+    // 1) Spoofed API claims FUNDED while on-chain getTrade succeeded with status 0 (NONE)
+    getDealMock.mockResolvedValue(verifiedDeal);
+    getDealHistoryMock.mockResolvedValue({ events: [], transactions: [] });
+    mockOnChainTrade = {
+      data: { status: 0 },
+      isSuccess: true,
+      refetch: vi.fn(),
+    };
+
+    const view1 = renderWithQuery(
+      <Routes>
+        <Route path="/deals/:id" element={<DealDetailsPage />} />
+      </Routes>,
+      `/deals/${TRADE_ID}`
+    );
+
+    expect(await screen.findByText("Unverified On-Chain Escrow")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Mark Delivered" })).toBeDisabled();
+    view1.unmount();
+
+    // 2) Compromised API altered amountWei relative to on-chain getTrade
+    mockOnChainTrade = {
+      data: {
+        status: 2,
+        seller: SELLER,
+        buyer: BUYER,
+        arbiter: ARBITER,
+        amount: 100_000_000_000_000_000n, // 0.1 AVAX on-chain vs 2.0 AVAX in API
+        termsHash,
+      },
+      isSuccess: true,
+      refetch: vi.fn(),
+    };
+
+    const view2 = renderWithQuery(
+      <Routes>
+        <Route path="/deals/:id" element={<DealDetailsPage />} />
+      </Routes>,
+      `/deals/${TRADE_ID}`
+    );
+
+    expect(await screen.findByText("On-Chain Integrity Mismatch — Actions Blocked")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Mark Delivered" })).toBeDisabled();
+    view2.unmount();
+
+    // 3) Matching Browser SHA-256 = API = On-Chain renders 3-Way Verified badge
+    mockOnChainTrade = {
+      data: {
+        status: 2,
+        seller: SELLER,
+        buyer: BUYER,
+        arbiter: ARBITER,
+        amount: BigInt(verifiedDeal.amountWei),
+        termsHash,
+      },
+      isSuccess: true,
+      refetch: vi.fn(),
+    };
+
+    renderWithQuery(
+      <Routes>
+        <Route path="/deals/:id" element={<DealDetailsPage />} />
+      </Routes>,
+      `/deals/${TRADE_ID}`
+    );
+
+    expect(
+      await screen.findByText("3-Way Verified (Browser SHA-256 = API = Avalanche Contract)")
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Mark Delivered" })).toBeEnabled();
+  });
+
+  it("renders public read-only Live On-Chain Contract Verification panel on DealDetailsPage when disconnected", async () => {
+    mockSessionState = {
+      ...mockSessionState,
+      address: undefined,
+      isConnected: false,
+      isAuthenticated: false,
+    };
+    mockOnChainTrade = {
+      data: {
+        status: 2,
+        seller: SELLER,
+        buyer: BUYER,
+        arbiter: ARBITER,
+        amount: 2_000_000_000_000_000_000n,
+        termsHash: sampleDealDetail.termsHash,
+      },
+      isSuccess: true,
+      refetch: vi.fn(),
+    };
+
+    renderWithQuery(
+      <Routes>
+        <Route path="/deals/:id" element={<DealDetailsPage />} />
+      </Routes>,
+      `/deals/${TRADE_ID}`
+    );
+
+    expect(screen.getByText("Connect wallet to inspect deal")).toBeInTheDocument();
+    expect(await screen.findByText("Live On-Chain Contract Verification")).toBeInTheDocument();
+    expect(screen.getByText("2 AVAX")).toBeInTheDocument();
+  });
+
+  it("pre-fills CreateDealPage from extension deep-link query params, renders USD/VND sanity estimate, warns on address poisoning, and renders #privacy-policy on SupportPage", async () => {
+    const user = userEvent.setup();
+    renderWithQuery(
+      <CreateDealPage />,
+      "/create?title=Extension%20Escrow%20Draft&amountAvax=0.5&description=Captured%20from%20Chrome%20Side%20Panel&terms=Deliver%20signed%20build%20artifact"
+    );
+
+    expect(screen.getByLabelText("Deal Title")).toHaveValue("Extension Escrow Draft");
+    expect(screen.getByLabelText(/Amount/)).toHaveValue("0.5");
+    expect(screen.getByLabelText("Description")).toHaveValue("Captured from Chrome Side Panel");
+    expect(screen.getByLabelText(/Terms & Acceptance Criteria/)).toHaveValue("Deliver signed build artifact");
+    expect(screen.getByText(/\$12\.50 USD/)).toBeInTheDocument();
+    expect(screen.getByText(/317,500 VNĐ/)).toBeInTheDocument();
+
+    // Enter a vanity-poisoned arbiter sharing 4-char prefix (0xf39F) and suffix (2266) with SELLER
+    const poisonedArbiter = "0xf39F000000000000000000000000000000002266";
+    await user.clear(screen.getByLabelText("Arbiter Wallet Address"));
+    await user.type(screen.getByLabelText("Arbiter Wallet Address"), poisonedArbiter);
+    expect(await screen.findByText("Address Poisoning / Vanity Lookalike Warning")).toBeInTheDocument();
+
+    // Verify SupportPage renders #privacy-policy anchor target
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          status: "UP",
+          service: "safedeal-api",
+          chainId: 31337,
+          chainName: "Anvil Local",
+          escrowContractConfigured: true,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      )
+    );
+    try {
+      const supportView = renderWithQuery(<SupportPage />, "/support#privacy-policy");
+      expect(supportView.container.querySelector("#privacy-policy")).not.toBeNull();
+      expect(screen.getByText(/Privacy & Non-Custodial Data Policy/i)).toBeInTheDocument();
     } finally {
       fetchSpy.mockRestore();
     }

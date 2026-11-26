@@ -1,5 +1,5 @@
 /**
- * SafeDeal Escrow Companion — Content Script Deal Link Verifier & Shadow DOM Toast
+ * SafeDeal Escrow Companion — Content Script Deal Link Verifier, Anti-Phishing Domain Shield & Shadow DOM Toast
  * Strictly complies with Mandatory Rules #5, #6, and #9:
  * - Rule #5: Uses async/await exclusively (no Promise-chain callbacks)
  * - Rule #6: Batches DOM mutations in chunks of 15 with requestAnimationFrame + scheduler.yield()
@@ -8,6 +8,21 @@
 
 const DEAL_LINK_SELECTOR = 'a[href*="/deals/"]';
 const BATCH_SIZE = 15;
+const MAX_LINKS_PER_SCAN = 100;
+const VERIFY_CACHE_TTL_MS = 60_000;
+const PHISHING_ALERT_TEXT = "[⚠️ SafeDeal Security Alert: Unofficial Phishing Domain!]";
+
+const OFFICIAL_SAFEDEAL_ORIGINS = new Set([
+  "https://avalanche-9b099.web.app",
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+  "http://localhost:4173",
+  "http://127.0.0.1:4173",
+  "http://localhost:14173",
+  "http://127.0.0.1:14173",
+  "http://localhost:24173",
+  "http://127.0.0.1:24173",
+]);
 
 const STATUS_BADGE_COLORS = {
   FUNDED: { border: "#10B981", bg: "rgba(16, 185, 129, 0.14)", text: "#34D399" },
@@ -21,6 +36,74 @@ const STATUS_BADGE_COLORS = {
   NONE: { border: "#EF4444", bg: "rgba(239, 68, 68, 0.14)", text: "#FCA5A5" },
 };
 
+/** @type {Map<string, { expiresAt: number, promise: Promise<unknown> }>} */
+const dealVerificationCache = new Map();
+
+/**
+ * Deduplicates VERIFY_DEAL lookups per tradeId within a 60s TTL window.
+ * @param {string} tradeId
+ */
+async function getCachedDealVerification(tradeId) {
+  const normalizedKey = tradeId.toLowerCase();
+  const now = Date.now();
+  const existing = dealVerificationCache.get(normalizedKey);
+  if (existing && existing.expiresAt > now) {
+    return await existing.promise;
+  }
+
+  const lookupPromise = (async () => {
+    return await chrome.runtime.sendMessage({
+      type: "VERIFY_DEAL",
+      tradeId,
+    });
+  })();
+
+  dealVerificationCache.set(normalizedKey, {
+    expiresAt: now + VERIFY_CACHE_TTL_MS,
+    promise: lookupPromise,
+  });
+
+  try {
+    const response = await lookupPromise;
+    if (!response?.ok) {
+      dealVerificationCache.delete(normalizedKey);
+    }
+    return response;
+  } catch (err) {
+    dealVerificationCache.delete(normalizedKey);
+    throw err;
+  }
+}
+
+function createPhishingWarningBadgeElement() {
+  const host = document.createElement("span");
+  host.className = "safedeal-companion-badge-host safedeal-phishing-alert-host";
+  host.style.cssText = "display:inline-flex;vertical-align:middle;margin-left:6px;";
+
+  const shadow = host.attachShadow({ mode: "closed" });
+  const pill = document.createElement("span");
+  pill.setAttribute("role", "alert");
+  pill.textContent = PHISHING_ALERT_TEXT;
+  pill.style.cssText = [
+    "display:inline-flex",
+    "align-items:center",
+    "padding:2px 9px",
+    "border-radius:9999px",
+    "border:1px solid #EF4444",
+    "background:rgba(127, 29, 29, 0.94)",
+    "color:#FEF2F2",
+    "font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace",
+    "font-size:11px",
+    "font-weight:700",
+    "line-height:1.3",
+    "letter-spacing:0.01em",
+    "white-space:nowrap",
+  ].join(";");
+
+  shadow.appendChild(pill);
+  return host;
+}
+
 function createShadowBadgeElement(verificationData) {
   const host = document.createElement("span");
   host.className = "safedeal-companion-badge-host";
@@ -29,8 +112,13 @@ function createShadowBadgeElement(verificationData) {
   const shadow = host.attachShadow({ mode: "closed" });
   const pill = document.createElement("span");
 
-  const status = verificationData.status || "NONE";
-  const palette = STATUS_BADGE_COLORS[status] || STATUS_BADGE_COLORS.CREATED;
+  const status =
+    typeof verificationData.status === "string" && verificationData.status
+      ? verificationData.status
+      : "NONE";
+  const palette = Object.hasOwn(STATUS_BADGE_COLORS, status)
+    ? STATUS_BADGE_COLORS[status]
+    : STATUS_BADGE_COLORS.CREATED;
   const hashSummary =
     verificationData.termsVerified === true
       ? " • RFC 8785 OK"
@@ -62,11 +150,12 @@ function createShadowBadgeElement(verificationData) {
 /**
  * Rule #6: Non-blocking DOM scanner batching updates in chunks of 15 with
  * requestAnimationFrame and yielding via scheduler.yield() between batches.
+ * Caps per-pass scanning at MAX_LINKS_PER_SCAN (100) and blocks unofficial phishing origins.
  */
 async function annotateSafeDealLinks() {
-  const anchors = Array.from(document.querySelectorAll(DEAL_LINK_SELECTOR)).filter(
-    (el) => !el.dataset.safedealChecked
-  );
+  const anchors = Array.from(document.querySelectorAll(DEAL_LINK_SELECTOR))
+    .filter((el) => !el.dataset.safedealChecked)
+    .slice(0, MAX_LINKS_PER_SCAN);
 
   for (let i = 0; i < anchors.length; i += BATCH_SIZE) {
     const slice = anchors.slice(i, i + BATCH_SIZE);
@@ -74,14 +163,24 @@ async function annotateSafeDealLinks() {
     const verifications = await Promise.all(
       slice.map(async (anchor) => {
         anchor.dataset.safedealChecked = "true";
-        const match = anchor.href.match(/\/deals\/(0x[0-9a-fA-F]{64})/);
-        if (!match) return null;
+        let parsedUrl;
         try {
-          const response = await chrome.runtime.sendMessage({
-            type: "VERIFY_DEAL",
-            tradeId: decodeURIComponent(match[1]),
-          });
-          return { anchor, response };
+          parsedUrl = new URL(anchor.href, window.location.origin);
+        } catch {
+          return null;
+        }
+
+        const match = parsedUrl.href.match(/\/deals\/(0x[0-9a-fA-F]{64})/);
+        if (!match) return null;
+
+        if (!OFFICIAL_SAFEDEAL_ORIGINS.has(parsedUrl.origin)) {
+          return { anchor, isPhishingDomain: true, response: null };
+        }
+
+        try {
+          const tradeId = decodeURIComponent(match[1]);
+          const response = await getCachedDealVerification(tradeId);
+          return { anchor, isPhishingDomain: false, response };
         } catch {
           return null;
         }
@@ -91,7 +190,13 @@ async function annotateSafeDealLinks() {
     await new Promise((resolve) =>
       requestAnimationFrame(() => {
         for (const item of verifications) {
-          if (!item || !item.response?.ok || !item.response.data) continue;
+          if (!item) continue;
+          if (item.isPhishingDomain) {
+            const alertHost = createPhishingWarningBadgeElement();
+            item.anchor.insertAdjacentElement("afterend", alertHost);
+            continue;
+          }
+          if (!item.response?.ok || !item.response.data) continue;
           const badgeHost = createShadowBadgeElement(item.response.data);
           item.anchor.insertAdjacentElement("afterend", badgeHost);
         }
@@ -155,7 +260,10 @@ function showShadowToast(message) {
   });
 }
 
-chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!sender || sender.id !== chrome.runtime.id) {
+    return false;
+  }
   if (msg?.type === "SAFEDEAL_TOAST") {
     showShadowToast(msg.message || "Saved to SafeDeal Escrow Side Panel");
     sendResponse({ shown: true });

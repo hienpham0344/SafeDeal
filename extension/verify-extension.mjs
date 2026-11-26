@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 /**
- * SafeDeal Escrow Companion — Automated Manifest V3 & RFC 8785 Verification Suite
+ * SafeDeal Escrow Companion — Automated Manifest V3, Security Hardening & RFC 8785 Verification Suite
  * Verifies:
- *  1. manifest.json compliance with all 20 Mandatory Rules of the chrome-extensions skill
+ *  1. manifest.json compliance with all 20 Mandatory Rules + explicit MV3 CSP + scripting permission
  *  2. Real PNG headers and exact pixel dimensions (16x16, 48x48, 128x128) for icons
- *  3. Static code checks across service-worker.js, sidepanel/*, content/*, shared/*:
+ *  3. Static & security checks across service-worker.js, sidepanel/*, content/*, shared/*:
  *     - Zero .then() chains (Rule #5)
  *     - Zero eval() / new Function() / inline <script> / inline on* handlers (Rule #3)
  *     - openPanelOnActionClick (not openPanelOnActionIconClick) (Rule #2)
@@ -12,16 +12,19 @@
  *     - chrome.storage.local + chrome.alarms in service worker (Rule #7)
  *     - Shadow DOM toast confirmation for context menu (Rule #9)
  *     - Synchronous chrome.permissions.request in first turn of onMessage (Rule #20)
- *  4. Byte-for-byte RFC 8785 canonical JSON & SHA-256 termsHash parity with
- *     frontend/src/utils/canonical-terms.ts and backend/crates/domain/src/canonical_terms.rs
- *  5. Pure JS ABI encoding/decoding for getTrade(bytes32), getDisputeVotes(bytes32),
- *     and claimableBalances(address)
+ *     - Strict sender.id === chrome.runtime.id & UI vs content-script isolation
+ *     - Zero ambient cookie leakage (credentials: "omit") & strict URL/address validation
+ *  4. Byte-for-byte RFC 8785 canonical JSON & SHA-256 termsHash parity with frontend & backend
+ *  5. Pure JS ABI encoding/decoding, URL scheme sanitization, and cookie-omitted verification
+ *  6. Behavioral runtime tests for Anti-Phishing Domain Shield, bounded deduplicated scanning,
+ *     service worker sender isolation, metadata stripping, and dynamic script registration
  */
 
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import vm from "node:vm";
 
 import {
   buildCanonicalTermsJson,
@@ -33,8 +36,13 @@ import {
   claimableBalance,
   decodeDisputeVotesTuple,
   decodeTradeTuple,
+  ethCall,
   fetchDealVerification,
+  fetchOptionalBackendDeal,
+  isValidEvmAddress,
+  OFFICIAL_SAFEDEAL_ORIGINS,
   SELECTORS,
+  validateSafeEndpointUrl,
 } from "./shared/rpc-client.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -52,9 +60,9 @@ function readPngDimensions(filePath) {
 }
 
 async function runVerification() {
-  console.log("=== SafeDeal Escrow Companion (MV3) Verification Suite ===");
+  console.log("=== SafeDeal Escrow Companion (MV3) Security & Verification Suite ===");
 
-  // 1. Validate manifest.json
+  // 1. Validate manifest.json & explicit MV3 CSP
   const manifestPath = path.join(__dirname, "manifest.json");
   const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
 
@@ -82,8 +90,20 @@ async function runVerification() {
     "background.service_worker mismatch"
   );
   assert.equal(manifest.background?.type, "module", "background.type must be 'module'");
+  assert.equal(
+    manifest.content_security_policy?.extension_pages,
+    "script-src 'self'; object-src 'none'; base-uri 'none';",
+    "manifest.content_security_policy.extension_pages must enforce strict MV3 CSP"
+  );
 
-  const expectedPermissions = ["storage", "sidePanel", "contextMenus", "alarms", "tabs"];
+  const expectedPermissions = [
+    "storage",
+    "sidePanel",
+    "contextMenus",
+    "alarms",
+    "tabs",
+    "scripting",
+  ];
   for (const perm of expectedPermissions) {
     assert.ok(
       manifest.permissions.includes(perm),
@@ -113,7 +133,7 @@ async function runVerification() {
     manifest.optional_host_permissions?.includes("https://*/*"),
     "optional_host_permissions must include https://*/*"
   );
-  console.log("[PASS] 1/5 manifest.json adheres to Manifest V3 & scoped permission rules");
+  console.log("[PASS] 1/6 manifest.json adheres to Manifest V3, strict CSP & scoped permissions");
 
   // 2. Validate PNG Icons (Rule #1 & #15)
   for (const size of [16, 48, 128]) {
@@ -125,9 +145,9 @@ async function runVerification() {
     assert.equal(dims.width, size, `icon-${size}.png width must be ${size}`);
     assert.equal(dims.height, size, `icon-${size}.png height must be ${size}`);
   }
-  console.log("[PASS] 2/5 PNG icons (16x16, 48x48, 128x128) verified with valid PNG headers");
+  console.log("[PASS] 2/6 PNG icons (16x16, 48x48, 128x128) verified with valid PNG headers");
 
-  // 3. Static verification of Mandatory Rules across extension source files
+  // 3. Static verification of Mandatory Rules & Security Hardening across extension source files
   const jsFiles = [
     "service-worker.js",
     "shared/canonical-terms.js",
@@ -148,6 +168,10 @@ async function runVerification() {
       !src.includes("chrome.windows.query"),
       `Rule #19 violation (chrome.windows.query) in ${rel}`
     );
+    assert.ok(
+      !src.includes('credentials: "include"') && !src.includes("credentials: 'include'"),
+      `Security violation: ambient cookie credentials: 'include' found in ${rel}`
+    );
   }
 
   const swSource = fs.readFileSync(path.join(__dirname, "service-worker.js"), "utf8");
@@ -163,6 +187,21 @@ async function runVerification() {
     swSource.includes("chrome.permissions.request"),
     "Rule #20: service-worker.js must handle synchronous chrome.permissions.request"
   );
+  assert.ok(
+    swSource.includes("sender.id !== chrome.runtime.id"),
+    "Security: service-worker.js must enforce sender.id === chrome.runtime.id"
+  );
+  assert.ok(
+    swSource.includes("chrome.scripting.registerContentScripts") &&
+      swSource.includes("chrome.scripting.getRegisteredContentScripts"),
+    "Security: service-worker.js must dynamically register content/deal-verifier.js idempotently"
+  );
+
+  const rpcSource = fs.readFileSync(path.join(__dirname, "shared/rpc-client.js"), "utf8");
+  assert.ok(
+    rpcSource.includes('credentials: "omit"'),
+    "Security: shared/rpc-client.js must enforce credentials: 'omit'"
+  );
 
   const contentSource = fs.readFileSync(path.join(__dirname, "content/deal-verifier.js"), "utf8");
   assert.ok(
@@ -173,6 +212,28 @@ async function runVerification() {
     contentSource.includes("attachShadow"),
     "Rule #9: content/deal-verifier.js must render Shadow DOM toast/badges"
   );
+  assert.ok(
+    contentSource.includes("sender.id !== chrome.runtime.id"),
+    "Security: content/deal-verifier.js must enforce sender.id === chrome.runtime.id"
+  );
+  assert.ok(
+    contentSource.includes("Object.hasOwn(STATUS_BADGE_COLORS, status)"),
+    "Security: content/deal-verifier.js must guard STATUS_BADGE_COLORS with Object.hasOwn"
+  );
+  assert.ok(
+    contentSource.includes("MAX_LINKS_PER_SCAN = 100"),
+    "Security: content/deal-verifier.js must cap per-pass links via MAX_LINKS_PER_SCAN = 100"
+  );
+  assert.ok(
+    contentSource.includes("[⚠️ SafeDeal Security Alert: Unofficial Phishing Domain!]"),
+    "Security: content/deal-verifier.js must define the unofficial phishing domain alert badge"
+  );
+
+  const sidepanelJsSource = fs.readFileSync(path.join(__dirname, "sidepanel/sidepanel.js"), "utf8");
+  assert.ok(
+    sidepanelJsSource.includes("new URL(") && sidepanelJsSource.includes("/^0x[0-9a-fA-F]{40}$/"),
+    "Security: sidepanel.js must sanitize webAppUrl with new URL(...) and contractAddress with /^0x[0-9a-fA-F]{40}$/"
+  );
 
   const htmlSource = fs.readFileSync(path.join(__dirname, "sidepanel/sidepanel.html"), "utf8");
   assert.ok(
@@ -182,7 +243,12 @@ async function runVerification() {
 
   const cwsPath = path.join(__dirname, "CHROMEWEBSTORE.md");
   assert.ok(fs.existsSync(cwsPath), "CHROMEWEBSTORE.md must exist");
-  console.log("[PASS] 3/5 All 20 Mandatory Rules static checks & CHROMEWEBSTORE.md passed");
+  const cwsSource = fs.readFileSync(cwsPath, "utf8");
+  assert.ok(
+    cwsSource.includes("| `scripting` | permissions |"),
+    "CHROMEWEBSTORE.md must justify the 'scripting' permission"
+  );
+  console.log("[PASS] 3/6 All 20 Mandatory Rules, static security assertions & CHROMEWEBSTORE.md passed");
 
   // 4. Verify RFC 8785 canonical JSON & SHA-256 vector parity with frontend & backend
   const vectorInput1 = {
@@ -248,12 +314,38 @@ async function runVerification() {
 
   assert.equal(parseAvaxToWei("1.5"), "1500000000000000000");
   assert.equal(formatWeiToAvax("1500000000000000000"), "1.5");
-  console.log("[PASS] 4/5 RFC 8785 canonical JSON & SHA-256 termsHash byte-for-byte parity verified");
+  console.log("[PASS] 4/6 RFC 8785 canonical JSON & SHA-256 termsHash byte-for-byte parity verified");
 
-  // 5. Verify RPC ABI selectors and tuple decoders
+  // 5. Verify RPC ABI selectors, tuple decoders, URL validation & cookie omission
   assert.equal(SELECTORS.getTrade, "0xa3b13799");
   assert.equal(SELECTORS.getDisputeVotes, "0x48547c8a");
   assert.equal(SELECTORS.claimableBalances, "0x68c8278f");
+
+  assert.ok(OFFICIAL_SAFEDEAL_ORIGINS.includes("https://avalanche-9b099.web.app"));
+  assert.ok(OFFICIAL_SAFEDEAL_ORIGINS.includes("http://127.0.0.1:24173"));
+  assert.equal(isValidEvmAddress("0xF30E863b0Cfe8fBFE05E65c21878F8B621B3FE29"), true);
+  assert.equal(isValidEvmAddress("0x1234"), false);
+  assert.equal(isValidEvmAddress("javascript:alert(1)"), false);
+
+  // URL scheme & loopback validation tests
+  assert.equal(
+    validateSafeEndpointUrl("https://api.avax-test.network/ext/bc/C/rpc").origin,
+    "https://api.avax-test.network"
+  );
+  assert.equal(validateSafeEndpointUrl("http://localhost:8080").origin, "http://localhost:8080");
+  assert.equal(validateSafeEndpointUrl("http://127.0.0.1:8545").origin, "http://127.0.0.1:8545");
+  assert.throws(() => validateSafeEndpointUrl("http://evil-rpc.example.com"), /Unsafe URL scheme/);
+  assert.throws(() => validateSafeEndpointUrl("javascript:alert(1)"), /Unsafe URL scheme/);
+  assert.throws(() => validateSafeEndpointUrl("https://user:secret@example.com"), /embedded credentials/);
+
+  await assert.rejects(
+    () => ethCall({ rpcUrl: "http://evil-mitm.example.com/rpc", data: "0x" }),
+    /Unsafe rpcUrl scheme/
+  );
+  await assert.rejects(
+    () => fetchOptionalBackendDeal("0x00", { apiBaseUrl: "http://evil-api.example.com" }),
+    /Unsafe apiBaseUrl scheme/
+  );
 
   const sampleTradeId = expectedTermsHash;
   const word = (hexNoPrefix) => hexNoPrefix.padStart(64, "0");
@@ -295,9 +387,11 @@ async function runVerification() {
   assert.equal(decodedVotes.sellerHasVoted, false);
   assert.equal(decodedVotes.arbiterHasVoted, true);
 
-  // Test fetchDealVerification & claimableBalance with mocked fetchImpl
+  const observedCredentials = [];
   const mockFetch = async (url, init) => {
+    observedCredentials.push(init?.credentials);
     if (String(url).includes("/api/v1/deals/")) {
+      assert.equal(init.credentials, "omit", "Backend deal fetch must set credentials: 'omit'");
       return {
         ok: true,
         status: 200,
@@ -347,7 +441,9 @@ async function runVerification() {
   );
   assert.equal(verification.status, "FUNDED");
   assert.equal(verification.termsVerified, true);
+  assert.equal(verification.chainId, 43113);
   assert.equal(verification.disputeVotes.activeVoteCount, 2);
+  assert.ok(observedCredentials.every((c) => c === "omit"));
 
   const claimable = await claimableBalance(
     "0x70997970C51812DC3A010C7D01B50E0D17DC79C8",
@@ -355,9 +451,280 @@ async function runVerification() {
   );
   assert.equal(claimable.claimableAvax, "2.25");
   assert.equal(claimable.hasClaimable, true);
+  console.log("[PASS] 5/6 On-Chain JSON-RPC ABI decoding, URL sanitization & zero-cookie checks passed");
 
-  console.log("[PASS] 5/5 On-Chain JSON-RPC eth_call ABI encoding/decoding & deal verification passed");
-  console.log("=== ALL EXTENSION VERIFICATION CHECKS PASSED (100%) ===");
+  // 6. Behavioral runtime tests for Anti-Phishing Domain Shield & Service Worker Sender Isolation
+  {
+    const mockAnchors = [];
+    const makeAnchor = (href) => {
+      const insertedBadges = [];
+      return {
+        href,
+        dataset: {},
+        insertedBadges,
+        getAttribute(attr) {
+          return attr === "href" ? href : null;
+        },
+        insertAdjacentElement(_pos, el) {
+          insertedBadges.push(el);
+        },
+      };
+    };
+
+    const officialAnchor1 = makeAnchor(`https://avalanche-9b099.web.app/deals/${sampleTradeId}`);
+    const officialAnchor2 = makeAnchor(`https://avalanche-9b099.web.app/deals/${sampleTradeId}`);
+    const phishingAnchor = makeAnchor(`https://safedea1-scam.xyz/deals/${sampleTradeId}`);
+    const protoTradeId = "0x" + "a".repeat(64);
+    const protoAnchor = makeAnchor(`http://127.0.0.1:24173/deals/${protoTradeId}`);
+    mockAnchors.push(officialAnchor1, officialAnchor2, phishingAnchor, protoAnchor);
+    // Add 105 extra links to verify MAX_LINKS_PER_SCAN = 100 cap
+    for (let idx = 0; idx < 105; idx += 1) {
+      const idHex = (idx + 1).toString(16).padStart(64, "0");
+      mockAnchors.push(makeAnchor(`https://safedea1-scam.xyz/deals/0x${idHex}`));
+    }
+
+    let verifyMessagesSent = 0;
+    let contentOnMessageListener = null;
+
+    const sandbox = {
+      window: { location: { origin: "https://discord.com" } },
+      URL,
+      Map,
+      Set,
+      Object,
+      Date,
+      Promise,
+      decodeURIComponent,
+      requestAnimationFrame: (cb) => {
+        cb();
+        return 1;
+      },
+      setTimeout: () => 1,
+      scheduler: { yield: async () => {} },
+      document: {
+        body: { appendChild() {} },
+        querySelectorAll() {
+          return mockAnchors;
+        },
+        createElement(tag) {
+          const el = {
+            tagName: tag,
+            className: "",
+            style: { cssText: "" },
+            textContent: "",
+            attributes: {},
+            children: [],
+            shadowRootChildren: null,
+            setAttribute(k, v) {
+              this.attributes[k] = v;
+            },
+            appendChild(child) {
+              this.children.push(child);
+            },
+            attachShadow() {
+              const shadow = {
+                children: [],
+                appendChild(c) {
+                  this.children.push(c);
+                },
+              };
+              el.shadowRootChildren = shadow.children;
+              return shadow;
+            },
+            remove() {},
+          };
+          return el;
+        },
+      },
+      chrome: {
+        runtime: {
+          id: "safedeal-ext-id",
+          onMessage: {
+            addListener(fn) {
+              contentOnMessageListener = fn;
+            },
+          },
+          async sendMessage(payload) {
+            verifyMessagesSent += 1;
+            if (payload.tradeId === protoTradeId) {
+              return {
+                ok: true,
+                data: {
+                  status: "__proto__",
+                  existsOnChain: true,
+                  amountAvax: "0.5",
+                  termsVerified: false,
+                },
+              };
+            }
+            return {
+              ok: true,
+              data: {
+                status: "FUNDED",
+                existsOnChain: true,
+                amountAvax: "1.5",
+                termsVerified: true,
+              },
+            };
+          },
+        },
+      },
+    };
+    sandbox.globalThis = sandbox;
+
+    vm.runInNewContext(contentSource, sandbox, { filename: "deal-verifier.js" });
+    // Wait briefly for async annotateSafeDealLinks() batches to settle
+    await new Promise((r) => setTimeout(r, 40));
+
+    // Verify duplicate tradeId links were deduplicated via 60s TTL Map cache (1 for sampleTradeId + 1 for protoTradeId = 2)
+    assert.equal(
+      verifyMessagesSent,
+      2,
+      "VERIFY_DEAL must deduplicate identical tradeIds via 60s TTL cache and never query phishing domains"
+    );
+    assert.equal(
+      officialAnchor1.insertedBadges[0]?.shadowRootChildren?.[0]?.textContent,
+      "SafeDeal: FUNDED • RFC 8785 OK"
+    );
+    assert.equal(
+      officialAnchor2.insertedBadges[0]?.shadowRootChildren?.[0]?.textContent,
+      "SafeDeal: FUNDED • RFC 8785 OK"
+    );
+    assert.equal(
+      phishingAnchor.insertedBadges[0]?.shadowRootChildren?.[0]?.textContent,
+      "[⚠️ SafeDeal Security Alert: Unofficial Phishing Domain!]",
+      "Phishing domain link must display red warning badge, NEVER green FUNDED badge"
+    );
+    assert.ok(
+      protoAnchor.insertedBadges[0]?.shadowRootChildren?.[0]?.textContent.startsWith(
+        "SafeDeal: __proto__"
+      ),
+      "Object.hasOwn guard must safely handle prototype keys without crashing"
+    );
+    // Verify MAX_LINKS_PER_SCAN = 100 cap (out of 109 total anchors, only first 100 checked on first pass)
+    const checkedCount = mockAnchors.filter((a) => a.dataset.safedealChecked === "true").length;
+    assert.equal(checkedCount, 100, "Per-pass scanner must cap at MAX_LINKS_PER_SCAN = 100");
+
+    // Verify content script sender.id check rejects foreign extensions
+    assert.equal(
+      contentOnMessageListener({ type: "SAFEDEAL_TOAST" }, { id: "malicious-other-ext" }, () => {
+        throw new Error("Should not respond to foreign extension");
+      }),
+      false
+    );
+
+    // Service Worker sender isolation, metadata stripping & dynamic script registration check
+    let swOnMessageListener = null;
+    const registeredScripts = [];
+    const previousFetch = globalThis.fetch;
+    const previousChrome = globalThis.chrome;
+    globalThis.fetch = mockFetch;
+    globalThis.chrome = {
+      runtime: {
+        id: "safedeal-ext-id",
+        getURL: (p = "") => `chrome-extension://safedeal-ext-id/${p}`,
+        onInstalled: { addListener() {} },
+        onMessage: {
+          addListener(fn) {
+            swOnMessageListener = fn;
+          },
+        },
+      },
+      sidePanel: { setPanelBehavior: async () => {}, open: async () => {} },
+      contextMenus: { removeAll() {}, create() {}, onClicked: { addListener() {} } },
+      alarms: { create: async () => {}, onAlarm: { addListener() {} } },
+      action: { setBadgeText: async () => {}, setBadgeBackgroundColor: async () => {} },
+      storage: {
+        local: {
+          get: async () => ({}),
+          set: async () => {},
+        },
+      },
+      permissions: {
+        contains: async () => false,
+        request(_perms, cb) {
+          cb(true);
+        },
+      },
+      scripting: {
+        getRegisteredContentScripts: async () => registeredScripts.slice(),
+        registerContentScripts: async (scripts) => {
+          registeredScripts.push(...scripts);
+        },
+      },
+    };
+
+    try {
+      const swUrl = pathToFileURL(path.join(__dirname, "service-worker.js")).href;
+      await import(swUrl);
+      assert.equal(typeof swOnMessageListener, "function", "service-worker must register onMessage");
+
+      // 1) Foreign extension ID rejected
+      assert.equal(
+        swOnMessageListener({ type: "VERIFY_DEAL", tradeId: sampleTradeId }, { id: "rogue-ext" }, () => {}),
+        false
+      );
+
+      // 2) Content script blocked from privileged UI messages
+      for (const blockedType of [
+        "REQUEST_MARKETPLACE_SCAN_PERMISSION",
+        "CLEAR_BADGE",
+        "REFRESH_WATCHED_DEALS",
+        "COMPUTE_TERMS_HASH",
+      ]) {
+        let reply = null;
+        swOnMessageListener(
+          { type: blockedType },
+          { id: "safedeal-ext-id", tab: { id: 42 }, url: "https://example.com" },
+          (res) => {
+            reply = res;
+          }
+        );
+        assert.deepEqual(reply, { ok: false, error: "FORBIDDEN_SENDER" });
+      }
+
+      // 3) Content script VERIFY_DEAL strips private off-chain metadata
+      const contentVerifyReply = await new Promise((resolve) => {
+        swOnMessageListener(
+          { type: "VERIFY_DEAL", tradeId: sampleTradeId },
+          { id: "safedeal-ext-id", tab: { id: 42 }, url: "https://discord.com/channels/1" },
+          resolve
+        );
+      });
+      assert.equal(contentVerifyReply.ok, true);
+      assert.equal(contentVerifyReply.data.metadata, undefined, "Content script must NOT receive metadata");
+      assert.deepEqual(Object.keys(contentVerifyReply.data).sort(), [
+        "amountAvax",
+        "chainId",
+        "contractAddress",
+        "existsOnChain",
+        "status",
+        "statusCode",
+        "termsHash",
+        "termsVerified",
+      ]);
+
+      // 4) Trusted Side Panel UI REQUEST_MARKETPLACE_SCAN_PERMISSION registers dynamic content script
+      const permReply = await new Promise((resolve) => {
+        swOnMessageListener(
+          { type: "REQUEST_MARKETPLACE_SCAN_PERMISSION" },
+          {
+            id: "safedeal-ext-id",
+            url: "chrome-extension://safedeal-ext-id/sidepanel/sidepanel.html",
+          },
+          resolve
+        );
+      });
+      assert.deepEqual(permReply, { ok: true, granted: true });
+      assert.equal(registeredScripts.length, 1);
+      assert.deepEqual(registeredScripts[0].js, ["content/deal-verifier.js"]);
+    } finally {
+      globalThis.fetch = previousFetch;
+      globalThis.chrome = previousChrome;
+    }
+  }
+  console.log("[PASS] 6/6 Anti-Phishing Domain Shield, sender isolation & metadata stripping verified");
+  console.log("=== ALL EXTENSION SECURITY & VERIFICATION CHECKS PASSED (100%) ===");
 }
 
 runVerification();

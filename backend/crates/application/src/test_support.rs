@@ -5,18 +5,21 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use safedeal_domain::auth::{AuthNonce, UserAccount};
+use safedeal_domain::auth::{AuthNonce, RevokedSession, UserAccount};
 use safedeal_domain::blockchain::{
     ChainSyncState, OnChainTradeSnapshot, TransactionVerificationResult, VerifiedChainEvent,
 };
 use safedeal_domain::deal::{BlockchainTransaction, Deal, DealEvent, DealStatus};
-use safedeal_domain::dispute::{AuditLogEntry, Dispute, DisputeEvidence, DisputeVote};
+use safedeal_domain::dispute::{
+    compute_audit_entry_hash, AuditLogEntry, ChainedAuditLogEntry, Dispute, DisputeEvidence,
+    DisputeVote, AUDIT_GENESIS_HASH,
+};
 use safedeal_domain::ports::{
     AuditLogRepository, AuthNonceRepository, BlockchainGateway, BlockchainTransactionRepository,
     ChainEventRepository, ChainSyncStateRepository, DealEventRepository, DealRepository,
     DisputeEvidenceRepository, DisputeRepository, DisputeVoteRepository, EvidenceDownloadPayload,
-    EvidenceStoragePort, PageSlice, StoredAttachment, TxRepos, TxWorkFn, UnitOfWork,
-    UserRepository,
+    EvidenceStoragePort, PageSlice, RevokedSessionRepository, StoredAttachment, TxRepos, TxWorkFn,
+    UnitOfWork, UserRepository,
 };
 use safedeal_shared::DomainError;
 
@@ -28,12 +31,14 @@ pub struct InMemoryState {
     pub disputes: Vec<Dispute>,
     pub dispute_votes: Vec<DisputeVote>,
     pub auth_nonces: Vec<AuthNonce>,
+    pub revoked_sessions: Vec<RevokedSession>,
     pub users: Vec<UserAccount>,
     pub deal_events: Vec<DealEvent>,
     pub chain_events: Vec<VerifiedChainEvent>,
     pub blockchain_transactions: Vec<BlockchainTransaction>,
     pub dispute_evidence: Vec<DisputeEvidence>,
     pub audit_logs: Vec<AuditLogEntry>,
+    pub chained_audit_logs: Vec<ChainedAuditLogEntry>,
     pub chain_sync_state: Option<ChainSyncState>,
     pub next_id: i64,
 }
@@ -67,6 +72,9 @@ impl TxRepos for InMemoryStore {
         self
     }
     fn auth_nonces(&self) -> &dyn AuthNonceRepository {
+        self
+    }
+    fn revoked_sessions(&self) -> &dyn RevokedSessionRepository {
         self
     }
     fn users(&self) -> &dyn UserRepository {
@@ -535,13 +543,57 @@ impl DisputeEvidenceRepository for InMemoryStore {
 }
 
 #[async_trait]
+impl RevokedSessionRepository for InMemoryStore {
+    async fn revoke(&self, session: &RevokedSession) -> Result<(), DomainError> {
+        let mut s = self.state.lock().unwrap();
+        if !s.revoked_sessions.iter().any(|r| r.jti == session.jti) {
+            let mut saved = session.clone();
+            saved.wallet_address = saved.wallet_address.to_ascii_lowercase();
+            s.revoked_sessions.push(saved);
+        }
+        Ok(())
+    }
+
+    async fn is_revoked(&self, jti: &str, now: DateTime<Utc>) -> Result<bool, DomainError> {
+        let s = self.state.lock().unwrap();
+        Ok(s.revoked_sessions
+            .iter()
+            .any(|r| r.jti == jti && r.expires_at > now))
+    }
+
+    async fn delete_expired_before(&self, cutoff: DateTime<Utc>) -> Result<u64, DomainError> {
+        let mut s = self.state.lock().unwrap();
+        let before = s.revoked_sessions.len();
+        s.revoked_sessions.retain(|r| r.expires_at >= cutoff);
+        Ok((before - s.revoked_sessions.len()) as u64)
+    }
+}
+
+#[async_trait]
 impl AuditLogRepository for InMemoryStore {
     async fn append(&self, entry: &AuditLogEntry) -> Result<(), DomainError> {
         let mut s = self.state.lock().unwrap();
         let mut saved = entry.clone();
         saved.id = Some(s.alloc_id());
-        s.audit_logs.push(saved);
+        saved.actor_address = saved.actor_address.as_deref().map(str::to_ascii_lowercase);
+        let prev_hash = s
+            .chained_audit_logs
+            .last()
+            .map(|c| c.entry_hash.clone())
+            .unwrap_or_else(|| AUDIT_GENESIS_HASH.to_string());
+        let entry_hash = compute_audit_entry_hash(&prev_hash, &saved);
+        s.audit_logs.push(saved.clone());
+        s.chained_audit_logs.push(ChainedAuditLogEntry {
+            entry: saved,
+            prev_hash,
+            entry_hash,
+        });
         Ok(())
+    }
+
+    async fn list_all(&self) -> Result<Vec<ChainedAuditLogEntry>, DomainError> {
+        let s = self.state.lock().unwrap();
+        Ok(s.chained_audit_logs.clone())
     }
 }
 

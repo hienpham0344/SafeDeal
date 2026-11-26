@@ -140,6 +140,8 @@ async fn run_server(config: AppConfig) -> Result<(), String> {
         chain_id = config.blockchain.chain_id,
         blockchain_sync_enabled = config.blockchain.enabled,
         evidence_storage_backend = config.evidence.backend.as_str(),
+        evidence_encrypted_at_rest = config.evidence.encryption_key.is_some(),
+        trust_proxy_headers = config.rate_limit.trust_proxy_headers,
         api_docs_enabled = config.api_docs_enabled,
         swagger_ui_enabled = config.swagger_ui_enabled,
         draft_ttl_seconds = config.deals.draft_ttl_seconds,

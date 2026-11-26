@@ -86,10 +86,6 @@ contract SafeDealEscrow is ISafeDealEscrow, ReentrancyGuard {
         if (deliveryDeadline <= fundingDeadline) revert InvalidDeadline("deliveryDeadline");
         if (inspectionWindow == 0) revert InvalidDeadline("inspectionWindow");
 
-        // casting to 'uint64' is safe because Unix epoch seconds fit in uint64 for ~584 billion years
-        // forge-lint: disable-next-line(unsafe-typecast)
-        uint64 currentTimestamp = uint64(block.timestamp);
-
         _trades[tradeId] = Trade({
             tradeId: tradeId,
             seller: msg.sender,
@@ -97,7 +93,9 @@ contract SafeDealEscrow is ISafeDealEscrow, ReentrancyGuard {
             arbiter: arbiter,
             amount: amount,
             termsHash: termsHash,
-            createdAt: currentTimestamp,
+            // casting to 'uint64' is safe because Unix epoch seconds fit in uint64 for ~584 billion years
+            // forge-lint: disable-next-line(unsafe-typecast)
+            createdAt: uint64(block.timestamp),
             fundedAt: 0,
             deliveredAt: 0,
             fundingDeadline: fundingDeadline,
@@ -137,12 +135,11 @@ contract SafeDealEscrow is ISafeDealEscrow, ReentrancyGuard {
         if (trade.status != TradeStatus.CREATED) {
             revert InvalidState(trade.status, TradeStatus.CREATED);
         }
-        // casting to 'uint64' is safe because Unix epoch seconds fit in uint64
-        // forge-lint: disable-next-line(unsafe-typecast)
-        uint64 currentTimestamp = uint64(block.timestamp);
         // forge-lint: disable-next-line(block-timestamp)
         if (block.timestamp > trade.fundingDeadline) {
-            revert FundingDeadlinePassed(trade.fundingDeadline, currentTimestamp);
+            // casting to 'uint64' is safe because Unix epoch seconds fit in uint64
+            // forge-lint: disable-next-line(unsafe-typecast)
+            revert FundingDeadlinePassed(trade.fundingDeadline, uint64(block.timestamp));
         }
 
         if (trade.buyer != address(0)) {
@@ -158,7 +155,9 @@ contract SafeDealEscrow is ISafeDealEscrow, ReentrancyGuard {
         }
 
         trade.status = TradeStatus.FUNDED;
-        trade.fundedAt = currentTimestamp;
+        // casting to 'uint64' is safe because Unix epoch seconds fit in uint64
+        // forge-lint: disable-next-line(unsafe-typecast)
+        trade.fundedAt = uint64(block.timestamp);
         _totalLockedEscrow += msg.value;
 
         emit TradeFunded(tradeId, msg.sender, msg.value);
@@ -170,16 +169,17 @@ contract SafeDealEscrow is ISafeDealEscrow, ReentrancyGuard {
             revert InvalidState(trade.status, TradeStatus.FUNDED);
         }
         if (msg.sender != trade.seller) revert UnauthorizedCaller(msg.sender);
-        // casting to 'uint64' is safe because Unix epoch seconds fit in uint64
-        // forge-lint: disable-next-line(unsafe-typecast)
-        uint64 currentTimestamp = uint64(block.timestamp);
         // forge-lint: disable-next-line(block-timestamp)
         if (block.timestamp > trade.deliveryDeadline) {
-            revert DeliveryDeadlinePassed(trade.deliveryDeadline, currentTimestamp);
+            // casting to 'uint64' is safe because Unix epoch seconds fit in uint64
+            // forge-lint: disable-next-line(unsafe-typecast)
+            revert DeliveryDeadlinePassed(trade.deliveryDeadline, uint64(block.timestamp));
         }
 
         trade.status = TradeStatus.DELIVERED;
-        trade.deliveredAt = currentTimestamp;
+        // casting to 'uint64' is safe because Unix epoch seconds fit in uint64
+        // forge-lint: disable-next-line(unsafe-typecast)
+        trade.deliveredAt = uint64(block.timestamp);
 
         emit DeliveryMarked(tradeId, msg.sender, trade.deliveredAt);
     }
@@ -243,9 +243,6 @@ contract SafeDealEscrow is ISafeDealEscrow, ReentrancyGuard {
 
     function openDispute(bytes32 tradeId) external {
         Trade storage trade = _requireExistingTrade(tradeId);
-        // casting to 'uint64' is safe because Unix epoch seconds fit in uint64
-        // forge-lint: disable-next-line(unsafe-typecast)
-        uint64 currentTimestamp = uint64(block.timestamp);
 
         if (trade.status == TradeStatus.FUNDED) {
             if (msg.sender != trade.buyer && msg.sender != trade.seller) {
@@ -253,7 +250,9 @@ contract SafeDealEscrow is ISafeDealEscrow, ReentrancyGuard {
             }
             // forge-lint: disable-next-line(block-timestamp)
             if (msg.sender == trade.seller && block.timestamp > trade.deliveryDeadline) {
-                revert DeliveryDeadlinePassed(trade.deliveryDeadline, currentTimestamp);
+                // casting to 'uint64' is safe because Unix epoch seconds fit in uint64
+                // forge-lint: disable-next-line(unsafe-typecast)
+                revert DeliveryDeadlinePassed(trade.deliveryDeadline, uint64(block.timestamp));
             }
         } else if (trade.status == TradeStatus.DELIVERED) {
             if (msg.sender == trade.buyer) {
@@ -265,7 +264,9 @@ contract SafeDealEscrow is ISafeDealEscrow, ReentrancyGuard {
                     // casting to 'uint64' is safe because unlocksAt <= type(uint64).max in the else branch
                     // forge-lint: disable-next-line(unsafe-typecast)
                     uint64 cappedUnlocksAt = unlocksAt > type(uint64).max ? type(uint64).max : uint64(unlocksAt);
-                    revert InspectionWindowActive(cappedUnlocksAt, currentTimestamp);
+                    // casting to 'uint64' is safe because Unix epoch seconds fit in uint64
+                    // forge-lint: disable-next-line(unsafe-typecast)
+                    revert InspectionWindowActive(cappedUnlocksAt, uint64(block.timestamp));
                 }
             } else {
                 revert UnauthorizedCaller(msg.sender);
@@ -275,7 +276,9 @@ contract SafeDealEscrow is ISafeDealEscrow, ReentrancyGuard {
         }
 
         trade.status = TradeStatus.DISPUTED;
-        trade.disputedAt = currentTimestamp;
+        // casting to 'uint64' is safe because Unix epoch seconds fit in uint64
+        // forge-lint: disable-next-line(unsafe-typecast)
+        trade.disputedAt = uint64(block.timestamp);
         emit DisputeOpened(tradeId, msg.sender, trade.disputedAt);
     }
 
@@ -377,10 +380,11 @@ contract SafeDealEscrow is ISafeDealEscrow, ReentrancyGuard {
         _claimableBalances[msg.sender] = 0;
         _totalClaimable -= amount;
 
-        emit FundsWithdrawn(msg.sender, amount);
-
         (bool ok,) = payable(msg.sender).call{value: amount}("");
         if (!ok) revert WithdrawalTransferFailed();
+
+        // forge-lint: disable-next-line(reentrancy-events)
+        emit FundsWithdrawn(msg.sender, amount);
     }
 
     function getTrade(bytes32 tradeId) external view returns (Trade memory) {

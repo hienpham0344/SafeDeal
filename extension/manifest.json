@@ -28,8 +28,12 @@
     "sidePanel",
     "contextMenus",
     "alarms",
-    "tabs"
+    "tabs",
+    "scripting"
   ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'none'; base-uri 'none';"
+  },
   "host_permissions": [
     "https://avalanche-9b099.web.app/*",
     "https://safedeal-production.up.railway.app/*",

@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Duration, Utc};
 use rand::RngCore;
-use safedeal_domain::auth::{AuthNonce, AuthenticatedPrincipal};
+use safedeal_domain::auth::{
+    AuthNonce, AuthenticatedPrincipal, RevokedSession, VerifiedSessionToken,
+};
 use safedeal_domain::dispute::AuditLogEntry;
 use safedeal_domain::ports::{in_tx, SignatureVerifierPort, UnitOfWork};
 use safedeal_shared::{format_iso_utc, CorrelationIdContext, DomainError, EthFormatValidator};
@@ -46,6 +48,13 @@ pub trait SessionCookiePort: Send + Sync {
     ) -> Result<Vec<String>, DomainError>;
     fn clear_cookie_headers(&self) -> Vec<String>;
     fn issue_token(&self, principal: &AuthenticatedPrincipal) -> Result<String, DomainError>;
+    fn issue_session(
+        &self,
+        principal: &AuthenticatedPrincipal,
+    ) -> Result<(String, Vec<String>), DomainError>;
+    fn session_cookie_name(&self) -> &str;
+    fn inspect_token(&self, token: &str) -> Option<VerifiedSessionToken>;
+    fn revoke_token_in_memory(&self, jti: &str, expires_at: DateTime<Utc>);
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -433,6 +442,51 @@ impl SiweAuthService {
             format_iso_utc(expires_at)
         )
     }
+
+    pub async fn revoke_session(&self, session: &VerifiedSessionToken) -> Result<(), DomainError> {
+        let now = Utc::now();
+        let correlation_id = CorrelationIdContext::get_or_default("n/a");
+        let jti = session.jti.trim().to_string();
+        let wallet_address = session.principal.address.to_ascii_lowercase();
+        let chain_id = session.principal.chain_id;
+        let expires_at = session.expires_at;
+
+        in_tx(self.uow.as_ref(), move |repos| {
+            Box::pin(async move {
+                if !jti.is_empty() {
+                    repos
+                        .revoked_sessions()
+                        .revoke(&RevokedSession {
+                            jti: jti.clone(),
+                            wallet_address: wallet_address.clone(),
+                            expires_at,
+                            created_at: now,
+                        })
+                        .await?;
+                }
+                let resource_id = if jti.is_empty() {
+                    wallet_address.clone()
+                } else {
+                    jti.clone()
+                };
+                repos
+                    .audit_logs()
+                    .append(&AuditLogEntry {
+                        id: None,
+                        action: "AUTH_LOGOUT".to_string(),
+                        actor_address: Some(wallet_address),
+                        resource_type: "SESSION".to_string(),
+                        resource_id,
+                        correlation_id: Some(correlation_id),
+                        details: format!("Revoked wallet session jti={jti} on chainId={chain_id}"),
+                        created_at: now,
+                    })
+                    .await?;
+                Ok(())
+            })
+        })
+        .await
+    }
 }
 
 fn is_hex_signature_65(s: &str) -> bool {
@@ -479,5 +533,63 @@ mod tests {
         ));
         assert!(is_hex_signature_65(&format!("0X{}", "a".repeat(130))));
         assert!(is_hex_signature_65(&format!("0x{}", "a".repeat(130))));
+    }
+
+    #[tokio::test]
+    async fn revoke_session_persists_revoked_jti_and_maintains_tamper_evident_audit_hash_chain() {
+        use crate::test_support::InMemoryStore;
+        use safedeal_domain::dispute::verify_audit_log_chain;
+        use safedeal_domain::ports::{AuditLogRepository, RevokedSessionRepository};
+
+        struct DummySigVerifier;
+        impl SignatureVerifierPort for DummySigVerifier {
+            fn recover_address_from_personal_sign(
+                &self,
+                _message: &str,
+                _signature_hex: &str,
+            ) -> Result<String, DomainError> {
+                Ok("0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266".to_string())
+            }
+        }
+
+        let store = InMemoryStore::new();
+        let svc = SiweAuthService::new(
+            Arc::clone(&store) as Arc<dyn UnitOfWork>,
+            Arc::new(DummySigVerifier),
+            SiweSettings::new("localhost:5173", "http://localhost:5173", 43113, 300),
+        );
+
+        let wallet = "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266";
+        svc.issue_challenge(wallet, 43113).await.unwrap();
+
+        let now = Utc::now();
+        let session = VerifiedSessionToken {
+            principal: AuthenticatedPrincipal {
+                address: wallet.to_string(),
+                chain_id: 43113,
+                authenticated_at: now,
+                csrf_token: "csrf_123".to_string(),
+            },
+            jti: "session-jti-uuid-001".to_string(),
+            expires_at: now + Duration::hours(1),
+        };
+        svc.revoke_session(&session).await.unwrap();
+
+        assert!(
+            RevokedSessionRepository::is_revoked(store.as_ref(), "session-jti-uuid-001", now)
+                .await
+                .unwrap()
+        );
+
+        let mut chained = AuditLogRepository::list_all(store.as_ref()).await.unwrap();
+        assert_eq!(chained.len(), 2);
+        assert_eq!(chained[0].entry.action, "AUTH_NONCE_ISSUED");
+        assert_eq!(chained[1].entry.action, "AUTH_LOGOUT");
+        assert_eq!(chained[1].prev_hash, chained[0].entry_hash);
+        assert!(verify_audit_log_chain(&chained).is_ok());
+
+        // Mutating any recorded audit entry breaks SHA-256 chain verification
+        chained[1].entry.details = "tampered logout log".to_string();
+        assert!(verify_audit_log_chain(&chained).is_err());
     }
 }

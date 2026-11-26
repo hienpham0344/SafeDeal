@@ -19,3 +19,6 @@ fail_on_revert = false
 [rpc_endpoints]
 local = "${LOCAL_RPC_URL:-http://127.0.0.1:8545}"
 fuji = "${FUJI_RPC_URL:-https://api.avax-test.network/ext/bc/C/rpc}"
+
+[etherscan]
+fuji = { key = "${SNOWTRACE_API_KEY:-verifyContract}", chain = 43113, url = "https://api.routescan.io/v2/network/testnet/evm/43113/etherscan/api" }

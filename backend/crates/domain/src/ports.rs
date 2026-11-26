@@ -6,12 +6,12 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use futures::future::BoxFuture;
 
-use crate::auth::{AuthNonce, UserAccount};
+use crate::auth::{AuthNonce, RevokedSession, UserAccount};
 use crate::blockchain::{
     ChainSyncState, OnChainTradeSnapshot, TransactionVerificationResult, VerifiedChainEvent,
 };
 use crate::deal::{BlockchainTransaction, Deal, DealEvent, DealStatus};
-use crate::dispute::{AuditLogEntry, Dispute, DisputeEvidence, DisputeVote};
+use crate::dispute::{AuditLogEntry, ChainedAuditLogEntry, Dispute, DisputeEvidence, DisputeVote};
 use safedeal_shared::DomainError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,6 +43,14 @@ pub enum EvidenceDownloadPayload {
 #[async_trait]
 pub trait AuditLogRepository: Send + Sync {
     async fn append(&self, entry: &AuditLogEntry) -> Result<(), DomainError>;
+    async fn list_all(&self) -> Result<Vec<ChainedAuditLogEntry>, DomainError>;
+}
+
+#[async_trait]
+pub trait RevokedSessionRepository: Send + Sync {
+    async fn revoke(&self, session: &RevokedSession) -> Result<(), DomainError>;
+    async fn is_revoked(&self, jti: &str, now: DateTime<Utc>) -> Result<bool, DomainError>;
+    async fn delete_expired_before(&self, cutoff: DateTime<Utc>) -> Result<u64, DomainError>;
 }
 
 #[async_trait]
@@ -241,6 +249,7 @@ pub trait TxRepos: Send + Sync {
     fn disputes(&self) -> &dyn DisputeRepository;
     fn dispute_votes(&self) -> &dyn DisputeVoteRepository;
     fn auth_nonces(&self) -> &dyn AuthNonceRepository;
+    fn revoked_sessions(&self) -> &dyn RevokedSessionRepository;
     fn users(&self) -> &dyn UserRepository;
     fn deal_events(&self) -> &dyn DealEventRepository;
     fn chain_events(&self) -> &dyn ChainEventRepository;

@@ -533,6 +533,59 @@ export function SupportPage() {
             </div>
           </Panel>
         </div>
+
+        {/* Privacy & Non-Custodial Data Policy (#privacy-policy deep-link target for Chrome Web Store) */}
+        <section id="privacy-policy" aria-labelledby="privacy-policy-heading" className="scroll-mt-24">
+          <Panel variant="inset" className="space-y-4">
+            <div className="flex flex-wrap items-start justify-between gap-3 border-b border-sd-line pb-3.5">
+              <div>
+                <h2 id="privacy-policy-heading" className="text-base font-medium text-white">
+                  Privacy &amp; Non-Custodial Data Policy
+                </h2>
+                <p className="mt-0.5 text-xs text-sd-inkMuted">
+                  Applies to the SafeDeal Web App and the SafeDeal Escrow Companion Chrome Extension
+                </p>
+              </div>
+              <span className="shrink-0 rounded-md border border-emerald-400/30 bg-emerald-500/10 px-2.5 py-1 font-mono text-[10px] uppercase tracking-wider text-emerald-200">
+                Non-Custodial • Zero Tracking
+              </span>
+            </div>
+
+            <div className="grid gap-4 text-xs leading-relaxed text-sd-inkMuted md:grid-cols-3">
+              <div className="rounded-xl border border-sd-line bg-sd-surface/60 p-4 space-y-1.5">
+                <p className="font-mono text-[11px] font-medium uppercase tracking-wider text-white">
+                  1. Zero Key Custody
+                </p>
+                <p>
+                  SafeDeal never requests, accesses, transmits, or stores private keys or seed phrases. All
+                  EIP-4361 SIWE authentication signatures and Avalanche escrow transactions are signed strictly inside
+                  your wallet.
+                </p>
+              </div>
+
+              <div className="rounded-xl border border-sd-line bg-sd-surface/60 p-4 space-y-1.5">
+                <p className="font-mono text-[11px] font-medium uppercase tracking-wider text-white">
+                  2. Scoped Deal &amp; Evidence Data
+                </p>
+                <p>
+                  Off-chain records store only wallet addresses, RFC 8785 canonical deal terms, and SHA-256 verified
+                  dispute evidence restricted to deal participants and the assigned arbiter. Extension on-chain checks
+                  query public RPC endpoints without ambient cookies.
+                </p>
+              </div>
+
+              <div className="rounded-xl border border-sd-line bg-sd-surface/60 p-4 space-y-1.5">
+                <p className="font-mono text-[11px] font-medium uppercase tracking-wider text-white">
+                  3. No Profiling or Data Sales
+                </p>
+                <p>
+                  We do not embed advertising trackers, collect browsing history, or sell user data to third parties.
+                  Watched trade IDs and draft selections in the browser extension remain stored locally on your device.
+                </p>
+              </div>
+            </div>
+          </Panel>
+        </section>
       </div>
     </AppShell>
   );

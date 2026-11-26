@@ -123,7 +123,7 @@ test.describe("Application Navigation, Error Boundaries & Wallet Session UI", ()
         contentType: "application/json",
         body: JSON.stringify({
           nonce: "1234567890abcdef",
-          message: `localhost:4173 wants you to sign in with your Ethereum account:\n${TEST_WALLET}\n\nSign in to SafeDeal.\n\nURI: http://localhost:4173\nVersion: 1\nChain ID: 31337\nNonce: 1234567890abcdef\nIssued At: 2026-11-10T12:00:00Z`,
+          message: `127.0.0.1:4173 wants you to sign in with your Ethereum account:\n${TEST_WALLET}\n\nSign in to SafeDeal.\n\nURI: http://127.0.0.1:4173\nVersion: 1\nChain ID: 31337\nNonce: 1234567890abcdef\nIssued At: 2026-11-10T12:00:00Z`,
           expiresAt: "2026-11-10T12:05:00Z",
         }),
       });
@@ -350,6 +350,7 @@ test.describe("Application Navigation, Error Boundaries & Wallet Session UI", ()
       let result: unknown = null;
       if (req.method === "eth_chainId") result = "0x7a69";
       else if (req.method === "eth_blockNumber") result = "0x10";
+      else if (req.method === "eth_getCode") result = "0x6080604052";
       else if (req.method === "eth_getTransactionReceipt") {
         result = {
           transactionHash: confirmedTx,

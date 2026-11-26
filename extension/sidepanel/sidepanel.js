@@ -6,18 +6,39 @@
  * - Uses chrome.storage.local for persistence
  */
 
-import { computeCanonicalTermsHash } from "../shared/canonical-terms.js";
+import { computeCanonicalTermsHash, formatWeiToAvax } from "../shared/canonical-terms.js";
 import {
   claimableBalance,
+  DEFAULT_API_BASE_URL,
   DEFAULT_ESCROW_CONTRACT,
+  DEFAULT_FUJI_RPC_URL,
   DEFAULT_WEB_APP_URL,
   fetchDealVerification,
+  validateSafeEndpointUrl,
 } from "../shared/rpc-client.js";
 
 const SAMPLE_TRADE_ID =
   "0xbf5ef59687168af6140d2ebd15e63b94df1ac4d3206e45f3a2f681cb962ade62";
 
 let lastVerifiedDeal = null;
+
+async function getStoredEndpointConfig() {
+  const stored = await chrome.storage.local.get([
+    "rpcUrl",
+    "apiBaseUrl",
+    "contractAddress",
+    "webAppUrl",
+  ]);
+  const rawContract = String(stored.contractAddress || DEFAULT_ESCROW_CONTRACT).trim();
+  return {
+    rpcUrl: stored.rpcUrl || DEFAULT_FUJI_RPC_URL,
+    apiBaseUrl: stored.apiBaseUrl || DEFAULT_API_BASE_URL,
+    contractAddress: /^0x[0-9a-fA-F]{40}$/.test(rawContract)
+      ? rawContract
+      : DEFAULT_ESCROW_CONTRACT,
+    webAppUrl: stored.webAppUrl || DEFAULT_WEB_APP_URL,
+  };
+}
 
 function shortenHex(value, prefix = 8, suffix = 6) {
   if (!value || typeof value !== "string") return "—";
@@ -88,7 +109,11 @@ function renderVerifyResult(data) {
     : "0 / 3";
 
   const snowtraceLink = document.getElementById("res-snowtrace-link");
-  snowtraceLink.href = `https://testnet.snowtrace.io/address/${data.contractAddress || DEFAULT_ESCROW_CONTRACT}`;
+  const candidateContract = String(data.contractAddress || DEFAULT_ESCROW_CONTRACT).trim();
+  const safeContractAddress = /^0x[0-9a-fA-F]{40}$/.test(candidateContract)
+    ? candidateContract
+    : DEFAULT_ESCROW_CONTRACT;
+  snowtraceLink.href = `https://testnet.snowtrace.io/address/${safeContractAddress}`;
 
   const watchBtn = document.getElementById("btn-watch-current");
   watchBtn.disabled = false;
@@ -104,7 +129,12 @@ async function handleVerifySubmit(event) {
   setBanner(banner, "Querying Avalanche Fuji C-Chain RPC (eth_call)…", "warn");
 
   try {
-    const data = await fetchDealVerification(rawValue);
+    const { rpcUrl, apiBaseUrl, contractAddress } = await getStoredEndpointConfig();
+    const data = await fetchDealVerification(rawValue, {
+      rpcUrl,
+      apiBaseUrl,
+      contractAddress,
+    });
     renderVerifyResult(data);
 
     if (data.existsOnChain) {
@@ -277,7 +307,12 @@ async function handleClaimableCheck(event) {
 
   setBanner(banner, "Checking claimableBalances(address) on Avalanche Fuji…", "warn");
   try {
-    const res = await claimableBalance(address);
+    const { rpcUrl, apiBaseUrl, contractAddress } = await getStoredEndpointConfig();
+    const res = await claimableBalance(address, {
+      rpcUrl,
+      apiBaseUrl,
+      contractAddress,
+    });
     setBanner(
       banner,
       `Claimable Pull-Payment Balance: ${res.claimableAvax} AVAX (${res.claimableWei} wei)`,
@@ -352,14 +387,22 @@ async function initSidePanel() {
   document.getElementById("btn-open-create-dapp").addEventListener("click", async () => {
     const { input, termsHash } = await recomputeTermsHash();
     const { webAppUrl = DEFAULT_WEB_APP_URL } = await chrome.storage.local.get("webAppUrl");
-    const params = new URLSearchParams({
-      title: input.title,
-      description: input.description,
-      terms: input.terms,
-      termsHash,
-    });
+    let parsedWebUrl;
+    try {
+      parsedWebUrl = new URL(String(webAppUrl).trim());
+      validateSafeEndpointUrl(parsedWebUrl.toString(), "webAppUrl");
+    } catch {
+      parsedWebUrl = new URL(DEFAULT_WEB_APP_URL);
+    }
+    const basePath = parsedWebUrl.pathname.replace(/\/+$/, "");
+    const createUrl = new URL(`${parsedWebUrl.origin}${basePath}/create`);
+    createUrl.searchParams.set("title", input.title);
+    createUrl.searchParams.set("amountAvax", formatWeiToAvax(input.amountWei, 6));
+    createUrl.searchParams.set("description", input.description);
+    createUrl.searchParams.set("terms", input.terms);
+    createUrl.searchParams.set("termsHash", termsHash);
     await chrome.tabs.create({
-      url: `${webAppUrl.replace(/\/+$/, "")}/create?${params.toString()}`,
+      url: createUrl.toString(),
     });
   });
 

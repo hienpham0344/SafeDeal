@@ -72,7 +72,7 @@ impl DbTestGuard {
 
 pub async fn truncate_all_tables(pool: &PgPool) {
     sqlx::query(
-        "TRUNCATE TABLE audit_logs, dispute_evidence, disputes, chain_events, blockchain_transactions, deal_events, deal_terms, deals, chain_sync_state, auth_nonces, users RESTART IDENTITY CASCADE",
+        "TRUNCATE TABLE audit_logs, revoked_sessions, dispute_evidence, disputes, chain_events, blockchain_transactions, deal_events, deal_terms, deals, chain_sync_state, auth_nonces, users RESTART IDENTITY CASCADE",
     )
     .execute(pool)
     .await

@@ -9,6 +9,21 @@ pub struct AuthenticatedPrincipal {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedSessionToken {
+    pub principal: AuthenticatedPrincipal,
+    pub jti: String,
+    pub expires_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RevokedSession {
+    pub jti: String,
+    pub wallet_address: String,
+    pub expires_at: DateTime<Utc>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthNonce {
     pub id: Option<i64>,
     pub nonce: String,

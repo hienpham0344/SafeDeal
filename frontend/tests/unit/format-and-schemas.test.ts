@@ -4,7 +4,14 @@ import { validateSplitAllocation } from "@/features/arbitration/api/arbitration-
 import { createDealSchema } from "@/features/deals/schemas/create-deal.schema";
 import { validateEvidenceFile } from "@/features/disputes/schemas/dispute.schema";
 import { ApiClientError, shouldRetryQueryError } from "@/services/http/api-client";
-import { formatAvax, parseAvaxToWei, shortenAddress } from "@/utils/format";
+import {
+  detectAddressPoisoningLookalike,
+  evaluateArbiterTrust,
+  formatApproximateFiatFromWei,
+  formatAvax,
+  parseAvaxToWei,
+  shortenAddress,
+} from "@/utils/format";
 
 describe("format and validation schemas", () => {
   it("rejects zero addresses in optional frontend env address variables", () => {
@@ -156,5 +163,33 @@ describe("format and validation schemas", () => {
 
     expect(shouldRetryQueryError(0, new Error("Network timeout"))).toBe(true);
     expect(shouldRetryQueryError(2, new Error("Network timeout"))).toBe(false);
+  });
+
+  it("computes bigint-only approximate USD/VND fiat helpers, arbiter trust shield, and address poisoning lookalikes", () => {
+    const halfAvax = formatApproximateFiatFromWei(500_000_000_000_000_000n);
+    expect(halfAvax.usd).toBe("$12.50 USD");
+    expect(halfAvax.vnd).toBe("317,500 VNĐ");
+
+    const seller = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
+    const poisonedArbiter = "0xf39F000000000000000000000000000000002266";
+    const safeArbiter = "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC";
+
+    expect(
+      detectAddressPoisoningLookalike([
+        { role: "Seller", address: seller },
+        { role: "Arbiter", address: poisonedArbiter },
+      ])
+    ).toMatch(/Seller and Arbiter share identical 4-character prefix/i);
+
+    expect(
+      detectAddressPoisoningLookalike([
+        { role: "Seller", address: seller },
+        { role: "Arbiter", address: safeArbiter },
+      ])
+    ).toBeNull();
+
+    expect(evaluateArbiterTrust(safeArbiter, safeArbiter.toLowerCase())).toBe("verified");
+    expect(evaluateArbiterTrust(poisonedArbiter, safeArbiter)).toBe("custom");
+    expect(evaluateArbiterTrust("", safeArbiter)).toBe("none");
   });
 });

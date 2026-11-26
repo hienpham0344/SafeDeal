@@ -354,6 +354,13 @@ async fn gateway_throws_external_service_when_block_header_is_null_instead_of_fa
         .await;
 
     Mock::given(method("POST"))
+        .and(body_string_contains("eth_blockNumber"))
+        .respond_with(|req: &Request| json_rpc_response(req, json!("0xa")))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
         .and(body_string_contains("eth_getBlockByNumber"))
         .respond_with(|req: &Request| json_rpc_response(req, Value::Null))
         .expect(1)
@@ -549,4 +556,52 @@ async fn gateway_fetch_trade_and_block_number_work_over_json_rpc() {
     assert_eq!(fetched.chain_status_ordinal, 1);
     assert_eq!(fetched.buyer, None);
     assert_eq!(fetched.amount_wei, "2000000000000000000");
+}
+
+#[tokio::test]
+async fn gateway_verifies_receipt_finality_against_latest_block_even_with_one_confirmation() {
+    let server = MockServer::start().await;
+    let tx_hash = format!("0x{}", "7".repeat(64));
+
+    Mock::given(method("POST"))
+        .and(body_string_contains("eth_getTransactionReceipt"))
+        .respond_with(|req: &Request| {
+            json_rpc_response(
+                req,
+                json!({
+                    "transactionHash": format!("0x{}", "7".repeat(64)),
+                    "transactionIndex": "0x0",
+                    "blockHash": format!("0x{}", "8".repeat(64)),
+                    "blockNumber": "0x10",
+                    "from": "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+                    "to": CONTRACT,
+                    "cumulativeGasUsed": "0x5208",
+                    "gasUsed": "0x5208",
+                    "contractAddress": Value::Null,
+                    "logs": [],
+                    "logsBloom": format!("0x{}", "0".repeat(512)),
+                    "status": "0x1",
+                    "effectiveGasPrice": "0x3b9aca00",
+                    "type": "0x2"
+                }),
+            )
+        })
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    // Lagging RPC head (latest_block = 0xf < receipt_block = 0x10) must return Ok(None)
+    Mock::given(method("POST"))
+        .and(body_string_contains("eth_blockNumber"))
+        .respond_with(|req: &Request| json_rpc_response(req, json!("0xf")))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let gateway = gateway_for_url(&server.uri());
+    let pending = gateway
+        .inspect_transaction(&tx_hash)
+        .await
+        .expect("inspect lagging head");
+    assert!(pending.is_none());
 }

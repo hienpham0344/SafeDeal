@@ -1,37 +1,45 @@
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use chrono::{DateTime, Utc};
 use hmac::{Hmac, Mac};
-use safedeal_domain::auth::AuthenticatedPrincipal;
+use safedeal_domain::auth::{AuthenticatedPrincipal, VerifiedSessionToken};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use subtle::ConstantTimeEq;
+use uuid::Uuid;
 
 use crate::config::AuthSecurityConfig;
 
 type HmacSha256 = Hmac<Sha256>;
 
 const HEADER_JSON: &[u8] = br#"{"alg":"HS256","typ":"JWT"}"#;
+const MAX_CACHED_REVOKED_JTIS: usize = 16_384;
 
 #[derive(Debug, Deserialize)]
 struct JwtHeader {
     alg: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct SessionClaims {
-    sub: String,
-    chain_id: i64,
-    csrf: String,
-    iat: i64,
-    exp: i64,
+pub struct SessionClaims {
+    pub sub: String,
+    pub chain_id: i64,
+    pub csrf: String,
+    pub iat: i64,
+    pub exp: i64,
+    #[serde(default)]
+    pub jti: String,
 }
 
 #[derive(Clone)]
 pub struct JwtSessionService {
     hmac_key_bytes: Vec<u8>,
     session_ttl_seconds: i64,
+    revoked_jtis: Arc<Mutex<HashMap<String, DateTime<Utc>>>>,
 }
 
 impl JwtSessionService {
@@ -39,6 +47,7 @@ impl JwtSessionService {
         Self {
             hmac_key_bytes: config.jwt_secret.as_bytes().to_vec(),
             session_ttl_seconds: config.session_ttl_seconds,
+            revoked_jtis: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -51,6 +60,7 @@ impl JwtSessionService {
             csrf: principal.csrf_token.clone(),
             iat,
             exp,
+            jti: Uuid::new_v4().to_string(),
         };
         let payload_json =
             serde_json::to_vec(&claims).map_err(|e| format!("Failed to encode JWT claims: {e}"))?;
@@ -62,8 +72,56 @@ impl JwtSessionService {
         Ok(format!("{signing_input}.{sig_b64}"))
     }
 
+    pub fn revoke_jti(&self, jti: &str, expires_at: DateTime<Utc>) {
+        self.revoke_jti_at(jti, expires_at, Utc::now());
+    }
+
+    pub fn revoke_jti_at(&self, jti: &str, expires_at: DateTime<Utc>, now: DateTime<Utc>) {
+        let trimmed = jti.trim();
+        if trimmed.is_empty() || now >= expires_at {
+            return;
+        }
+        let mut guard = self
+            .revoked_jtis
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if guard.len() >= MAX_CACHED_REVOKED_JTIS {
+            guard.retain(|_, &mut exp| exp > now);
+            if guard.len() >= MAX_CACHED_REVOKED_JTIS {
+                if let Some(earliest_key) = guard
+                    .iter()
+                    .min_by_key(|(_, &exp)| exp)
+                    .map(|(k, _)| k.clone())
+                {
+                    guard.remove(&earliest_key);
+                }
+            }
+        }
+        guard.insert(trimmed.to_string(), expires_at);
+    }
+
+    pub fn is_jti_revoked_at(&self, jti: &str, now: DateTime<Utc>) -> bool {
+        let trimmed = jti.trim();
+        if trimmed.is_empty() {
+            return false;
+        }
+        let mut guard = self
+            .revoked_jtis
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match guard.get(trimmed).copied() {
+            Some(exp) if exp > now => true,
+            Some(_) => {
+                guard.remove(trimmed);
+                false
+            }
+            None => false,
+        }
+    }
+
     pub fn verify_token(&self, token: &str) -> Option<AuthenticatedPrincipal> {
-        self.verify_token_at(token, Utc::now())
+        self.verify_session_token_at(token, Utc::now())
+            .map(|s| s.principal)
     }
 
     pub fn verify_token_at(
@@ -71,6 +129,19 @@ impl JwtSessionService {
         token: &str,
         now: DateTime<Utc>,
     ) -> Option<AuthenticatedPrincipal> {
+        self.verify_session_token_at(token, now)
+            .map(|s| s.principal)
+    }
+
+    pub fn verify_session_token(&self, token: &str) -> Option<VerifiedSessionToken> {
+        self.verify_session_token_at(token, Utc::now())
+    }
+
+    pub fn verify_session_token_at(
+        &self,
+        token: &str,
+        now: DateTime<Utc>,
+    ) -> Option<VerifiedSessionToken> {
         let trimmed = token.trim();
         if trimmed.is_empty() {
             return None;
@@ -108,13 +179,20 @@ impl JwtSessionService {
         if now >= exp {
             return None;
         }
+        if self.is_jti_revoked_at(&claims.jti, now) {
+            return None;
+        }
         let iat = DateTime::from_timestamp(claims.iat, 0)?;
 
-        Some(AuthenticatedPrincipal {
-            address: claims.sub.to_ascii_lowercase(),
-            chain_id: claims.chain_id,
-            authenticated_at: iat,
-            csrf_token: claims.csrf,
+        Some(VerifiedSessionToken {
+            principal: AuthenticatedPrincipal {
+                address: claims.sub.to_ascii_lowercase(),
+                chain_id: claims.chain_id,
+                authenticated_at: iat,
+                csrf_token: claims.csrf,
+            },
+            jti: claims.jti,
+            expires_at: exp,
         })
     }
 
@@ -147,7 +225,7 @@ mod tests {
     }
 
     #[test]
-    fn round_trips_hs256_claims_and_rejects_alg_none_tampering_or_expiry() {
+    fn round_trips_hs256_claims_and_rejects_alg_none_tampering_expiry_or_revoked_jti() {
         let svc = test_service();
         let now = DateTime::from_timestamp(1_770_000_000, 0).unwrap();
         let principal = AuthenticatedPrincipal {
@@ -158,12 +236,16 @@ mod tests {
         };
 
         let token = svc.create_token(&principal).unwrap();
-        let verified = svc
-            .verify_token_at(&token, now + Duration::seconds(10))
+        let session = svc
+            .verify_session_token_at(&token, now + Duration::seconds(10))
             .unwrap();
-        assert_eq!(verified.address, principal.address.to_ascii_lowercase());
-        assert_eq!(verified.chain_id, 31337);
-        assert_eq!(verified.csrf_token, "csrf_abc123");
+        assert_eq!(
+            session.principal.address,
+            principal.address.to_ascii_lowercase()
+        );
+        assert_eq!(session.principal.chain_id, 31337);
+        assert_eq!(session.principal.csrf_token, "csrf_abc123");
+        assert!(Uuid::parse_str(&session.jti).is_ok());
 
         // Expired token rejected
         assert!(svc
@@ -182,5 +264,12 @@ mod tests {
         altered.pop();
         altered.push(if token.ends_with('A') { 'B' } else { 'A' });
         assert!(svc.verify_token_at(&altered, now).is_none());
+
+        // Revoked jti immediately rejected across clones sharing the revocation cache
+        let cloned_svc = svc.clone();
+        svc.revoke_jti_at(&session.jti, session.expires_at, now);
+        assert!(cloned_svc
+            .verify_token_at(&token, now + Duration::seconds(15))
+            .is_none());
     }
 }

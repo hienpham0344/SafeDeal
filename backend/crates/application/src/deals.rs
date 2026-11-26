@@ -1128,10 +1128,15 @@ impl CleanupOrphanDraftsUseCase {
 
     pub async fn execute_with_cutoff(&self, cutoff: DateTime<Utc>) -> Result<u64, DomainError> {
         let correlation_id = CorrelationIdContext::get_or_default("cleanup");
+        let now = Utc::now();
         in_tx(self.uow.as_ref(), move |repos| {
             Box::pin(async move {
                 let purged = repos.deals().purge_expired_drafts(cutoff).await?;
                 let purged_nonces = repos.auth_nonces().delete_expired_before(cutoff).await?;
+                let purged_revoked = repos
+                    .revoked_sessions()
+                    .delete_expired_before(now.max(cutoff))
+                    .await?;
                 if purged > 0 {
                     repos
                         .audit_logs()
@@ -1143,9 +1148,9 @@ impl CleanupOrphanDraftsUseCase {
                             resource_id: format!("purged_count={purged}"),
                             correlation_id: Some(correlation_id),
                             details: format!(
-                                "Purged {purged} orphan deal drafts and {purged_nonces} expired auth nonces created before {cutoff}"
+                                "Purged {purged} orphan deal drafts, {purged_nonces} expired auth nonces, and {purged_revoked} expired revoked sessions created before {cutoff}"
                             ),
-                            created_at: Utc::now(),
+                            created_at: now,
                         })
                         .await?;
                 }
@@ -1263,6 +1268,9 @@ mod tests {
 
     #[tokio::test]
     async fn cleanup_orphan_drafts_also_deletes_expired_auth_nonces() {
+        use safedeal_domain::auth::RevokedSession;
+        use safedeal_domain::ports::RevokedSessionRepository;
+
         let store = InMemoryStore::new();
         let cleanup_uc =
             CleanupOrphanDraftsUseCase::new(Arc::clone(&store) as Arc<dyn UnitOfWork>, 86_400);
@@ -1295,6 +1303,29 @@ mod tests {
             .await
             .unwrap();
 
+        RevokedSessionRepository::revoke(
+            store.as_ref(),
+            &RevokedSession {
+                jti: "expired-jti-1".to_string(),
+                wallet_address: "0x1111111111111111111111111111111111111111".to_string(),
+                expires_at: now - chrono::Duration::minutes(2),
+                created_at: now - chrono::Duration::hours(1),
+            },
+        )
+        .await
+        .unwrap();
+        RevokedSessionRepository::revoke(
+            store.as_ref(),
+            &RevokedSession {
+                jti: "active-jti-2".to_string(),
+                wallet_address: "0x1111111111111111111111111111111111111111".to_string(),
+                expires_at: now + chrono::Duration::minutes(30),
+                created_at: now,
+            },
+        )
+        .await
+        .unwrap();
+
         cleanup_uc.execute().await.unwrap();
 
         assert!(
@@ -1308,6 +1339,12 @@ mod tests {
                 .await
                 .unwrap()
                 .is_some()
+        );
+        assert_eq!(store.state.lock().unwrap().revoked_sessions.len(), 1);
+        assert!(
+            RevokedSessionRepository::is_revoked(store.as_ref(), "active-jti-2", now)
+                .await
+                .unwrap()
         );
     }
 }

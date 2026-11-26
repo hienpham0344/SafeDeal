@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
-use std::time::Duration;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -11,9 +12,13 @@ use safedeal_shared::DomainError;
 use sha2::{Digest, Sha256};
 
 use crate::config::S3EvidenceConfig;
-use crate::storage::{validate_evidence_payload, validate_storage_key};
+use crate::storage::{
+    decrypt_evidence_bytes, encrypt_evidence_bytes, validate_evidence_payload,
+    validate_storage_key, ENCRYPTED_EVIDENCE_OVERHEAD,
+};
 
 type HmacSha256 = Hmac<Sha256>;
+const S3_READINESS_CACHE_TTL: Duration = Duration::from_secs(10);
 
 /// RFC 3986 unreserved characters (`ALPHA / DIGIT / "-" / "." / "_" / "~"`).
 const AWS_URI_ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC
@@ -39,11 +44,22 @@ pub struct S3EvidenceStorageAdapter {
     secret_access_key: String,
     key_prefix: String,
     force_path_style: bool,
+    server_side_encryption: bool,
+    encryption_key: Option<[u8; 32]>,
     max_bytes: usize,
+    readiness_cache: Mutex<Option<(Instant, bool)>>,
 }
 
 impl S3EvidenceStorageAdapter {
     pub fn new(config: &S3EvidenceConfig, max_bytes: usize) -> Result<Self, String> {
+        Self::with_encryption(config, max_bytes, None)
+    }
+
+    pub fn with_encryption(
+        config: &S3EvidenceConfig,
+        max_bytes: usize,
+        encryption_key: Option<[u8; 32]>,
+    ) -> Result<Self, String> {
         let trimmed_endpoint = config.endpoint.trim().trim_end_matches('/');
         let endpoint = Url::parse(trimmed_endpoint)
             .map_err(|e| format!("Invalid EVIDENCE_S3_ENDPOINT URL: {e}"))?;
@@ -79,7 +95,10 @@ impl S3EvidenceStorageAdapter {
             secret_access_key: config.secret_access_key.clone(),
             key_prefix: config.key_prefix.trim().trim_matches('/').to_string(),
             force_path_style: config.force_path_style,
+            server_side_encryption: config.server_side_encryption,
+            encryption_key,
             max_bytes,
+            readiness_cache: Mutex::new(None),
         })
     }
 
@@ -279,31 +298,45 @@ impl EvidenceStoragePort for S3EvidenceStorageAdapter {
         let key_segments = validate_storage_key(&validated.storage_key)?;
         let (url, canonical_uri, host_header) = self.build_object_url(&key_segments)?;
 
+        let body_bytes = encrypt_evidence_bytes(bytes, self.encryption_key.as_ref())?;
+        let payload_sha256 = if self.encryption_key.is_some() {
+            hex::encode(Sha256::digest(&body_bytes))
+        } else {
+            validated.sha256_hex.clone()
+        };
+
         let dispute_id_str = dispute_id.to_string();
-        let extra = [
+        let mut extra = vec![
             ("content-type", validated.mime_type.as_str()),
             ("x-amz-meta-safedeal-dispute-id", dispute_id_str.as_str()),
             ("x-amz-meta-safedeal-sha256", validated.sha256_hex.as_str()),
         ];
+        if self.server_side_encryption {
+            extra.push(("x-amz-server-side-encryption", "AES256"));
+        }
         let sig = self.sign_request(
             &Method::PUT,
             &canonical_uri,
             &host_header,
-            &validated.sha256_hex,
+            &payload_sha256,
             &extra,
             Utc::now(),
         )?;
 
-        let response = self
+        let mut req_builder = self
             .client
             .put(url)
             .header("content-type", &validated.mime_type)
             .header("x-amz-date", &sig.amz_date)
             .header("x-amz-content-sha256", &sig.payload_sha256)
             .header("x-amz-meta-safedeal-dispute-id", &dispute_id_str)
-            .header("x-amz-meta-safedeal-sha256", &validated.sha256_hex)
+            .header("x-amz-meta-safedeal-sha256", &validated.sha256_hex);
+        if self.server_side_encryption {
+            req_builder = req_builder.header("x-amz-server-side-encryption", "AES256");
+        }
+        let response = req_builder
             .header("authorization", &sig.authorization)
-            .body(bytes.to_vec())
+            .body(body_bytes)
             .send()
             .await
             .map_err(|e| {
@@ -373,8 +406,14 @@ impl EvidenceStoragePort for S3EvidenceStorageAdapter {
             }
         }
 
+        let max_stored_bytes = if self.encryption_key.is_some() {
+            self.max_bytes.saturating_add(ENCRYPTED_EVIDENCE_OVERHEAD)
+        } else {
+            self.max_bytes
+        };
+
         if let Some(declared_len) = response.content_length() {
-            if declared_len > self.max_bytes as u64 {
+            if declared_len > max_stored_bytes as u64 {
                 return Err(DomainError::internal(
                     "Stored evidence object exceeds maximum configured evidence byte limit.",
                 ));
@@ -385,7 +424,7 @@ impl EvidenceStoragePort for S3EvidenceStorageAdapter {
         while let Some(chunk) = response.chunk().await.map_err(|e| {
             DomainError::external_service(format!("Failed streaming evidence object bytes: {e}"))
         })? {
-            if out.len().saturating_add(chunk.len()) > self.max_bytes {
+            if out.len().saturating_add(chunk.len()) > max_stored_bytes {
                 return Err(DomainError::internal(
                     "Stored evidence object exceeds maximum configured evidence byte limit.",
                 ));
@@ -393,7 +432,14 @@ impl EvidenceStoragePort for S3EvidenceStorageAdapter {
             out.extend_from_slice(&chunk);
         }
 
-        Ok(out)
+        let plaintext = decrypt_evidence_bytes(&out, self.encryption_key.as_ref())?;
+        if plaintext.len() > self.max_bytes {
+            return Err(DomainError::internal(
+                "Stored evidence object exceeds maximum configured evidence byte limit.",
+            ));
+        }
+
+        Ok(plaintext)
     }
 
     async fn open_download(
@@ -450,32 +496,49 @@ impl EvidenceStoragePort for S3EvidenceStorageAdapter {
     }
 
     async fn is_storage_ready(&self) -> bool {
-        let Ok((url, canonical_uri, host_header)) = self.build_bucket_url() else {
-            return false;
-        };
-        let Ok(sig) = self.sign_request(
-            &Method::HEAD,
-            &canonical_uri,
-            &host_header,
-            EMPTY_PAYLOAD_SHA256,
-            &[],
-            Utc::now(),
-        ) else {
-            return false;
-        };
-
-        match self
-            .readiness_client
-            .head(url)
-            .header("x-amz-date", &sig.amz_date)
-            .header("x-amz-content-sha256", &sig.payload_sha256)
-            .header("authorization", &sig.authorization)
-            .send()
-            .await
-        {
-            Ok(resp) => resp.status().is_success(),
-            Err(_) => false,
+        if let Ok(guard) = self.readiness_cache.lock() {
+            if let Some((checked_at, ready)) = *guard {
+                if checked_at.elapsed() < S3_READINESS_CACHE_TTL {
+                    return ready;
+                }
+            }
         }
+
+        let ready = async {
+            let Ok((url, canonical_uri, host_header)) = self.build_bucket_url() else {
+                return false;
+            };
+            let Ok(sig) = self.sign_request(
+                &Method::HEAD,
+                &canonical_uri,
+                &host_header,
+                EMPTY_PAYLOAD_SHA256,
+                &[],
+                Utc::now(),
+            ) else {
+                return false;
+            };
+
+            match self
+                .readiness_client
+                .head(url)
+                .header("x-amz-date", &sig.amz_date)
+                .header("x-amz-content-sha256", &sig.payload_sha256)
+                .header("authorization", &sig.authorization)
+                .send()
+                .await
+            {
+                Ok(resp) => resp.status().is_success(),
+                Err(_) => false,
+            }
+        }
+        .await;
+
+        if let Ok(mut guard) = self.readiness_cache.lock() {
+            *guard = Some((Instant::now(), ready));
+        }
+
+        ready
     }
 }
 
@@ -497,6 +560,7 @@ mod tests {
             key_prefix: "evidence".to_string(),
             force_path_style: true,
             timeout_ms: 5_000,
+            server_side_encryption: false,
         }
     }
 
@@ -627,5 +691,61 @@ mod tests {
             .mount(&server)
             .await;
         assert!(!adapter.is_storage_ready().await);
+    }
+
+    #[tokio::test]
+    async fn caches_s3_readiness_for_ten_seconds_and_supports_aes256_gcm_and_sse_header() {
+        let server = MockServer::start().await;
+        let mut cfg = test_s3_config(server.uri());
+        cfg.server_side_encryption = true;
+        let key = [0x55u8; 32];
+        let adapter = S3EvidenceStorageAdapter::with_encryption(&cfg, 64, Some(key)).unwrap();
+
+        Mock::given(method("HEAD"))
+            .and(path("/safedeal-evidence"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        assert!(adapter.is_storage_ready().await);
+        // Second readiness check within 10s uses cached result without a second HEAD call
+        assert!(adapter.is_storage_ready().await);
+
+        let plain_txt = b"confidential S3 arbitration attachment";
+        let expected_plain_sha = hex::encode(Sha256::digest(plain_txt));
+
+        Mock::given(method("PUT"))
+            .and(header("x-amz-server-side-encryption", "AES256"))
+            .and(header(
+                "x-amz-meta-safedeal-sha256",
+                expected_plain_sha.as_str(),
+            ))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let stored = adapter
+            .store(77, "note.txt", Some("text/plain"), plain_txt)
+            .await
+            .unwrap();
+        assert_eq!(stored.sha256_hex, expected_plain_sha);
+
+        let requests = server.received_requests().await.unwrap();
+        let put_req = requests.iter().find(|r| r.method == "PUT").unwrap();
+        assert!(put_req.body.starts_with(b"SDE1"));
+        let encrypted_uploaded = put_req.body.clone();
+
+        let expected_object_path = format!("/safedeal-evidence/evidence/{}", stored.storage_key);
+        Mock::given(method("GET"))
+            .and(path(expected_object_path.as_str()))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(encrypted_uploaded))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let loaded = adapter.load(&stored.storage_key).await.unwrap();
+        assert_eq!(loaded, plain_txt);
     }
 }

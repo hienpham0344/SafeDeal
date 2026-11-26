@@ -13,9 +13,14 @@ import {
   useRecordTimeoutResolutionMutation,
   useSubmitDisputeVoteMutation,
 } from "@/features/disputes/hooks/useDisputes";
-import { useEscrowContractExecutor } from "@/features/escrow/hooks/useEscrowActions";
+import {
+  useEscrowContractExecutor,
+  useOnChainDisputeVotes,
+} from "@/features/escrow/hooks/useEscrowActions";
 import type { DisputeDetail, DisputeEvidenceItem, DisputeVote, VoterRole } from "@/types/api";
 import { formatAvax, formatTimestamp, shortenAddress } from "@/utils/format";
+
+const ZERO_BYTES32 = "0x0000000000000000000000000000000000000000000000000000000000000000";
 
 function shouldClearFailedPendingTx(message: string): boolean {
   const normalized = message.toLowerCase();
@@ -137,6 +142,7 @@ export function DisputeConsensusPanel({
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
   const executor = useEscrowContractExecutor();
+  const onChainVotesQuery = useOnChainDisputeVotes(dispute.tradeId);
   const { waitForHash } = executor;
   const submitVote = useSubmitDisputeVoteMutation();
   const recordResolution = useRecordResolutionMutation();
@@ -586,8 +592,28 @@ export function DisputeConsensusPanel({
         {(["BUYER", "SELLER", "ARBITER"] as const).map((role) => {
           const vote = votes.find((v) => v.voterRole === role);
           const meta = ROLE_METADATA[role];
+          const onChainRoleHash = onChainVotesQuery.data
+            ? role === "BUYER"
+              ? onChainVotesQuery.data.buyerVoteHash
+              : role === "SELLER"
+                ? onChainVotesQuery.data.sellerVoteHash
+                : onChainVotesQuery.data.arbiterVoteHash
+            : undefined;
+          const hasOnChainVoteHash = Boolean(
+            typeof onChainRoleHash === "string" && onChainRoleHash.toLowerCase() !== ZERO_BYTES32
+          );
+          const isOnChainVoteVerified = Boolean(
+            vote && hasOnChainVoteHash && onChainRoleHash?.toLowerCase() === vote.proposalHash.toLowerCase()
+          );
+          const isOnChainVoteMismatch = Boolean(
+            vote &&
+              onChainVotesQuery.isSuccess &&
+              typeof onChainRoleHash === "string" &&
+              onChainRoleHash.toLowerCase() !== vote.proposalHash.toLowerCase()
+          );
           const canCoSign =
             Boolean(vote) &&
+            !isOnChainVoteMismatch &&
             dispute.status === "OPEN" &&
             callerRole !== null &&
             callerRole !== role &&
@@ -624,6 +650,17 @@ export function DisputeConsensusPanel({
                   <p className="font-mono text-white tabular-nums">
                     Seller: {formatAvax(vote.sellerAwardWei)}
                   </p>
+                  {isOnChainVoteVerified && (
+                    <p className="inline-flex flex-wrap items-center gap-1 font-mono text-[11px] text-emerald-300">
+                      <ShieldCheck size={11} aria-hidden="true" />
+                      <span>On-chain vote hash verified</span>
+                    </p>
+                  )}
+                  {isOnChainVoteMismatch && (
+                    <p className="font-mono text-[11px] text-rose-300">
+                      On-chain vote hash mismatch — verify contract state
+                    </p>
+                  )}
                   {vote.rationale && (
                     <p className="line-clamp-2 text-[11px] text-sd-inkMuted">{vote.rationale}</p>
                   )}
@@ -654,9 +691,16 @@ export function DisputeConsensusPanel({
                   )}
                 </div>
               ) : (
-                <p className="text-[11px] text-sd-inkSubtle">
-                  No settlement proposal signed yet.
-                </p>
+                <div className="space-y-1">
+                  <p className="text-[11px] text-sd-inkSubtle">
+                    No settlement proposal signed yet.
+                  </p>
+                  {hasOnChainVoteHash && onChainRoleHash && (
+                    <p className="font-mono text-[11px] text-amber-300">
+                      On-chain vote hash recorded ({shortenAddress(onChainRoleHash, 6)})
+                    </p>
+                  )}
+                </div>
               )}
             </div>
           );

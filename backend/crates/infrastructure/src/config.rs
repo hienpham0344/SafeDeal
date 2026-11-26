@@ -169,6 +169,7 @@ pub struct S3EvidenceConfig {
     pub key_prefix: String,
     pub force_path_style: bool,
     pub timeout_ms: u64,
+    pub server_side_encryption: bool,
 }
 
 impl fmt::Debug for S3EvidenceConfig {
@@ -182,23 +183,42 @@ impl fmt::Debug for S3EvidenceConfig {
             .field("key_prefix", &self.key_prefix)
             .field("force_path_style", &self.force_path_style)
             .field("timeout_ms", &self.timeout_ms)
+            .field("server_side_encryption", &self.server_side_encryption)
             .finish()
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct EvidenceConfig {
     pub backend: EvidenceStorageBackend,
     pub storage_dir: String,
     pub s3: Option<S3EvidenceConfig>,
     pub max_bytes: usize,
     pub max_request_bytes: usize,
+    pub encryption_key: Option<[u8; 32]>,
+}
+
+impl fmt::Debug for EvidenceConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EvidenceConfig")
+            .field("backend", &self.backend)
+            .field("storage_dir", &self.storage_dir)
+            .field("s3", &self.s3)
+            .field("max_bytes", &self.max_bytes)
+            .field("max_request_bytes", &self.max_request_bytes)
+            .field(
+                "encryption_key",
+                &self.encryption_key.as_ref().map(|_| "[REDACTED]"),
+            )
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct RateLimitConfig {
     pub enabled: bool,
     pub auth_requests_per_minute: usize,
+    pub trust_proxy_headers: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -334,8 +354,16 @@ impl AppConfig {
                     .unwrap_or_default(),
                 force_path_style: parse_bool(vars, "EVIDENCE_S3_FORCE_PATH_STYLE", true)?,
                 timeout_ms: parse_u64(vars, "EVIDENCE_S3_TIMEOUT_MS", 15_000, 1_000)?,
+                server_side_encryption: parse_bool_with_fallback(
+                    vars,
+                    "S3_SERVER_SIDE_ENCRYPTION",
+                    Some("EVIDENCE_S3_SERVER_SIDE_ENCRYPTION"),
+                    false,
+                )?,
             }),
         };
+
+        let evidence_encryption_key = parse_optional_hex_key_32(vars, "EVIDENCE_ENCRYPTION_KEY")?;
 
         let evidence = EvidenceConfig {
             backend: evidence_backend,
@@ -344,11 +372,13 @@ impl AppConfig {
             s3: evidence_s3,
             max_bytes: evidence_max_bytes,
             max_request_bytes: evidence_max_request_bytes,
+            encryption_key: evidence_encryption_key,
         };
 
         let rate_limit = RateLimitConfig {
             enabled: parse_bool(vars, "RATE_LIMIT_ENABLED", true)?,
             auth_requests_per_minute: parse_usize(vars, "AUTH_RATE_LIMIT_PER_MINUTE", 30, 1)?,
+            trust_proxy_headers: parse_bool(vars, "AUTH_TRUST_PROXY_HEADERS", is_prod_or_staging)?,
         };
 
         let draft_ttl_seconds = parse_i64(vars, "DEAL_DRAFT_TTL_SECONDS", 86_400, 60)?;
@@ -782,9 +812,21 @@ fn parse_bool(
     key: &str,
     default: bool,
 ) -> Result<bool, ConfigError> {
-    match non_empty(vars, key) {
+    parse_bool_with_fallback(vars, key, None, default)
+}
+
+fn parse_bool_with_fallback(
+    vars: &HashMap<String, String>,
+    primary: &str,
+    fallback: Option<&str>,
+    default: bool,
+) -> Result<bool, ConfigError> {
+    let selected = non_empty(vars, primary)
+        .map(|v| (primary, v))
+        .or_else(|| fallback.and_then(|fb| non_empty(vars, fb).map(|v| (fb, v))));
+    match selected {
         None => Ok(default),
-        Some(v) => match v.to_ascii_lowercase().as_str() {
+        Some((key, v)) => match v.to_ascii_lowercase().as_str() {
             "true" | "1" | "yes" => Ok(true),
             "false" | "0" | "no" => Ok(false),
             other => Err(ConfigError::new(format!(
@@ -792,6 +834,28 @@ fn parse_bool(
             ))),
         },
     }
+}
+
+fn parse_optional_hex_key_32(
+    vars: &HashMap<String, String>,
+    key: &str,
+) -> Result<Option<[u8; 32]>, ConfigError> {
+    let Some(raw) = non_empty(vars, key) else {
+        return Ok(None);
+    };
+    if raw.len() != 64 {
+        return Err(ConfigError::new(format!(
+            "{key} must be a 64-character hex string (32 bytes)."
+        )));
+    }
+    let decoded = hex::decode(&raw).map_err(|_| {
+        ConfigError::new(format!(
+            "{key} must be a valid 64-character hex string (32 bytes)."
+        ))
+    })?;
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&decoded);
+    Ok(Some(out))
 }
 
 fn parse_u16_with_fallback(
@@ -1186,7 +1250,29 @@ mod tests {
             "EVIDENCE_S3_SECRET_ACCESS_KEY".to_string(),
             "prod-valid-random-secret-key-987654321".to_string(),
         );
+        vars.insert("S3_SERVER_SIDE_ENCRYPTION".to_string(), "true".to_string());
+        vars.insert(
+            "EVIDENCE_ENCRYPTION_KEY".to_string(),
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string(),
+        );
         let prod_cfg = AppConfig::from_map(&vars).unwrap();
         assert_eq!(prod_cfg.evidence.backend, EvidenceStorageBackend::S3);
+        assert!(prod_cfg.rate_limit.trust_proxy_headers);
+        assert!(
+            prod_cfg
+                .evidence
+                .s3
+                .as_ref()
+                .unwrap()
+                .server_side_encryption
+        );
+        assert!(prod_cfg.evidence.encryption_key.is_some());
+        let ev_debug = format!("{:?}", prod_cfg.evidence);
+        assert!(!ev_debug.contains("0123456789abcdef"));
+        assert!(ev_debug.contains("[REDACTED]"));
+
+        // Invalid EVIDENCE_ENCRYPTION_KEY length or non-hex must fail fast
+        vars.insert("EVIDENCE_ENCRYPTION_KEY".to_string(), "short".to_string());
+        assert!(AppConfig::from_map(&vars).is_err());
     }
 }

@@ -16,8 +16,8 @@ use safedeal_domain::ports::{BlockchainGateway, EvidenceStoragePort};
 use safedeal_infrastructure::config::AppConfig;
 use safedeal_infrastructure::persistence::PgRepositories;
 use safedeal_infrastructure::security::{
-    apply_security_layers, AuthRateLimitState, HttpSessionCookieAdapter, JwtSessionService,
-    K256SignatureVerifier,
+    apply_security_layers_with_revocation, AuthRateLimitState, HttpSessionCookieAdapter,
+    JwtSessionService, K256SignatureVerifier,
 };
 use safedeal_infrastructure::storage::build_evidence_storage;
 use safedeal_presentation::{build_api_router, AppState};
@@ -122,7 +122,15 @@ pub fn assemble_application(
 
     let api_router = build_api_router(app_state);
     let rate_limiter = Arc::new(AuthRateLimitState::new(&config.rate_limit));
-    let router = apply_security_layers(api_router, config, jwt_service, rate_limiter)?;
+    let revoked_repo = Arc::clone(&repos.revoked_sessions)
+        as Arc<dyn safedeal_domain::ports::RevokedSessionRepository>;
+    let router = apply_security_layers_with_revocation(
+        api_router,
+        config,
+        jwt_service,
+        rate_limiter,
+        Some(revoked_repo),
+    )?;
 
     Ok(ApplicationComponents {
         router,

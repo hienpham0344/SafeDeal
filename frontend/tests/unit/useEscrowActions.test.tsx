@@ -1,6 +1,12 @@
 import { act, renderHook } from "@testing-library/react";
+import { encodeErrorResult } from "viem";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { useEscrowContractExecutor } from "@/features/escrow/hooks/useEscrowActions";
+import { safeDealEscrowAbi } from "@/contracts/SafeDealEscrow";
+import {
+  classifyWalletError,
+  decodeEscrowRevertError,
+  useEscrowContractExecutor,
+} from "@/features/escrow/hooks/useEscrowActions";
 
 const CONTRACT_ADDR = "0xF30E863b0Cfe8fBFE05E65c21878F8B621B3FE29" as const;
 const TRADE_ID = "0x1111111111111111111111111111111111111111111111111111111111111111" as const;
@@ -13,6 +19,7 @@ const writeContractAsyncMock = vi.fn();
 const waitForTransactionReceiptMock = vi.fn();
 const reconnectMock = vi.fn();
 const getAccountMock = vi.fn();
+let getBytecodeMock: ReturnType<typeof vi.fn> | undefined = undefined;
 
 let mockAccountConnector: unknown = undefined;
 let mockConfigConnectors: unknown[] = [];
@@ -53,6 +60,7 @@ vi.mock("wagmi", () => ({
   useConfig: () => ({ connectors: mockConfigConnectors }),
   usePublicClient: () => ({
     waitForTransactionReceipt: waitForTransactionReceiptMock,
+    ...(getBytecodeMock ? { getBytecode: getBytecodeMock } : {}),
   }),
   useReadContract: () => ({ data: 0n }),
   useWriteContract: () => ({ writeContractAsync: writeContractAsyncMock }),
@@ -68,6 +76,7 @@ describe("useEscrowContractExecutor connector hydration resilience", () => {
     vi.clearAllMocks();
     mockAccountConnector = undefined;
     mockConfigConnectors = [];
+    getBytecodeMock = undefined;
     getAccountMock.mockReturnValue({ connector: undefined });
     reconnectMock.mockResolvedValue([]);
     writeContractAsyncMock.mockResolvedValue(TX_HASH);
@@ -138,5 +147,52 @@ describe("useEscrowContractExecutor connector hydration resilience", () => {
       );
     });
     expect(writeContractAsyncMock).not.toHaveBeenCalled();
+  });
+
+  it("blocks contract writes when getBytecode returns empty bytecode (0x or undefined)", async () => {
+    const liveConnector = {
+      id: "injected",
+      name: "Injected",
+      type: "injected",
+      uid: "live-uid",
+      getChainId: vi.fn().mockResolvedValue(43113),
+      getAccounts: vi.fn().mockResolvedValue([BUYER]),
+    };
+    mockAccountConnector = liveConnector;
+    getBytecodeMock = vi.fn().mockResolvedValueOnce("0x");
+
+    const { result } = renderHook(() => useEscrowContractExecutor());
+
+    await act(async () => {
+      await expect(result.current.fundTrade(TRADE_ID, 1_000_000_000_000_000_000n)).rejects.toThrow(
+        /No SafeDealEscrow contract bytecode found/i
+      );
+    });
+    expect(getBytecodeMock).toHaveBeenCalledWith({ address: CONTRACT_ADDR });
+    expect(writeContractAsyncMock).not.toHaveBeenCalled();
+  });
+
+  it("decodes custom Solidity revert selectors and error names into human-readable messages", () => {
+    const encodedInspectionRevert = encodeErrorResult({
+      abi: safeDealEscrowAbi,
+      errorName: "InspectionWindowActive",
+      args: [1_900_000_000n, 1_899_900_000n],
+    });
+    const rawHexErr = Object.assign(new Error("execution reverted"), {
+      data: encodedInspectionRevert,
+    });
+    expect(decodeEscrowRevertError(rawHexErr)).toMatch(/Inspection window is still active/i);
+    expect(classifyWalletError(new Error("Contract reverted with FundingDeadlinePassed()"))).toMatch(
+      /Funding deadline has already passed/i
+    );
+    expect(classifyWalletError(new Error("Execution reverted: DeliveryDeadlinePassed"))).toMatch(
+      /Delivery deadline has already passed/i
+    );
+    expect(classifyWalletError(new Error("Reverted: InvalidStatus"))).toMatch(
+      /Invalid deal status for this action/i
+    );
+    expect(classifyWalletError(new Error("Reverted: UnauthorizedCaller"))).toMatch(
+      /not authorized to perform this escrow action/i
+    );
   });
 });

@@ -21,6 +21,7 @@ import {
 
 const CONTEXT_MENU_ID = "safedeal-draft-from-selection";
 const ALARM_NAME = "safedeal-poll-deals";
+const DYNAMIC_SCANNER_SCRIPT_ID = "safedeal-all-sites-verifier";
 
 async function getStorageConfig() {
   const stored = await chrome.storage.local.get([
@@ -35,6 +36,33 @@ async function getStorageConfig() {
     apiBaseUrl: stored.apiBaseUrl || DEFAULT_API_BASE_URL,
     webAppUrl: stored.webAppUrl || DEFAULT_WEB_APP_URL,
   };
+}
+
+/**
+ * Idempotently registers `content/deal-verifier.js` for all HTTPS sites when the user
+ * has opted in to cross-site marketplace & anti-phishing link scanning.
+ */
+async function ensureMarketplaceScannerRegistered() {
+  if (!chrome.scripting?.getRegisteredContentScripts || !chrome.scripting?.registerContentScripts) {
+    return false;
+  }
+  const existing = await chrome.scripting.getRegisteredContentScripts({
+    ids: [DYNAMIC_SCANNER_SCRIPT_ID],
+  });
+  if (Array.isArray(existing) && existing.length > 0) {
+    return true;
+  }
+  await chrome.scripting.registerContentScripts([
+    {
+      id: DYNAMIC_SCANNER_SCRIPT_ID,
+      matches: ["https://*/*"],
+      excludeMatches: ["https://avalanche-9b099.web.app/*"],
+      js: ["content/deal-verifier.js"],
+      runAt: "document_idle",
+      persistAcrossSessions: true,
+    },
+  ]);
+  return true;
 }
 
 async function pollWatchedDeals() {
@@ -114,6 +142,17 @@ chrome.runtime.onInstalled.addListener(async (details) => {
       webAppUrl: DEFAULT_WEB_APP_URL,
     });
   }
+
+  if (chrome.permissions?.contains) {
+    try {
+      const hasAllSites = await chrome.permissions.contains({ origins: ["https://*/*"] });
+      if (hasAllSites) {
+        await ensureMarketplaceScannerRegistered();
+      }
+    } catch {
+      // Optional permission not granted yet
+    }
+  }
 });
 
 // Rule #9: Context menu action persists selection, updates badge, opens Side Panel, and shows toast
@@ -161,14 +200,49 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   }
 });
 
-// Rule #5 & #20: Message dispatcher with synchronous permissions.request and async IIFE returning true
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+// Rule #5 & #20: Sender-isolated message dispatcher with synchronous permissions.request
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (!sender || sender.id !== chrome.runtime.id) return false;
+
+  const isTrustedExtensionUi =
+    !sender.tab &&
+    typeof sender.url === "string" &&
+    sender.url.startsWith(chrome.runtime.getURL(""));
+  const isContentScript = Boolean(sender.tab);
+
   if (message?.type === "REQUEST_MARKETPLACE_SCAN_PERMISSION") {
+    if (!isTrustedExtensionUi) {
+      sendResponse({ ok: false, error: "FORBIDDEN_SENDER" });
+      return false;
+    }
     // Rule #20: MUST call chrome.permissions.request synchronously in the first turn before any await
     chrome.permissions.request({ origins: ["https://*/*"] }, (granted) => {
-      sendResponse({ ok: true, granted: Boolean(granted) });
+      (async () => {
+        try {
+          if (granted) {
+            await ensureMarketplaceScannerRegistered();
+          }
+          sendResponse({ ok: true, granted: Boolean(granted) });
+        } catch (err) {
+          sendResponse({
+            ok: false,
+            granted: Boolean(granted),
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      })();
     });
     return true;
+  }
+
+  if (
+    (message?.type === "CLEAR_BADGE" ||
+      message?.type === "REFRESH_WATCHED_DEALS" ||
+      message?.type === "COMPUTE_TERMS_HASH") &&
+    !isTrustedExtensionUi
+  ) {
+    sendResponse({ ok: false, error: "FORBIDDEN_SENDER" });
+    return false;
   }
 
   (async () => {
@@ -176,7 +250,19 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       const config = await getStorageConfig();
 
       if (message?.type === "VERIFY_DEAL") {
-        const data = await fetchDealVerification(message.tradeId, config);
+        const fullData = await fetchDealVerification(message.tradeId, config);
+        const data = isContentScript
+          ? {
+              status: fullData.status,
+              statusCode: fullData.statusCode,
+              existsOnChain: fullData.existsOnChain,
+              amountAvax: fullData.amountAvax,
+              termsHash: fullData.termsHash,
+              termsVerified: fullData.termsVerified,
+              contractAddress: fullData.contractAddress,
+              chainId: fullData.chainId,
+            }
+          : fullData;
         sendResponse({ ok: true, data });
       } else if (message?.type === "COMPUTE_TERMS_HASH") {
         const data = await computeCanonicalTermsHash(message.payload);

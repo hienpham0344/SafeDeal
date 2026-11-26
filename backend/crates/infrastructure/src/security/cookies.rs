@@ -1,5 +1,6 @@
+use chrono::{DateTime, Utc};
 use safedeal_application::auth::SessionCookiePort;
-use safedeal_domain::auth::AuthenticatedPrincipal;
+use safedeal_domain::auth::{AuthenticatedPrincipal, VerifiedSessionToken};
 use safedeal_shared::DomainError;
 
 use crate::config::{AuthSecurityConfig, CookieSameSite};
@@ -49,24 +50,8 @@ impl SessionCookiePort for HttpSessionCookieAdapter {
         &self,
         principal: &AuthenticatedPrincipal,
     ) -> Result<Vec<String>, DomainError> {
-        let jwt = self
-            .jwt_service
-            .create_token(principal)
-            .map_err(|e| DomainError::internal(format!("Failed to issue session JWT: {e}")))?;
-        Ok(vec![
-            self.format_cookie(
-                &self.session_cookie_name,
-                &jwt,
-                self.session_ttl_seconds,
-                true,
-            ),
-            self.format_cookie(
-                &self.csrf_cookie_name,
-                &principal.csrf_token,
-                self.session_ttl_seconds,
-                false,
-            ),
-        ])
+        let (_, cookies) = self.issue_session(principal)?;
+        Ok(cookies)
     }
 
     fn clear_cookie_headers(&self) -> Vec<String> {
@@ -80,5 +65,39 @@ impl SessionCookiePort for HttpSessionCookieAdapter {
         self.jwt_service
             .create_token(principal)
             .map_err(|e| DomainError::internal(format!("Failed to issue session JWT: {e}")))
+    }
+
+    fn issue_session(
+        &self,
+        principal: &AuthenticatedPrincipal,
+    ) -> Result<(String, Vec<String>), DomainError> {
+        let jwt = self.issue_token(principal)?;
+        let cookies = vec![
+            self.format_cookie(
+                &self.session_cookie_name,
+                &jwt,
+                self.session_ttl_seconds,
+                true,
+            ),
+            self.format_cookie(
+                &self.csrf_cookie_name,
+                &principal.csrf_token,
+                self.session_ttl_seconds,
+                false,
+            ),
+        ];
+        Ok((jwt, cookies))
+    }
+
+    fn session_cookie_name(&self) -> &str {
+        &self.session_cookie_name
+    }
+
+    fn inspect_token(&self, token: &str) -> Option<VerifiedSessionToken> {
+        self.jwt_service.verify_session_token(token)
+    }
+
+    fn revoke_token_in_memory(&self, jti: &str, expires_at: DateTime<Utc>) {
+        self.jwt_service.revoke_jti(jti, expires_at);
     }
 }

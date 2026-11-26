@@ -38,7 +38,7 @@ jobs:
       - name: Verify contracts before deploy
         run: forge test --root blockchain -vvv
 
-      - name: Deploy SafeDealEscrow via Foundry
+      - name: Deploy and dual-verify SafeDealEscrow via Foundry
         working-directory: blockchain
         env:
           FUJI_RPC_URL: ${{ vars.FUJI_RPC_URL || 'https://api.avax-test.network/ext/bc/C/rpc' }}
@@ -49,11 +49,28 @@ jobs:
             echo "DEPLOYER_PRIVATE_KEY secret is required" >&2
             exit 1
           fi
-          VERIFY_FLAG=""
-          if [ -n "$SNOWTRACE_API_KEY" ]; then
-            VERIFY_FLAG="--verify --etherscan-api-key $SNOWTRACE_API_KEY"
+          API_KEY="${SNOWTRACE_API_KEY:-verifyContract}"
+          ROUTESCAN_URL="https://api.routescan.io/v2/network/testnet/evm/43113/etherscan/api"
+
+          forge script script/Deploy.s.sol:Deploy --rpc-url "$FUJI_RPC_URL" --broadcast
+
+          DEPLOYED_ADDRESS=$(jq -r '.transactions[] | select(.contractName == "SafeDealEscrow") | .contractAddress' broadcast/Deploy.s.sol/43113/run-latest.json | head -n 1)
+          if [ -z "$DEPLOYED_ADDRESS" ] || [ "$DEPLOYED_ADDRESS" = "null" ]; then
+            echo "Failed to extract deployed SafeDealEscrow address from broadcast receipt" >&2
+            exit 1
           fi
-          forge script script/Deploy.s.sol:Deploy --rpc-url "$FUJI_RPC_URL" --broadcast $VERIFY_FLAG
+
+          forge verify-contract "$DEPLOYED_ADDRESS" src/SafeDealEscrow.sol:SafeDealEscrow \
+            --chain-id 43113 \
+            --verifier custom \
+            --verifier-url "$ROUTESCAN_URL" \
+            --verifier-api-key "$API_KEY" \
+            --watch
+
+          forge verify-contract "$DEPLOYED_ADDRESS" src/SafeDealEscrow.sol:SafeDealEscrow \
+            --chain-id 43113 \
+            --verifier sourcify \
+            --watch
 
       - name: Upload broadcast receipts
         uses: actions/upload-artifact@v4

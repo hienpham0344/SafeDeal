@@ -15,6 +15,57 @@ export const DEFAULT_API_BASE_URL = "https://safedeal-production.up.railway.app"
 export const DEFAULT_WEB_APP_URL = "https://avalanche-9b099.web.app";
 export const FUJI_CHAIN_ID = 43113;
 
+export const OFFICIAL_SAFEDEAL_ORIGINS = Object.freeze([
+  "https://avalanche-9b099.web.app",
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+  "http://localhost:4173",
+  "http://127.0.0.1:4173",
+  "http://localhost:14173",
+  "http://127.0.0.1:14173",
+  "http://localhost:24173",
+  "http://127.0.0.1:24173",
+]);
+
+/**
+ * Validates that a configured endpoint or web app URL uses `https:` or a loopback
+ * `http://localhost` / `http://127.0.0.1` origin. Rejects `javascript:`, `data:`,
+ * embedded credentials, or non-loopback plaintext `http:`.
+ * @param {string} rawUrl
+ * @param {string} [label="URL"]
+ * @returns {URL}
+ */
+export function validateSafeEndpointUrl(rawUrl, label = "URL") {
+  let parsed;
+  try {
+    parsed = new URL(String(rawUrl ?? "").trim());
+  } catch {
+    throw new Error(`Invalid ${label}: malformed URL`);
+  }
+  if (parsed.username || parsed.password) {
+    throw new Error(`Invalid ${label}: embedded credentials are not allowed`);
+  }
+  const isHttps = parsed.protocol === "https:";
+  const isLoopbackHttp =
+    parsed.protocol === "http:" &&
+    (parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1");
+  if (!isHttps && !isLoopbackHttp) {
+    throw new Error(
+      `Unsafe ${label} scheme "${parsed.protocol}" for host "${parsed.hostname}": only https: or loopback http://localhost / http://127.0.0.1 are allowed`
+    );
+  }
+  return parsed;
+}
+
+/**
+ * Validates a 20-byte EVM hex address (`0x` + 40 hex characters).
+ * @param {string} address
+ * @returns {boolean}
+ */
+export function isValidEvmAddress(address) {
+  return /^0x[0-9a-fA-F]{40}$/.test(String(address ?? "").trim());
+}
+
 export const SELECTORS = {
   getTrade: "0xa3b13799",
   getDisputeVotes: "0x48547c8a",
@@ -108,8 +159,15 @@ export async function ethCall({
   data,
   fetchImpl = globalThis.fetch,
 }) {
-  const response = await fetchImpl(rpcUrl, {
+  const safeRpcUrl = String(rpcUrl ?? "").trim();
+  validateSafeEndpointUrl(safeRpcUrl, "rpcUrl");
+  if (!isValidEvmAddress(contractAddress)) {
+    throw new Error(`Invalid contractAddress: "${contractAddress}"`);
+  }
+
+  const response = await fetchImpl(safeRpcUrl, {
     method: "POST",
+    credentials: "omit",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       jsonrpc: "2.0",
@@ -317,7 +375,10 @@ export const fetchClaimableBalance = claimableBalance;
  * @param {{ apiBaseUrl?: string, fetchImpl?: typeof fetch }} [options]
  */
 export async function fetchOptionalBackendDeal(dealOrTradeId, options = {}) {
-  const apiBaseUrl = (options.apiBaseUrl || DEFAULT_API_BASE_URL).replace(/\/+$/, "");
+  const apiBaseUrl = String(options.apiBaseUrl || DEFAULT_API_BASE_URL)
+    .trim()
+    .replace(/\/+$/, "");
+  validateSafeEndpointUrl(apiBaseUrl, "apiBaseUrl");
   const fetchImpl = options.fetchImpl || globalThis.fetch;
   try {
     const response = await fetchImpl(
@@ -325,7 +386,7 @@ export async function fetchOptionalBackendDeal(dealOrTradeId, options = {}) {
       {
         method: "GET",
         headers: { Accept: "application/json" },
-        credentials: "include",
+        credentials: "omit",
       }
     );
     if (!response.ok) return null;
@@ -439,6 +500,7 @@ export async function fetchDealVerification(rawInput, options = {}) {
     metadata: optionalApiDeal,
     computedTermsHash,
     termsVerified,
+    chainId: Number(optionalApiDeal?.chainId ?? FUJI_CHAIN_ID),
     contractAddress: options.contractAddress || DEFAULT_ESCROW_CONTRACT,
     rpcUrl: options.rpcUrl || DEFAULT_FUJI_RPC_URL,
     verifiedAt: Date.now(),
