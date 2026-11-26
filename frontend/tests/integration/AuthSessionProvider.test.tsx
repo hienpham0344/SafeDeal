@@ -96,7 +96,7 @@ describe("AuthSessionProvider race & cache isolation", () => {
     );
     requestAuthNonceMock.mockResolvedValueOnce({
       nonce: "abc12345",
-      message: "localhost wants you to sign in",
+      message: `${window.location.host} wants you to sign in with your Ethereum account:\n${SELLER}\n\nSign in to SafeDeal.\n\nURI: ${window.location.origin}\nVersion: 1\nChain ID: 31337\nNonce: abc12345\nIssued At: 2026-01-01T00:00:00Z`,
       expiresAt: "2030-01-01T00:00:00Z",
     });
     verifyWalletSignatureMock.mockResolvedValueOnce({
@@ -186,7 +186,7 @@ describe("AuthSessionProvider race & cache isolation", () => {
     // Suppose BUYER signs in before mismatch logout finishes; mismatch logout resolves afterwards
     requestAuthNonceMock.mockResolvedValueOnce({
       nonce: "buyer123",
-      message: "sign in buyer",
+      message: `${window.location.host} wants you to sign in with your Ethereum account:\n${BUYER}\n\nSign in to SafeDeal.\n\nURI: ${window.location.origin}\nVersion: 1\nChain ID: 31337\nNonce: buyer123\nIssued At: 2026-01-01T00:01:00Z`,
       expiresAt: "2030-01-01T00:00:00Z",
     });
     verifyWalletSignatureMock.mockResolvedValueOnce({
@@ -351,5 +351,92 @@ describe("AuthSessionProvider race & cache isolation", () => {
     });
     expect(switchChainAsyncMock).toHaveBeenCalledTimes(2);
     expect(screen.getByTestId("auth-error")).toHaveTextContent("");
+  });
+
+  it("blocks SIWE wallet signing when challenge message domain or wallet address is spoofed", async () => {
+    fetchCurrentSessionMock.mockResolvedValue(null);
+    requestAuthNonceMock.mockResolvedValueOnce({
+      nonce: "phishnonce1",
+      message: `evil-phishing-domain.xyz wants you to sign in with your Ethereum account:\n${SELLER}\n\nURI: https://evil-phishing-domain.xyz\nVersion: 1\nChain ID: 31337\nNonce: phishnonce1`,
+      expiresAt: "2030-01-01T00:00:00Z",
+    });
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AuthSessionProvider>
+          <SessionProbe />
+        </AuthSessionProvider>
+      </QueryClientProvider>
+    );
+
+    await act(async () => {
+      screen.getByRole("button", { name: "SignIn" }).click();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("auth-error")).toHaveTextContent(/SIWE anti-phishing check failed.*domain/i);
+    });
+    expect(signMessageAsyncMock).not.toHaveBeenCalled();
+
+    // Now test spoofed wallet address with matching host
+    requestAuthNonceMock.mockResolvedValueOnce({
+      nonce: "phishnonce2",
+      message: `${window.location.host} wants you to sign in with your Ethereum account:\n${BUYER}\n\nURI: ${window.location.origin}\nVersion: 1\nChain ID: 31337\nNonce: phishnonce2`,
+      expiresAt: "2030-01-01T00:00:00Z",
+    });
+
+    await act(async () => {
+      screen.getByRole("button", { name: "SignIn" }).click();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("auth-error")).toHaveTextContent(/SIWE anti-phishing check failed.*wallet/i);
+    });
+    expect(signMessageAsyncMock).not.toHaveBeenCalled();
+
+    // Substring lookalike domain (evil-<host>) must also be blocked
+    requestAuthNonceMock.mockResolvedValueOnce({
+      nonce: "phishnonce3",
+      message: `evil-${window.location.host} wants you to sign in with your Ethereum account:\n${SELLER}\n\nURI: https://evil-${window.location.host}\nVersion: 1\nChain ID: 31337\nNonce: phishnonce3`,
+      expiresAt: "2030-01-01T00:00:00Z",
+    });
+
+    await act(async () => {
+      screen.getByRole("button", { name: "SignIn" }).click();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("auth-error")).toHaveTextContent(/SIWE anti-phishing check failed.*domain/i);
+    });
+    expect(signMessageAsyncMock).not.toHaveBeenCalled();
+
+    // Equivalent local loopback host (127.0.0.1:<port> <-> localhost:<port>) must be permitted for local E2E
+    const currentPort = window.location.port ? `:${window.location.port}` : "";
+    const alternateLoopbackHost = window.location.hostname === "127.0.0.1"
+      ? `localhost${currentPort}`
+      : `127.0.0.1${currentPort}`;
+    requestAuthNonceMock.mockResolvedValueOnce({
+      nonce: "loopbackok1",
+      message: `${alternateLoopbackHost} wants you to sign in with your Ethereum account:\n${SELLER}\n\nURI: http://${alternateLoopbackHost}\nVersion: 1\nChain ID: 31337\nNonce: loopbackok1`,
+      expiresAt: "2030-01-01T00:00:00Z",
+    });
+    verifyWalletSignatureMock.mockResolvedValueOnce({
+      address: SELLER,
+      chainId: 31337,
+      authenticatedAt: "2026-01-01T00:02:00Z",
+    });
+
+    await act(async () => {
+      screen.getByRole("button", { name: "SignIn" }).click();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("auth-state")).toHaveTextContent(SELLER);
+    });
+    expect(signMessageAsyncMock).toHaveBeenCalledTimes(1);
   });
 });

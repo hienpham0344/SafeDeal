@@ -64,6 +64,79 @@ function isUnrecognizedChainError(error: unknown): boolean {
   );
 }
 
+const SIWE_HEADER_SUFFIX = " wants you to sign in with your ethereum account:";
+
+function splitHostAndPort(rawHost: string): { readonly hostname: string; readonly port: string } {
+  const trimmed = rawHost.trim().toLowerCase();
+  if (trimmed.startsWith("[")) {
+    const closingBracket = trimmed.indexOf("]");
+    if (closingBracket !== -1) {
+      const hostname = trimmed.slice(0, closingBracket + 1);
+      const rest = trimmed.slice(closingBracket + 1);
+      const port = rest.startsWith(":") ? rest.slice(1) : "";
+      return { hostname, port };
+    }
+  }
+  const lastColon = trimmed.lastIndexOf(":");
+  if (lastColon !== -1 && trimmed.indexOf(":") === lastColon) {
+    return {
+      hostname: trimmed.slice(0, lastColon),
+      port: trimmed.slice(lastColon + 1),
+    };
+  }
+  return { hostname: trimmed, port: "" };
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  return (
+    hostname === "localhost" ||
+    hostname === "127.0.0.1" ||
+    hostname === "[::1]" ||
+    hostname === "::1"
+  );
+}
+
+function isEquivalentOriginHost(challengeHost: string, browserHost: string): boolean {
+  const normalizedChallenge = challengeHost.trim().toLowerCase();
+  const normalizedBrowser = browserHost.trim().toLowerCase();
+  if (!normalizedBrowser) return true;
+  if (normalizedChallenge === normalizedBrowser) return true;
+
+  const challengeParts = splitHostAndPort(normalizedChallenge);
+  const browserParts = splitHostAndPort(normalizedBrowser);
+  return (
+    isLoopbackHostname(challengeParts.hostname) &&
+    isLoopbackHostname(browserParts.hostname) &&
+    challengeParts.port === browserParts.port
+  );
+}
+
+function verifySiweChallengeMessage(
+  message: string,
+  expectedHost: string,
+  expectedAddress: string
+): void {
+  const lines = message.replace(/\r\n/g, "\n").split("\n");
+  const headerLine = (lines[0] ?? "").trim();
+  const headerLower = headerLine.toLowerCase();
+  const challengeDomain = headerLower.endsWith(SIWE_HEADER_SUFFIX)
+    ? headerLine.slice(0, headerLine.length - SIWE_HEADER_SUFFIX.length).trim()
+    : "";
+
+  if (expectedHost && (!challengeDomain || !isEquivalentOriginHost(challengeDomain, expectedHost))) {
+    throw new Error(
+      `SIWE anti-phishing check failed: challenge domain does not match ${expectedHost}.`
+    );
+  }
+
+  const challengeAddress = (lines[1] ?? "").trim().toLowerCase();
+  if (!challengeAddress || challengeAddress !== expectedAddress.trim().toLowerCase()) {
+    throw new Error(
+      "SIWE anti-phishing check failed: challenge wallet address does not match connected wallet."
+    );
+  }
+}
+
 export function AuthSessionProvider({ children }: { readonly children: ReactNode }) {
   const queryClient = useQueryClient();
   const {
@@ -250,6 +323,8 @@ export function AuthSessionProvider({ children }: { readonly children: ReactNode
     try {
       await queryClient.cancelQueries({ queryKey: ["auth", "session"] });
       const challenge = await requestAuthNonce(address, env.chainId);
+      const expectedHost = typeof window !== "undefined" ? window.location.host : "";
+      verifySiweChallengeMessage(challenge.message, expectedHost, address);
       const isLiveActiveConnector =
         activeConnector && typeof (activeConnector as { getChainId?: unknown }).getChainId === "function";
       let overrideConnector: Connector | undefined;

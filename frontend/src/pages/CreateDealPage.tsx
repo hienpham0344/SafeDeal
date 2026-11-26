@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
-import { useForm } from "react-hook-form";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { type Control, useForm, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { zeroAddress } from "viem";
+import { formatEther, zeroAddress } from "viem";
 import { useBalance } from "wagmi";
-import { ArrowRight, Check, Copy, ExternalLink, Sparkles } from "lucide-react";
+import { AlertTriangle, ArrowRight, Check, Copy, ExternalLink, ShieldCheck, Sparkles } from "lucide-react";
 import { AppShell } from "@/components/layout/AppShell";
 import { AlertBanner, Panel } from "@/components/ui/Primitives";
 import { Button } from "@/components/ui/Button";
@@ -24,7 +24,14 @@ import { useEscrowContractExecutor } from "@/features/escrow/hooks/useEscrowActi
 import type { CreateDealDraftResponse } from "@/types/api";
 import { wagmiConfig } from "@/services/blockchain/wagmi";
 import { computeCanonicalTermsHash } from "@/utils/canonical-terms";
-import { formatAvax, formatTimestamp, parseAvaxToWei } from "@/utils/format";
+import {
+  detectAddressPoisoningLookalike,
+  evaluateArbiterTrust,
+  formatApproximateFiatFromWei,
+  formatAvax,
+  formatTimestamp,
+  parseAvaxToWei,
+} from "@/utils/format";
 
 const FUJI_FAUCET_URL = "https://core.app/tools/testnet-faucet/?subnet=c&token=c";
 
@@ -76,8 +83,79 @@ function toLocalDateTimeInput(offsetHours: number): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
+function AmountFiatEstimate({ control }: { readonly control: Control<CreateDealFormValues> }) {
+  const amountAvax = useWatch({ control, name: "amountAvax" });
+  const estimate = useMemo(() => {
+    const wei = parseAvaxToWei(amountAvax ?? "");
+    return wei ? formatApproximateFiatFromWei(wei) : null;
+  }, [amountAvax]);
+
+  if (!estimate) return null;
+  return (
+    <p className="mt-1.5 font-mono text-xs tabular-nums text-sd-inkMuted">
+      ≈ {estimate.usd} / ≈ {estimate.vnd}{" "}
+      <span className="font-sans text-[11px] text-sd-inkSubtle">(indicative reference)</span>
+    </p>
+  );
+}
+
+function ArbiterInputShield({ control }: { readonly control: Control<CreateDealFormValues> }) {
+  const arbiterAddress = useWatch({ control, name: "arbiterAddress" });
+  const trust = evaluateArbiterTrust(arbiterAddress, env.defaultArbiterAddress);
+  if (trust === "none") return null;
+  if (trust === "verified") {
+    return (
+      <div className="mt-2">
+        <span className="inline-flex flex-wrap items-center gap-1.5 rounded-md border border-emerald-400/35 bg-emerald-500/10 px-2.5 py-1 font-mono text-[11px] leading-snug text-emerald-200">
+          <ShieldCheck size={12} className="shrink-0 text-emerald-300" aria-hidden="true" />
+          <span>Verified Neutral Arbiter</span>
+        </span>
+      </div>
+    );
+  }
+  return (
+    <div className="mt-2">
+      <span className="inline-flex flex-wrap items-center gap-1.5 rounded-md border border-amber-400/35 bg-amber-500/10 px-2.5 py-1 font-mono text-[11px] leading-snug text-amber-200">
+        <AlertTriangle size={12} className="shrink-0 text-amber-300" aria-hidden="true" />
+        <span>Custom External Arbiter (Verify Neutrality — 2-of-3 Consensus Power)</span>
+      </span>
+    </div>
+  );
+}
+
+function AddressPoisoningBanner({
+  control,
+  sellerAddress,
+}: {
+  readonly control: Control<CreateDealFormValues>;
+  readonly sellerAddress: string | undefined;
+}) {
+  const [buyerAddress, arbiterAddress] = useWatch({
+    control,
+    name: ["buyerAddress", "arbiterAddress"],
+  });
+  const warning = useMemo(
+    () =>
+      detectAddressPoisoningLookalike([
+        { role: "Seller", address: sellerAddress },
+        { role: "Buyer", address: buyerAddress },
+        { role: "Arbiter", address: arbiterAddress },
+      ]),
+    [arbiterAddress, buyerAddress, sellerAddress]
+  );
+  if (!warning) return null;
+  return (
+    <AlertBanner
+      tone="warning"
+      title="Address Poisoning / Vanity Lookalike Warning"
+      message={warning}
+    />
+  );
+}
+
 export function CreateDealPage() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const {
     address,
     isConnected,
@@ -92,6 +170,34 @@ export function CreateDealPage() {
   const { mutateAsync: bindDealTxAsync } = bindTxMutation;
   const { createTrade, waitForHash, activeAction, txError, clearTxError } = useEscrowContractExecutor();
   const { persistedDraft, persistDraftState, clearDraftState } = useCreateDraftPersistence(address);
+
+  const deepLinkDefaults = useMemo(() => {
+    const title = (searchParams.get("title") ?? "").trim().slice(0, appConfig.escrow.maxTitleLength);
+    const description = (searchParams.get("description") ?? "")
+      .trim()
+      .slice(0, appConfig.escrow.maxDescriptionLength);
+    const terms = (searchParams.get("terms") ?? "").trim().slice(0, appConfig.escrow.maxTermsLength);
+    const rawAmountAvax = (searchParams.get("amountAvax") ?? "").trim().slice(0, 32);
+    const rawAmountWei = (searchParams.get("amountWei") ?? "").trim().slice(0, 78);
+    let amountAvax = "";
+    if (rawAmountAvax && parseAvaxToWei(rawAmountAvax) !== null) {
+      amountAvax = rawAmountAvax;
+    } else if (/^\d+$/.test(rawAmountWei)) {
+      try {
+        const wei = BigInt(rawAmountWei);
+        if (wei > 0n) amountAvax = formatEther(wei);
+      } catch {
+        // Ignore invalid wei parameter
+      }
+    }
+    return {
+      title,
+      description,
+      terms,
+      amountAvax,
+      hasPrefill: Boolean(title || description || terms || amountAvax),
+    };
+  }, [searchParams]);
 
   const [previewDraft, setPreviewDraft] = useState<CreateDealDraftResponse | null>(
     () => persistedDraft?.previewDraft ?? null
@@ -140,6 +246,7 @@ export function CreateDealPage() {
   const [activeTemplateId, setActiveTemplateId] = useState<string | null>(null);
 
   const {
+    control,
     register,
     handleSubmit,
     setValue,
@@ -147,17 +254,19 @@ export function CreateDealPage() {
   } = useForm<CreateDealFormValues>({
     resolver: zodResolver(createDealSchema),
     defaultValues: {
-      title: "",
-      description: "",
-      amountAvax: "0.5",
+      title: deepLinkDefaults.title,
+      description: deepLinkDefaults.description,
+      amountAvax: deepLinkDefaults.amountAvax || "0.5",
       buyerAddress: "",
       arbiterAddress: env.defaultArbiterAddress ?? "",
       fundingDeadline: toLocalDateTimeInput(24),
       deliveryDeadline: toLocalDateTimeInput(168),
       inspectionHours: defaultInspectionHours,
-      terms: "",
+      terms: deepLinkDefaults.terms,
     },
   });
+
+  const step2ArbiterTrust = evaluateArbiterTrust(previewDraft?.deal.arbiter, env.defaultArbiterAddress);
 
   useEffect(() => {
     setSubmitError(null);
@@ -478,6 +587,10 @@ export function CreateDealPage() {
         <AlertBanner tone="error" title="Action Blocked" message={submitError ?? txError ?? ""} />
       )}
 
+      {!previewDraft && !createdTradeId && (
+        <AddressPoisoningBanner control={control} sellerAddress={address} />
+      )}
+
       {!createdTradeId && (
         <ol
           aria-label="Deal creation progress"
@@ -622,8 +735,20 @@ export function CreateDealPage() {
             </div>
             <div className="rounded-lg border border-sd-line bg-sd-inset p-3.5">
               <dt className="text-xs text-sd-inkSubtle">Assigned Arbiter</dt>
-              <dd className="mt-1 font-mono text-xs break-all text-sd-ink">
-                {previewDraft.deal.arbiter}
+              <dd className="mt-1 flex flex-col items-start">
+                <span className="font-mono text-xs break-all text-sd-ink">{previewDraft.deal.arbiter}</span>
+                {step2ArbiterTrust === "verified" && (
+                  <span className="mt-1.5 inline-flex flex-wrap items-center gap-1.5 rounded-md border border-emerald-400/35 bg-emerald-500/10 px-2 py-0.5 font-mono text-[11px] leading-snug text-emerald-200">
+                    <ShieldCheck size={12} className="shrink-0 text-emerald-300" aria-hidden="true" />
+                    <span>Verified Neutral Arbiter</span>
+                  </span>
+                )}
+                {step2ArbiterTrust === "custom" && (
+                  <span className="mt-1.5 inline-flex flex-wrap items-center gap-1.5 rounded-md border border-amber-400/35 bg-amber-500/10 px-2 py-0.5 font-mono text-[11px] leading-snug text-amber-200">
+                    <AlertTriangle size={12} className="shrink-0 text-amber-300" aria-hidden="true" />
+                    <span>Custom External Arbiter (Verify Neutrality — 2-of-3 Consensus Power)</span>
+                  </span>
+                )}
               </dd>
             </div>
             <div className="rounded-lg border border-sd-line bg-sd-inset p-3.5">
@@ -777,6 +902,7 @@ export function CreateDealPage() {
                       {errors.amountAvax.message}
                     </p>
                   )}
+                  <AmountFiatEstimate control={control} />
                 </div>
 
                 <div>
@@ -863,6 +989,7 @@ export function CreateDealPage() {
                       {errors.arbiterAddress.message}
                     </p>
                   )}
+                  <ArbiterInputShield control={control} />
                   <p className="mt-1.5 text-xs text-sd-inkSubtle">
                     Disputes use 2-of-3 voting across Buyer, Seller, and this Arbiter, with a 14-day 50/50 timeout fallback.
                   </p>

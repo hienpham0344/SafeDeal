@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useRef, useState } from "react";
+import { BaseError, ContractFunctionRevertedError, decodeErrorResult } from "viem";
 import { type Connector, useAccount, useConfig, usePublicClient, useReadContract, useWriteContract } from "wagmi";
 import { getAccount, reconnect } from "wagmi/actions";
 import { appConfig } from "@/config/app.config";
@@ -11,6 +12,112 @@ export interface TxExecutionResult {
   readonly blockNumber: bigint;
 }
 
+const SOLIDITY_REVERT_MESSAGES: Readonly<Record<string, string>> = {
+  InspectionWindowActive:
+    "Inspection window is still active. The seller can open a dispute only after the buyer inspection window expires.",
+  FundingDeadlinePassed:
+    "Funding deadline has already passed on-chain. Create a new deal with an updated funding schedule.",
+  DeliveryDeadlinePassed:
+    "Delivery deadline has already passed on-chain. Seller delivery or pre-deadline actions are no longer permitted.",
+  DeliveryDeadlineNotReached:
+    "Delivery deadline has not been reached yet. Buyer deadline refund unlocks only after the delivery deadline expires.",
+  DisputeTimeoutNotReached:
+    "14-day dispute timeout has not been reached yet. Use 2-of-3 consensus voting or wait until timeout expires.",
+  InvalidState:
+    "Invalid deal status for this action on-chain. Click Sync On-Chain to refresh the latest contract state.",
+  InvalidStatus:
+    "Invalid deal status for this action on-chain. Click Sync On-Chain to refresh the latest contract state.",
+  UnauthorizedCaller:
+    "Connected wallet is not authorized to perform this escrow action on-chain.",
+  Unauthorized:
+    "Connected wallet is not authorized to perform this escrow action on-chain.",
+  IncorrectPaymentAmount:
+    "Exact escrow AVAX deposit amount is required to fund this trade.",
+  NothingToWithdraw:
+    "No claimable AVAX balance is currently available for your wallet on-chain.",
+  AlreadySettled:
+    "This escrow trade has already been settled on-chain.",
+  TradeAlreadyExists:
+    "This trade ID is already registered on-chain. Retry backend binding instead of re-deploying.",
+  TradeNotFound:
+    "Trade ID does not exist on the configured SafeDealEscrow contract.",
+  InvalidSettlementAllocation:
+    "Buyer and seller payout split must sum to the exact locked escrow amount.",
+  InvalidRoleSeparation:
+    "Buyer, seller, and arbiter must be distinct non-zero wallet addresses.",
+  InvalidTermsHash:
+    "Canonical termsHash cannot be empty or zero.",
+  InvalidAmount:
+    "Escrow amount must be strictly greater than 0 wei.",
+  InvalidDeadline:
+    "Funding and delivery deadlines must be in the future and ordered chronologically.",
+  ZeroAddress:
+    "Required escrow participant address cannot be the zero address.",
+  DirectTransfersNotAllowed:
+    "Direct AVAX transfers to the contract are blocked; use fundTrade(tradeId).",
+  WithdrawalTransferFailed:
+    "On-chain AVAX pull-withdrawal transfer failed in recipient account.",
+  ReentrancyGuardReentrantCall:
+    "Concurrent reentrant contract call blocked by ReentrancyGuard.",
+};
+
+function extractHexErrorData(error: unknown): `0x${string}` | null {
+  if (typeof error !== "object" || error === null) return null;
+  const candidate = error as {
+    data?: unknown;
+    cause?: { data?: unknown; cause?: { data?: unknown } };
+  };
+  for (const raw of [candidate.data, candidate.cause?.data, candidate.cause?.cause?.data]) {
+    if (typeof raw === "string" && /^0x[0-9a-fA-F]{8,}$/.test(raw)) {
+      return raw as `0x${string}`;
+    }
+    if (
+      typeof raw === "object" &&
+      raw !== null &&
+      "data" in raw &&
+      typeof (raw as { data?: unknown }).data === "string" &&
+      /^0x[0-9a-fA-F]{8,}$/.test((raw as { data: string }).data)
+    ) {
+      return (raw as { data: `0x${string}` }).data;
+    }
+  }
+  return null;
+}
+
+export function decodeEscrowRevertError(error: unknown): string | null {
+  if (error instanceof BaseError) {
+    const revertError = error.walk((err) => err instanceof ContractFunctionRevertedError);
+    if (revertError instanceof ContractFunctionRevertedError && revertError.data?.errorName) {
+      const mapped = SOLIDITY_REVERT_MESSAGES[revertError.data.errorName];
+      if (mapped) return mapped;
+    }
+  }
+
+  const rawData = extractHexErrorData(error);
+  if (rawData) {
+    try {
+      const decoded = decodeErrorResult({
+        abi: contractsConfig.escrowAbi,
+        data: rawData,
+      });
+      const mapped = SOLIDITY_REVERT_MESSAGES[decoded.errorName];
+      if (mapped) return mapped;
+    } catch {
+      // Fall through to name pattern matching
+    }
+  }
+
+  const text = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  if (text) {
+    for (const [errorName, friendly] of Object.entries(SOLIDITY_REVERT_MESSAGES)) {
+      if (new RegExp(`\\b${errorName}\\b`).test(text)) {
+        return friendly;
+      }
+    }
+  }
+  return null;
+}
+
 function hasLiveConnector(connector: unknown): connector is Connector {
   return (
     typeof connector === "object" &&
@@ -20,7 +127,7 @@ function hasLiveConnector(connector: unknown): connector is Connector {
   );
 }
 
-function classifyWalletError(error: unknown): string {
+export function classifyWalletError(error: unknown): string {
   if (!(error instanceof Error)) return "Transaction failed.";
   const msg = error.message;
   if (msg.includes("User rejected") || msg.includes("User denied")) {
@@ -29,8 +136,12 @@ function classifyWalletError(error: unknown): string {
   if (msg.includes("getChainId is not a function")) {
     return "Wallet connection is stale or still reconnecting. Open Wallet & Session, disconnect, and reconnect your wallet.";
   }
-  if (/timed out|timeout/i.test(msg)) {
+  if (/timed out|timeout/i.test(msg) && !msg.includes("DisputeTimeoutNotReached")) {
     return "Transaction confirmation timed out. Check explorer or refresh to sync state.";
+  }
+  const decodedRevert = decodeEscrowRevertError(error);
+  if (decodedRevert) {
+    return decodedRevert;
   }
   return msg;
 }
@@ -54,6 +165,20 @@ export function useOnChainTrade(tradeId: `0x${string}` | undefined) {
     address: contractsConfig.escrowAddress,
     abi: contractsConfig.escrowAbi,
     functionName: "getTrade",
+    args: isValidBytes32 && tradeId ? [tradeId] : undefined,
+    query: {
+      enabled: Boolean(contractsConfig.escrowAddress && isValidBytes32),
+      refetchInterval: 10_000,
+    },
+  });
+}
+
+export function useOnChainDisputeVotes(tradeId: `0x${string}` | undefined) {
+  const isValidBytes32 = Boolean(tradeId && /^0x[0-9a-fA-F]{64}$/.test(tradeId));
+  return useReadContract({
+    address: contractsConfig.escrowAddress,
+    abi: contractsConfig.escrowAbi,
+    functionName: "getDisputeVotes",
     args: isValidBytes32 && tradeId ? [tradeId] : undefined,
     query: {
       enabled: Boolean(contractsConfig.escrowAddress && isValidBytes32),
@@ -160,7 +285,15 @@ export function useEscrowContractExecutor() {
       setTxError(null);
       setActiveAction(actionName);
       try {
-        const { contractAddress } = ensureReady();
+        const { contractAddress, client } = ensureReady();
+        if (typeof client.getBytecode === "function") {
+          const bytecode = await client.getBytecode({ address: contractAddress });
+          if (!bytecode || bytecode === "0x") {
+            throw new Error(
+              `No SafeDealEscrow contract bytecode found at ${contractAddress} on ${env.chainName} (Chain ID ${env.chainId}). Verify network and contract configuration before sending funds.`
+            );
+          }
+        }
         const liveConnector = await resolveLiveConnector();
         const txHash = await submit(contractAddress, liveConnector);
         onHashSubmitted?.(txHash);

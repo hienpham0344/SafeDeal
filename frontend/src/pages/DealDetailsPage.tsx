@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { ExternalLink, RefreshCw, ShieldAlert } from "lucide-react";
+import { AlertTriangle, ExternalLink, RefreshCw, ShieldAlert, ShieldCheck } from "lucide-react";
 import { zeroAddress } from "viem";
 import { AppShell } from "@/components/layout/AppShell";
 import { AlertBanner, EmptyState, LoadingState, Panel, StatusBadge } from "@/components/ui/Primitives";
 import { Button } from "@/components/ui/Button";
 import { CopyableHash } from "@/components/ui/CopyableHash";
 import { DealLifecycleStepper } from "@/components/ui/DealLifecycleStepper";
+import { contractsConfig } from "@/config/contracts";
+import { env } from "@/config/env";
 import { getExplorerAddressUrl, getExplorerTxUrl } from "@/config/network.config";
 import { disputePath, ROUTES } from "@/config/routes";
 import { useAuthSession } from "@/features/authentication/hooks/useAuthSession";
@@ -24,7 +26,35 @@ import {
   useOnChainTrade,
 } from "@/features/escrow/hooks/useEscrowActions";
 import { computeCanonicalTermsHash } from "@/utils/canonical-terms";
-import { formatAvax, formatDurationSeconds, formatTimestamp } from "@/utils/format";
+import { evaluateArbiterTrust, formatAvax, formatDurationSeconds, formatTimestamp } from "@/utils/format";
+
+function resolveExplorerContractUrl(contractAddress: string | null | undefined): string | null {
+  if (!contractAddress) return null;
+  const configured = getExplorerAddressUrl(contractAddress);
+  if (configured) return configured;
+  if (env.chainId === 43113) return `https://testnet.snowtrace.io/address/${contractAddress}`;
+  if (env.chainId === 43114) return `https://snowtrace.io/address/${contractAddress}`;
+  return null;
+}
+
+function ArbiterTrustShield({ arbiterAddress }: { readonly arbiterAddress: string }) {
+  const trust = evaluateArbiterTrust(arbiterAddress, env.defaultArbiterAddress);
+  if (trust === "none") return null;
+  if (trust === "verified") {
+    return (
+      <span className="mt-1.5 inline-flex flex-wrap items-center gap-1.5 rounded-md border border-emerald-400/35 bg-emerald-500/10 px-2 py-1 font-mono text-[11px] leading-snug text-emerald-200">
+        <ShieldCheck size={12} className="shrink-0 text-emerald-300" aria-hidden="true" />
+        <span>Verified Neutral Arbiter</span>
+      </span>
+    );
+  }
+  return (
+    <span className="mt-1.5 inline-flex flex-wrap items-center gap-1.5 rounded-md border border-amber-400/35 bg-amber-500/10 px-2 py-1 font-mono text-[11px] leading-snug text-amber-200">
+      <AlertTriangle size={12} className="shrink-0 text-amber-300" aria-hidden="true" />
+      <span>Custom External Arbiter (Verify Neutrality — 2-of-3 Consensus Power)</span>
+    </span>
+  );
+}
 
 const CHAIN_STATUS_NAMES = [
   "NONE",
@@ -264,11 +294,178 @@ export function DealDetailsPage() {
   }, [deal, verifiedTermsHash]);
   const termsHashMismatch = Boolean((verifiedTermsHash && !termsHashVerified) || termsHashError);
 
+  const onChainData = onChainQuery.data as
+    | {
+        readonly seller?: `0x${string}`;
+        readonly buyer?: `0x${string}`;
+        readonly arbiter?: `0x${string}`;
+        readonly amount?: bigint;
+        readonly termsHash?: `0x${string}`;
+        readonly status: number;
+        readonly deliveredAt?: bigint;
+      }
+    | undefined;
+
+  const onChainTermsHashMatch = useMemo(() => {
+    if (!deal || deal.status === "DRAFT" || !onChainStatus || onChainStatus === "NONE") return null;
+    if (!onChainData || typeof onChainData.termsHash !== "string") return null;
+    return onChainData.termsHash.toLowerCase() === deal.termsHash.toLowerCase();
+  }, [deal, onChainData, onChainStatus]);
+
+  const onChainAmountMatch = useMemo(() => {
+    if (!deal || deal.status === "DRAFT" || !onChainStatus || onChainStatus === "NONE") return null;
+    if (!onChainData || onChainData.amount === undefined) return null;
+    try {
+      return BigInt(onChainData.amount) === BigInt(deal.amountWei);
+    } catch {
+      return false;
+    }
+  }, [deal, onChainData, onChainStatus]);
+
+  const onChainPartiesMatch = useMemo(() => {
+    if (!deal || deal.status === "DRAFT" || !onChainStatus || onChainStatus === "NONE") return null;
+    if (!onChainData || typeof onChainData.seller !== "string" || typeof onChainData.arbiter !== "string") {
+      return null;
+    }
+    const sellerMatches = onChainData.seller.toLowerCase() === deal.seller.toLowerCase();
+    const arbiterMatches = onChainData.arbiter.toLowerCase() === deal.arbiter.toLowerCase();
+    const buyerMatches =
+      deal.buyer && onChainBuyer ? onChainBuyer.toLowerCase() === deal.buyer.toLowerCase() : true;
+    return sellerMatches && arbiterMatches && buyerMatches;
+  }, [deal, onChainBuyer, onChainData, onChainStatus]);
+
+  const onChainIntegrityMismatch = Boolean(
+    deal &&
+      deal.status !== "DRAFT" &&
+      onChainStatus &&
+      onChainStatus !== "NONE" &&
+      (onChainTermsHashMatch === false || onChainAmountMatch === false || onChainPartiesMatch === false)
+  );
+
+  const unverifiedOnChainEscrow = Boolean(
+    deal &&
+      (deal.status === "FUNDED" || deal.status === "DELIVERED" || deal.status === "DISPUTED") &&
+      onChainQuery.isSuccess &&
+      onChainStatus === "NONE"
+  );
+
+  const isThreeWayVerified = Boolean(
+    termsHashVerified &&
+      onChainStatus &&
+      onChainStatus !== "NONE" &&
+      onChainTermsHashMatch === true &&
+      onChainAmountMatch === true &&
+      onChainPartiesMatch !== false
+  );
+
+  const actionsBlockedByIntegrity = onChainIntegrityMismatch || unverifiedOnChainEscrow;
+
+  const hasPublicOnChainRecord = Boolean(
+    onChainData &&
+      onChainStatus &&
+      onChainStatus !== "NONE" &&
+      typeof onChainData.seller === "string" &&
+      typeof onChainData.arbiter === "string" &&
+      typeof onChainData.termsHash === "string" &&
+      onChainData.amount !== undefined
+  );
+  const publicContractExplorerUrl = resolveExplorerContractUrl(contractsConfig.escrowAddress);
+
+  function renderPublicOnChainPanel() {
+    if (
+      !hasPublicOnChainRecord ||
+      !onChainData ||
+      !onChainStatus ||
+      onChainStatus === "NONE" ||
+      typeof onChainData.seller !== "string" ||
+      typeof onChainData.arbiter !== "string" ||
+      typeof onChainData.termsHash !== "string" ||
+      onChainData.amount === undefined
+    ) {
+      return null;
+    }
+
+    return (
+      <Panel variant="elevated" className="mt-6 space-y-4">
+        <div className="flex flex-wrap items-start justify-between gap-3 border-b border-sd-line pb-3.5">
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <ShieldCheck size={16} className="text-emerald-300" aria-hidden="true" />
+              <h2 className="text-base font-medium text-white">Live On-Chain Contract Verification</h2>
+            </div>
+            <p className="mt-0.5 text-xs text-sd-inkMuted">
+              Read directly from Avalanche SafeDealEscrow via JSON-RPC without requiring a wallet session.
+            </p>
+          </div>
+          <StatusBadge status={onChainStatus} />
+        </div>
+
+        <dl className="grid gap-4 text-xs sm:grid-cols-2">
+          <div className="rounded-lg border border-sd-line bg-sd-inset p-3.5">
+            <dt className="text-sd-inkSubtle">Locked Escrow Amount</dt>
+            <dd className="mt-1 font-mono text-base font-semibold tabular-nums text-white">
+              {formatAvax(onChainData.amount)}
+            </dd>
+          </div>
+          <div className="rounded-lg border border-sd-line bg-sd-inset p-3.5">
+            <dt className="text-sd-inkSubtle">On-Chain Terms Hash</dt>
+            <dd className="mt-1">
+              <CopyableHash value={onChainData.termsHash} label="On-Chain Terms Hash" className="w-full text-xs" />
+            </dd>
+          </div>
+          <div className="rounded-lg border border-sd-line bg-sd-inset p-3.5">
+            <dt className="text-sd-inkSubtle">Seller</dt>
+            <dd className="mt-1">
+              <CopyableHash value={onChainData.seller} label="On-Chain Seller" className="w-full text-xs" />
+            </dd>
+          </div>
+          <div className="rounded-lg border border-sd-line bg-sd-inset p-3.5">
+            <dt className="text-sd-inkSubtle">Buyer</dt>
+            <dd className="mt-1">
+              {onChainBuyer ? (
+                <CopyableHash value={onChainBuyer} label="On-Chain Buyer" className="w-full text-xs" />
+              ) : (
+                <span className="font-mono text-sd-ink">Open (any eligible buyer)</span>
+              )}
+            </dd>
+          </div>
+          <div className="rounded-lg border border-sd-line bg-sd-inset p-3.5 sm:col-span-2">
+            <dt className="text-sd-inkSubtle">Human Arbiter</dt>
+            <dd className="mt-1 flex flex-col items-start">
+              <CopyableHash value={onChainData.arbiter} label="On-Chain Arbiter" className="w-full text-xs" />
+              <ArbiterTrustShield arbiterAddress={onChainData.arbiter} />
+            </dd>
+          </div>
+        </dl>
+
+        {contractsConfig.escrowAddress && (
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-sd-line pt-3 text-xs">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-sd-inkSubtle">Escrow Contract:</span>
+              <CopyableHash value={contractsConfig.escrowAddress} label="Escrow Contract" className="text-xs" />
+            </div>
+            {publicContractExplorerUrl && (
+              <a
+                href={publicContractExplorerUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1 font-mono text-emerald-300 underline hover:text-emerald-200"
+              >
+                <span>Verify on Snowtrace</span>
+                <ExternalLink size={12} aria-hidden="true" />
+              </a>
+            )}
+          </div>
+        )}
+      </Panel>
+    );
+  }
+
   async function runAndSync(
     actionName: string,
     fn: (onHash: (hash: `0x${string}`) => void) => Promise<{ txHash: `0x${string}` }>
   ) {
-    if (!tradeId || inFlightActionRef.current) return;
+    if (!tradeId || inFlightActionRef.current || actionsBlockedByIntegrity) return;
     setActionError(null);
     setActionSuccess(null);
     inFlightActionRef.current = true;
@@ -438,19 +635,25 @@ export function DealDetailsPage() {
       breadcrumb={{ label: "My Deals", to: ROUTES.dashboard }}
     >
       {!isConnected ? (
-        <EmptyState
-          title="Connect wallet to inspect deal"
-          description="Connect your wallet and sign in to view verified terms, on-chain status, and available escrow actions."
-          action={<Button onClick={openWalletModal}>Connect Wallet</Button>}
-        />
+        <>
+          <EmptyState
+            title="Connect wallet to inspect deal"
+            description="Connect your wallet and sign in to view verified terms, on-chain status, and available escrow actions."
+            action={<Button onClick={openWalletModal}>Connect Wallet</Button>}
+          />
+          {renderPublicOnChainPanel()}
+        </>
       ) : isSessionLoading ? (
         <LoadingState label="Restoring wallet session..." />
       ) : !isAuthenticated ? (
-        <EmptyState
-          title="Sign in required"
-          description="Authenticate your wallet session via SIWE to load this deal."
-          action={<Button onClick={() => void signInWithWallet()}>Sign In with Wallet</Button>}
-        />
+        <>
+          <EmptyState
+            title="Sign in required"
+            description="Authenticate your wallet session via SIWE to load this deal."
+            action={<Button onClick={() => void signInWithWallet()}>Sign In with Wallet</Button>}
+          />
+          {renderPublicOnChainPanel()}
+        </>
       ) : dealQuery.isLoading ? (
         <LoadingState label="Loading deal and verifying on-chain state..." />
       ) : dealQuery.isError || !deal ? (
@@ -461,6 +664,20 @@ export function DealDetailsPage() {
         />
       ) : (
         <div className="space-y-6">
+          {onChainIntegrityMismatch && (
+            <AlertBanner
+              tone="error"
+              title="On-Chain Integrity Mismatch — Actions Blocked"
+              message="Off-chain deal metadata (termsHash, amountWei, or participant addresses) does not match the SafeDealEscrow record on Avalanche. All escrow actions are blocked to protect your funds."
+            />
+          )}
+          {unverifiedOnChainEscrow && (
+            <AlertBanner
+              tone="error"
+              title="Unverified On-Chain Escrow"
+              message="Backend reports this deal as active, but SafeDealEscrow on-chain returned status NONE (not funded on-chain). Do NOT deliver goods or release services until verified on Snowtrace."
+            />
+          )}
           {(actionError || executor.txError) && (
             <AlertBanner tone="error" title="Transaction Issue" message={actionError ?? executor.txError ?? ""} />
           )}
@@ -540,6 +757,12 @@ export function DealDetailsPage() {
                   ) : (
                     <span className="text-amber-300">(verifying...)</span>
                   )}
+                  {isThreeWayVerified && (
+                    <span className="inline-flex flex-wrap items-center gap-1.5 rounded-full border border-emerald-400/40 bg-emerald-500/15 px-2.5 py-0.5 font-mono text-[11px] font-medium text-emerald-200">
+                      <ShieldCheck size={12} className="shrink-0 text-emerald-300" aria-hidden="true" />
+                      <span>3-Way Verified (Browser SHA-256 = API = Avalanche Contract)</span>
+                    </span>
+                  )}
                 </div>
               </div>
 
@@ -549,7 +772,12 @@ export function DealDetailsPage() {
                 <div className="flex flex-wrap gap-3">
                   {effectiveStatus === "DRAFT" && isSeller && (
                     <Button
-                      disabled={Boolean(executor.activeAction) || syncMutation.isPending || bindTxMutation.isPending}
+                      disabled={
+                        Boolean(executor.activeAction) ||
+                        syncMutation.isPending ||
+                        bindTxMutation.isPending ||
+                        actionsBlockedByIntegrity
+                      }
                       onClick={() =>
                         void runAndSync("createTrade", (onHash) =>
                           executor.createTrade(
@@ -579,7 +807,8 @@ export function DealDetailsPage() {
                         isRecoveringPending ||
                         syncMutation.isPending ||
                         bindTxMutation.isPending ||
-                        termsHashMismatch
+                        termsHashMismatch ||
+                        actionsBlockedByIntegrity
                       }
                       onClick={() =>
                         void runAndSync("fundTrade", (onHash) =>
@@ -594,7 +823,12 @@ export function DealDetailsPage() {
                   {effectiveStatus === "CREATED" && isSeller && (
                     <Button
                       variant="secondary"
-                      disabled={Boolean(executor.activeAction) || syncMutation.isPending || bindTxMutation.isPending}
+                      disabled={
+                        Boolean(executor.activeAction) ||
+                        syncMutation.isPending ||
+                        bindTxMutation.isPending ||
+                        actionsBlockedByIntegrity
+                      }
                       onClick={() =>
                         void runAndSync("cancelUnfundedTrade", (onHash) =>
                           executor.cancelUnfundedTrade(deal.tradeId, onHash)
@@ -613,7 +847,8 @@ export function DealDetailsPage() {
                             Boolean(executor.activeAction) ||
                             isRecoveringPending ||
                             syncMutation.isPending ||
-                            bindTxMutation.isPending
+                            bindTxMutation.isPending ||
+                            actionsBlockedByIntegrity
                           }
                           onClick={() =>
                             void runAndSync("markDelivered", (onHash) =>
@@ -630,7 +865,8 @@ export function DealDetailsPage() {
                           Boolean(executor.activeAction) ||
                           isRecoveringPending ||
                           syncMutation.isPending ||
-                          bindTxMutation.isPending
+                          bindTxMutation.isPending ||
+                          actionsBlockedByIntegrity
                         }
                         onClick={() =>
                           void runAndSync("refundBySeller", (onHash) =>
@@ -645,7 +881,12 @@ export function DealDetailsPage() {
 
                   {effectiveStatus === "FUNDED" && isBuyer && nowSeconds > deliveryDeadlineEpoch && (
                     <Button
-                      disabled={Boolean(executor.activeAction) || syncMutation.isPending || bindTxMutation.isPending}
+                      disabled={
+                        Boolean(executor.activeAction) ||
+                        syncMutation.isPending ||
+                        bindTxMutation.isPending ||
+                        actionsBlockedByIntegrity
+                      }
                       onClick={() =>
                         void runAndSync("refundAfterDeadline", (onHash) =>
                           executor.refundAfterDeadline(deal.tradeId, onHash)
@@ -658,7 +899,12 @@ export function DealDetailsPage() {
 
                   {effectiveStatus === "DELIVERED" && isBuyer && (
                     <Button
-                      disabled={Boolean(executor.activeAction) || syncMutation.isPending || bindTxMutation.isPending}
+                      disabled={
+                        Boolean(executor.activeAction) ||
+                        syncMutation.isPending ||
+                        bindTxMutation.isPending ||
+                        actionsBlockedByIntegrity
+                      }
                       onClick={() =>
                         void runAndSync("releaseFunds", (onHash) =>
                           executor.releaseFunds(deal.tradeId, onHash)
@@ -674,7 +920,12 @@ export function DealDetailsPage() {
                       (isBuyer || (isSeller && deliveredAtEpoch > 0 && nowSeconds > sellerDisputeUnlockEpoch)))) && (
                     <Button
                       variant="danger"
-                      disabled={Boolean(executor.activeAction) || syncMutation.isPending || createDisputeMutation.isPending}
+                      disabled={
+                        Boolean(executor.activeAction) ||
+                        syncMutation.isPending ||
+                        createDisputeMutation.isPending ||
+                        actionsBlockedByIntegrity
+                      }
                       onClick={() => setShowDisputeForm((v) => !v)}
                     >
                       <ShieldAlert size={15} />
@@ -692,7 +943,11 @@ export function DealDetailsPage() {
                   )}
 
                   {effectiveStatus === "DISPUTED" && !deal.disputeId && (isBuyer || isSeller) && (
-                    <Button variant="secondary" onClick={() => setShowDisputeForm(true)}>
+                    <Button
+                      variant="secondary"
+                      disabled={actionsBlockedByIntegrity}
+                      onClick={() => setShowDisputeForm(true)}
+                    >
                       Attach Dispute Metadata
                     </Button>
                   )}
@@ -730,7 +985,8 @@ export function DealDetailsPage() {
                         disabled={
                           Boolean(executor.activeAction) ||
                           createDisputeMutation.isPending ||
-                          syncMutation.isPending
+                          syncMutation.isPending ||
+                          actionsBlockedByIntegrity
                         }
                       >
                         Confirm Dispute
@@ -765,7 +1021,10 @@ export function DealDetailsPage() {
                 </div>
                 <div className="border-b border-sd-line pb-2.5">
                   <dt className="text-sd-inkSubtle">Human Arbiter</dt>
-                  <dd className="mt-1 font-mono break-all text-sd-ink">{deal.arbiter}</dd>
+                  <dd className="mt-1 flex flex-col items-start">
+                    <span className="font-mono break-all text-sd-ink">{deal.arbiter}</span>
+                    <ArbiterTrustShield arbiterAddress={deal.arbiter} />
+                  </dd>
                 </div>
                 <div className="border-b border-sd-line pb-2.5">
                   <dt className="text-sd-inkSubtle">Funding Deadline</dt>
