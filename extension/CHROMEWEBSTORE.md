@@ -15,6 +15,7 @@ Protect your peer-to-peer digital transactions from payment fraud and delivery g
 
 Key Features:
 Verify any SafeDeal escrow deal ID or link instantly while browsing or chatting to confirm whether AVAX funds are locked on-chain before you deliver work.
+Automatically flag unofficial or lookalike phishing links claiming to be SafeDeal deals with a high-contrast security alert before you click.
 Compare off-chain agreement terms against the on-chain cryptographic fingerprint so counterparty terms can never be silently altered.
 Highlight agreed deal terms on any webpage and right-click to draft a new SafeDeal escrow agreement in seconds.
 Track your watched deals, deadlines, 2-of-3 dispute resolution vote status, and withdrawable pull-payment AVAX balances in Chrome's side panel alongside your open tabs.
@@ -25,7 +26,7 @@ How to Use:
 3. Highlight deal terms on any webpage, right-click, and select "Draft SafeDeal Escrow" to capture the terms and launch a protected escrow draft.
 
 Privacy & Security:
-SafeDeal is 100% non-custodial. This extension never asks for, accesses, or stores your private keys or seed phrases. All watched deal IDs and drafted terms stay locally in your browser or query public Avalanche Fuji blockchain data and the official SafeDeal verification service.
+SafeDeal is 100% non-custodial. This extension never asks for, accesses, or stores your private keys, seed phrases, or browser session cookies. All watched deal IDs and drafted terms stay locally in your browser or query public Avalanche Fuji blockchain data and the official SafeDeal verification service without sending ambient cookies.
 
 Support:
 Visit https://avalanche-9b099.web.app/support for documentation, FAQs, and assistance.
@@ -59,6 +60,7 @@ English
 | `contextMenus` | permissions | Adds a right-click menu item ("Draft SafeDeal Escrow") when you highlight text on a webpage so you can turn selected commercial terms into an escrow draft. |
 | `alarms` | permissions | Periodically refreshes the on-chain status of your watched escrow deals in the background so you see status transitions (such as Funded, Delivered, or Disputed). |
 | `tabs` | permissions | Reads the active tab's URL and title when you explicitly right-click to capture selected deal terms into a draft or open the SafeDeal creation page in a new tab. |
+| `scripting` | permissions | Registers the SafeDeal escrow link verifier and anti-phishing domain alert badge on external marketplace and chat websites only after you explicitly click "Enable All-Site Link Scanner" and grant permission. |
 | `https://avalanche-9b099.web.app/*` | host_permissions | Connects with the official SafeDeal web application to annotate deal links with live on-chain status badges and deep-link new drafts. |
 | `https://safedeal-production.up.railway.app/*` | host_permissions | Queries public deal metadata from the official SafeDeal backend API to cross-check off-chain terms against on-chain cryptographic hashes. |
 | `https://api.avax-test.network/*` | host_permissions | Sends read-only blockchain calls (`eth_call`) to the public Avalanche Fuji C-Chain RPC endpoint to verify live smart contract escrow balances and deal states directly on-chain. |
@@ -118,4 +120,4 @@ https://avalanche-9b099.web.app
 
 | Version | Date | Changes | Status |
 |---------|------|---------|--------|
-| 1.0.0 | 2026-11-26 | Initial Manifest V3 release: On-chain Avalanche Fuji deal verifier (`getTrade`, `getDisputeVotes`, `claimableBalances`), RFC 8785 `termsHash` calculator, context menu draft capture with Shadow DOM toast, and inline `/deals/` link badge verifier. | Ready |
+| 1.0.0 | 2026-11-26 | Initial Manifest V3 release: On-chain Avalanche Fuji deal verifier (`getTrade`, `getDisputeVotes`, `claimableBalances`), anti-phishing domain shield for unofficial `/deals/` links, sender-isolated background worker, cookie-free public verification, RFC 8785 `termsHash` calculator, and context menu draft capture. | Ready |
