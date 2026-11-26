@@ -48,6 +48,7 @@ hex = "0.4"
 base64 = "0.22"
 subtle = "2.6"
 rand = "0.8"
+aes-gcm = "0.10"
 
 # OpenAPI
 utoipa = { version = "5", features = ["axum_extras", "chrono"] }

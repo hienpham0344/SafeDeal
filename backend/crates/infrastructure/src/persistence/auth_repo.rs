@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use safedeal_domain::auth::{AuthNonce, UserAccount};
-use safedeal_domain::ports::{AuthNonceRepository, UserRepository};
+use safedeal_domain::auth::{AuthNonce, RevokedSession, UserAccount};
+use safedeal_domain::ports::{AuthNonceRepository, RevokedSessionRepository, UserRepository};
 use safedeal_shared::DomainError;
 use sqlx::{PgConnection, PgPool};
 
@@ -361,5 +361,129 @@ impl UserRepository for PgTxUserRepository {
             .as_mut()
             .ok_or_else(|| DomainError::internal("Transaction already finalized"))?;
         find_user_conn(tx, wallet_address).await
+    }
+}
+
+async fn revoke_session_conn(
+    conn: &mut PgConnection,
+    session: &RevokedSession,
+) -> Result<(), DomainError> {
+    sqlx::query(
+        r#"
+        INSERT INTO revoked_sessions (jti, wallet_address, expires_at, created_at)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (jti) DO NOTHING
+        "#,
+    )
+    .bind(session.jti.trim())
+    .bind(session.wallet_address.trim().to_ascii_lowercase())
+    .bind(session.expires_at)
+    .bind(session.created_at)
+    .execute(conn)
+    .await
+    .map_err(map_sqlx_err)?;
+    Ok(())
+}
+
+async fn is_session_revoked_conn(
+    conn: &mut PgConnection,
+    jti: &str,
+    now: DateTime<Utc>,
+) -> Result<bool, DomainError> {
+    let row: (bool,) = sqlx::query_as(
+        r#"
+        SELECT EXISTS (
+            SELECT 1 FROM revoked_sessions
+            WHERE jti = $1 AND expires_at > $2
+        )
+        "#,
+    )
+    .bind(jti.trim())
+    .bind(now)
+    .fetch_one(conn)
+    .await
+    .map_err(map_sqlx_err)?;
+    Ok(row.0)
+}
+
+async fn delete_expired_revoked_sessions_conn(
+    conn: &mut PgConnection,
+    cutoff: DateTime<Utc>,
+) -> Result<u64, DomainError> {
+    let res = sqlx::query(
+        r#"
+        DELETE FROM revoked_sessions
+        WHERE expires_at < $1
+        "#,
+    )
+    .bind(cutoff)
+    .execute(conn)
+    .await
+    .map_err(map_sqlx_err)?;
+    Ok(res.rows_affected())
+}
+
+pub struct PgRevokedSessionRepository {
+    pool: PgPool,
+}
+
+impl PgRevokedSessionRepository {
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+}
+
+#[async_trait]
+impl RevokedSessionRepository for PgRevokedSessionRepository {
+    async fn revoke(&self, session: &RevokedSession) -> Result<(), DomainError> {
+        let mut conn = acquire_conn(&self.pool).await?;
+        revoke_session_conn(&mut conn, session).await
+    }
+
+    async fn is_revoked(&self, jti: &str, now: DateTime<Utc>) -> Result<bool, DomainError> {
+        let mut conn = acquire_conn(&self.pool).await?;
+        is_session_revoked_conn(&mut conn, jti, now).await
+    }
+
+    async fn delete_expired_before(&self, cutoff: DateTime<Utc>) -> Result<u64, DomainError> {
+        let mut conn = acquire_conn(&self.pool).await?;
+        delete_expired_revoked_sessions_conn(&mut conn, cutoff).await
+    }
+}
+
+pub(crate) struct PgTxRevokedSessionRepository {
+    tx: PgTxHandle,
+}
+
+impl PgTxRevokedSessionRepository {
+    pub(crate) fn new(tx: PgTxHandle) -> Self {
+        Self { tx }
+    }
+}
+
+#[async_trait]
+impl RevokedSessionRepository for PgTxRevokedSessionRepository {
+    async fn revoke(&self, session: &RevokedSession) -> Result<(), DomainError> {
+        let mut guard = self.tx.lock().await;
+        let tx = guard
+            .as_mut()
+            .ok_or_else(|| DomainError::internal("Transaction already finalized"))?;
+        revoke_session_conn(tx, session).await
+    }
+
+    async fn is_revoked(&self, jti: &str, now: DateTime<Utc>) -> Result<bool, DomainError> {
+        let mut guard = self.tx.lock().await;
+        let tx = guard
+            .as_mut()
+            .ok_or_else(|| DomainError::internal("Transaction already finalized"))?;
+        is_session_revoked_conn(tx, jti, now).await
+    }
+
+    async fn delete_expired_before(&self, cutoff: DateTime<Utc>) -> Result<u64, DomainError> {
+        let mut guard = self.tx.lock().await;
+        let tx = guard
+            .as_mut()
+            .ok_or_else(|| DomainError::internal("Transaction already finalized"))?;
+        delete_expired_revoked_sessions_conn(tx, cutoff).await
     }
 }

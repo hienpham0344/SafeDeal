@@ -509,6 +509,41 @@ impl ArbitrationUseCase {
             })
             .cloned();
 
+        if let Some(ref resolved_ev) = resolved_event_opt {
+            let resolved_buyer = EthFormatValidator::require_non_negative_wei(
+                resolved_ev.buyer_award_wei.as_deref(),
+                "buyerAwardWei",
+            )?;
+            let resolved_seller = EthFormatValidator::require_non_negative_wei(
+                resolved_ev.seller_award_wei.as_deref(),
+                "sellerAwardWei",
+            )?;
+            if resolved_buyer.checked_add(resolved_seller) != Some(expected_total) {
+                return Err(DomainError::validation(
+                    "On-chain split settlement does not sum to locked escrow amount.",
+                ));
+            }
+            if let Some(snapshot) = self
+                .blockchain_gateway
+                .fetch_trade(&ctx.deal.trade_id)
+                .await?
+            {
+                if snapshot.to_deal_status()? != DealStatus::Resolved {
+                    return Err(DomainError::validation(
+                        "On-chain trade status is not RESOLVED.",
+                    ));
+                }
+                if !snapshot.seller.eq_ignore_ascii_case(&ctx.deal.seller)
+                    || !snapshot.arbiter.eq_ignore_ascii_case(&ctx.deal.arbiter)
+                    || snapshot.amount_wei != ctx.deal.amount_wei
+                {
+                    return Err(DomainError::validation(
+                        "On-chain trade parameters mismatch canonical deal record.",
+                    ));
+                }
+            }
+        }
+
         // Phase 3: Persist vote and (if 2-of-3 reached) settlement atomically
         let trade_id = ctx.deal.trade_id;
         let now = Utc::now();
@@ -1027,4 +1062,147 @@ async fn settle_dispute_in_tx<'a>(
         deal: updated_deal,
         votes,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{
+        sample_bound_deal, FakeBlockchainGateway, InMemoryStore, TEST_CONTRACT,
+    };
+    use safedeal_domain::blockchain::{OnChainTradeSnapshot, TransactionVerificationResult};
+    use safedeal_domain::dispute::DEFAULT_DISPUTE_TIMEOUT_SECONDS;
+    use safedeal_domain::ports::{DealRepository, DisputeRepository};
+
+    #[tokio::test]
+    async fn record_vote_cross_checks_fetch_trade_snapshot_when_settling_to_resolved() {
+        let store = InMemoryStore::new();
+        let gateway = FakeBlockchainGateway::new(true);
+        let uc = ArbitrationUseCase::new(
+            Arc::clone(&store) as Arc<dyn UnitOfWork>,
+            Arc::clone(&gateway) as Arc<dyn BlockchainGateway>,
+        );
+
+        let trade_id = format!("0x{}", "c".repeat(64));
+        let deal = sample_bound_deal(&trade_id, DealStatus::Disputed);
+        let buyer = deal.buyer.clone().unwrap();
+        DealRepository::save(store.as_ref(), &deal).await.unwrap();
+
+        let dispute = DisputeRepository::save(
+            store.as_ref(),
+            &Dispute {
+                id: Some(7),
+                trade_id: trade_id.clone(),
+                opened_by: buyer.clone(),
+                reason: "Quality dispute".to_string(),
+                summary: "Testing record_vote fetch_trade cross-check".to_string(),
+                status: DisputeStatus::Open,
+                buyer_award_wei: None,
+                seller_award_wei: None,
+                resolution_rationale: None,
+                open_tx_hash: None,
+                resolve_tx_hash: None,
+                disputed_at: Some(Utc::now()),
+                dispute_timeout_seconds: DEFAULT_DISPUTE_TIMEOUT_SECONDS,
+                created_at: Utc::now(),
+                resolved_at: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let tx_hash = format!("0x{}", "9".repeat(64));
+        let prop_hash = format!("0x{}", "8".repeat(64));
+        let now_epoch = Utc::now().timestamp();
+        {
+            let mut gw = gateway.state.lock().unwrap();
+            gw.transactions.insert(
+                tx_hash.clone(),
+                TransactionVerificationResult {
+                    tx_hash: tx_hash.clone(),
+                    succeeded: true,
+                    block_number: 42,
+                    from_address: buyer.clone(),
+                    to_address: TEST_CONTRACT.to_string(),
+                    decoded_events: vec![
+                        VerifiedChainEvent {
+                            tx_hash: tx_hash.clone(),
+                            log_index: 0,
+                            block_number: 42,
+                            block_timestamp_epoch: now_epoch,
+                            contract_address: TEST_CONTRACT.to_string(),
+                            event_type: OnChainEventType::DisputeVoteSubmitted,
+                            trade_id: Some(trade_id.clone()),
+                            actor_address: Some(buyer.clone()),
+                            buyer_address: Some(buyer.clone()),
+                            amount_wei: None,
+                            buyer_award_wei: Some("1000000000000000000".to_string()),
+                            seller_award_wei: Some("1000000000000000000".to_string()),
+                            terms_hash: None,
+                            proposal_hash: Some(prop_hash),
+                        },
+                        VerifiedChainEvent {
+                            tx_hash: tx_hash.clone(),
+                            log_index: 1,
+                            block_number: 42,
+                            block_timestamp_epoch: now_epoch,
+                            contract_address: TEST_CONTRACT.to_string(),
+                            event_type: OnChainEventType::DisputeResolved,
+                            trade_id: Some(trade_id.clone()),
+                            actor_address: Some(buyer.clone()),
+                            buyer_address: Some(buyer.clone()),
+                            amount_wei: None,
+                            buyer_award_wei: Some("1000000000000000000".to_string()),
+                            seller_award_wei: Some("1000000000000000000".to_string()),
+                            terms_hash: None,
+                            proposal_hash: None,
+                        },
+                    ],
+                },
+            );
+            // Snapshot still shows DISPUTED (6) instead of RESOLVED (7) -> must reject!
+            gw.trades.insert(
+                trade_id.clone(),
+                OnChainTradeSnapshot {
+                    trade_id: trade_id.clone(),
+                    seller: deal.seller.clone(),
+                    buyer: Some(buyer.clone()),
+                    arbiter: deal.arbiter.clone(),
+                    amount_wei: deal.amount_wei.clone(),
+                    terms_hash: deal.terms_hash.clone(),
+                    funding_deadline_epoch: deal.funding_deadline.timestamp(),
+                    delivery_deadline_epoch: deal.delivery_deadline.timestamp(),
+                    inspection_window_seconds: deal.inspection_window_seconds,
+                    delivered_at_epoch: 0,
+                    disputed_at_epoch: now_epoch,
+                    chain_status_ordinal: 6,
+                    settled: false,
+                    buyer_award_wei: "0".to_string(),
+                    seller_award_wei: "0".to_string(),
+                },
+            );
+        }
+
+        let err = uc
+            .record_vote(dispute.id.unwrap(), &buyer, &tx_hash, None)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DomainError::Validation { .. }));
+
+        // Once on-chain snapshot reflects RESOLVED (7), settlement succeeds
+        {
+            let mut gw = gateway.state.lock().unwrap();
+            if let Some(snap) = gw.trades.get_mut(&trade_id) {
+                snap.chain_status_ordinal = 7;
+                snap.settled = true;
+            }
+        }
+
+        let res = uc
+            .record_vote(dispute.id.unwrap(), &buyer, &tx_hash, None)
+            .await
+            .unwrap();
+        assert_eq!(res.dispute.status, DisputeStatus::Resolved);
+        assert_eq!(res.deal.status, DealStatus::Resolved);
+    }
 }

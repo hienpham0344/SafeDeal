@@ -2,7 +2,10 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use aes_gcm::aead::{Aead, KeyInit};
+use aes_gcm::{Aes256Gcm, Nonce};
 use async_trait::async_trait;
+use rand::RngCore;
 use safedeal_domain::ports::{EvidenceDownloadPayload, EvidenceStoragePort, StoredAttachment};
 use safedeal_shared::DomainError;
 use sha2::{Digest, Sha256};
@@ -12,6 +15,11 @@ use crate::config::{EvidenceConfig, EvidenceStorageBackend};
 pub use crate::storage_s3::S3EvidenceStorageAdapter;
 
 const STORAGE_READINESS_CACHE_TTL: Duration = Duration::from_secs(5);
+pub const ENCRYPTED_EVIDENCE_MAGIC: &[u8; 4] = b"SDE1";
+pub const GCM_NONCE_LEN: usize = 12;
+pub const GCM_TAG_LEN: usize = 16;
+pub const ENCRYPTED_EVIDENCE_OVERHEAD: usize =
+    ENCRYPTED_EVIDENCE_MAGIC.len() + GCM_NONCE_LEN + GCM_TAG_LEN;
 
 /// Builds the configured evidence storage backend (`local` filesystem or `s3`-compatible object storage).
 pub fn build_evidence_storage(
@@ -27,10 +35,67 @@ pub fn build_evidence_storage(
             let s3_cfg = config.s3.as_ref().ok_or_else(|| {
                 "S3 configuration missing while EVIDENCE_STORAGE_BACKEND=s3".to_string()
             })?;
-            let adapter = S3EvidenceStorageAdapter::new(s3_cfg, config.max_bytes)?;
+            let adapter = S3EvidenceStorageAdapter::with_encryption(
+                s3_cfg,
+                config.max_bytes,
+                config.encryption_key,
+            )?;
             Ok(Arc::new(adapter))
         }
     }
+}
+
+pub(crate) fn encrypt_evidence_bytes(
+    plaintext: &[u8],
+    key: Option<&[u8; 32]>,
+) -> Result<Vec<u8>, DomainError> {
+    let Some(key_bytes) = key else {
+        return Ok(plaintext.to_vec());
+    };
+    let cipher = Aes256Gcm::new_from_slice(key_bytes)
+        .map_err(|e| DomainError::internal(format!("Invalid AES-256-GCM key: {e}")))?;
+    let mut nonce_bytes = [0u8; GCM_NONCE_LEN];
+    rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
+    let ciphertext = cipher
+        .encrypt(&Nonce::from(nonce_bytes), plaintext)
+        .map_err(|_| DomainError::internal("Failed to encrypt dispute evidence payload."))?;
+
+    let mut envelope =
+        Vec::with_capacity(ENCRYPTED_EVIDENCE_MAGIC.len() + GCM_NONCE_LEN + ciphertext.len());
+    envelope.extend_from_slice(ENCRYPTED_EVIDENCE_MAGIC);
+    envelope.extend_from_slice(&nonce_bytes);
+    envelope.extend_from_slice(&ciphertext);
+    Ok(envelope)
+}
+
+pub(crate) fn decrypt_evidence_bytes(
+    raw: &[u8],
+    key: Option<&[u8; 32]>,
+) -> Result<Vec<u8>, DomainError> {
+    if !raw.starts_with(ENCRYPTED_EVIDENCE_MAGIC) {
+        return Ok(raw.to_vec());
+    }
+    let Some(key_bytes) = key else {
+        return Err(DomainError::internal(
+            "Stored evidence is encrypted (SDE1), but EVIDENCE_ENCRYPTION_KEY is not configured.",
+        ));
+    };
+    if raw.len() < ENCRYPTED_EVIDENCE_OVERHEAD {
+        return Err(DomainError::internal(
+            "Corrupted encrypted evidence envelope.",
+        ));
+    }
+    let mut nonce_bytes = [0u8; GCM_NONCE_LEN];
+    nonce_bytes.copy_from_slice(&raw[4..16]);
+    let nonce = Nonce::from(nonce_bytes);
+    let ciphertext = &raw[16..];
+    let cipher = Aes256Gcm::new_from_slice(key_bytes)
+        .map_err(|e| DomainError::internal(format!("Invalid AES-256-GCM key: {e}")))?;
+    cipher.decrypt(&nonce, ciphertext).map_err(|_| {
+        DomainError::internal(
+            "Stored evidence decryption failed (AES-256-GCM authentication tag mismatch).",
+        )
+    })
 }
 
 pub(crate) struct ValidatedEvidencePayload {
@@ -125,6 +190,7 @@ pub(crate) fn validate_storage_key(storage_key: &str) -> Result<Vec<String>, Dom
 pub struct LocalEvidenceStorageAdapter {
     root_dir: PathBuf,
     max_bytes: usize,
+    encryption_key: Option<[u8; 32]>,
     readiness_cache: Mutex<Option<(Instant, bool)>>,
 }
 
@@ -144,6 +210,7 @@ impl LocalEvidenceStorageAdapter {
         Ok(Self {
             root_dir,
             max_bytes: config.max_bytes,
+            encryption_key: config.encryption_key,
             readiness_cache: Mutex::new(None),
         })
     }
@@ -239,9 +306,12 @@ impl EvidenceStoragePort for LocalEvidenceStorageAdapter {
                 ));
             }
         }
-        tokio::fs::write(&target, bytes).await.map_err(|e| {
-            DomainError::internal(format!("Failed to persist dispute evidence file: {e}"))
-        })?;
+        let persisted_bytes = encrypt_evidence_bytes(bytes, self.encryption_key.as_ref())?;
+        tokio::fs::write(&target, &persisted_bytes)
+            .await
+            .map_err(|e| {
+                DomainError::internal(format!("Failed to persist dispute evidence file: {e}"))
+            })?;
 
         Ok(StoredAttachment {
             sanitized_file_name: validated.sanitized_file_name,
@@ -254,15 +324,20 @@ impl EvidenceStoragePort for LocalEvidenceStorageAdapter {
 
     async fn load(&self, storage_key: &str) -> Result<Vec<u8>, DomainError> {
         let target = self.resolve_attachment_path(storage_key)?;
-        tokio::fs::read(&target)
-            .await
-            .map_err(|e| DomainError::internal(format!("Unable to read stored evidence file: {e}")))
+        let raw = tokio::fs::read(&target).await.map_err(|e| {
+            DomainError::internal(format!("Unable to read stored evidence file: {e}"))
+        })?;
+        decrypt_evidence_bytes(&raw, self.encryption_key.as_ref())
     }
 
     async fn open_download(
         &self,
         storage_key: &str,
     ) -> Result<EvidenceDownloadPayload, DomainError> {
+        if self.encryption_key.is_some() {
+            let plaintext = self.load(storage_key).await?;
+            return Ok(EvidenceDownloadPayload::Bytes(plaintext));
+        }
         let path = self.resolve_attachment_path(storage_key)?;
         Ok(EvidenceDownloadPayload::LocalFile(path))
     }
@@ -381,6 +456,23 @@ mod tests {
             s3: None,
             max_bytes,
             max_request_bytes: max_bytes + 1024,
+            encryption_key: None,
+        })
+        .unwrap()
+    }
+
+    fn encrypted_adapter(
+        dir: &Path,
+        max_bytes: usize,
+        key: [u8; 32],
+    ) -> LocalEvidenceStorageAdapter {
+        LocalEvidenceStorageAdapter::new(&EvidenceConfig {
+            backend: EvidenceStorageBackend::Local,
+            storage_dir: dir.to_string_lossy().into_owned(),
+            s3: None,
+            max_bytes,
+            max_request_bytes: max_bytes + 1024,
+            encryption_key: Some(key),
         })
         .unwrap()
     }
@@ -488,5 +580,81 @@ mod tests {
             *guard = Some((Instant::now() - Duration::from_secs(6), true));
         }
         assert!(!storage.is_storage_ready().await);
+    }
+
+    #[tokio::test]
+    async fn encrypts_evidence_at_rest_with_sde1_aes256_gcm_and_preserves_legacy_compatibility() {
+        let dir = TempDir::new().unwrap();
+        let key = [0x42u8; 32];
+        let enc_storage = encrypted_adapter(dir.path(), 1024, key);
+        let plain_storage = adapter(dir.path(), 1024);
+
+        // 1. Legacy unencrypted file written before encryption was enabled remains readable
+        let legacy_plain = b"legacy unencrypted dispute note";
+        let legacy_stored = plain_storage
+            .store(10, "legacy.txt", Some("text/plain"), legacy_plain)
+            .await
+            .unwrap();
+        assert_eq!(
+            enc_storage.load(&legacy_stored.storage_key).await.unwrap(),
+            legacy_plain
+        );
+
+        // 2. Encrypted upload writes SDE1 + 12B random nonce + AES-256-GCM ciphertext on disk,
+        //    computes sha256 over plaintext, and decrypts transparently on load/open_download
+        let png_bytes = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0xCA, 0xFE];
+        let expected_plain_sha = hex::encode(Sha256::digest(png_bytes));
+
+        let stored_a = enc_storage
+            .store(10, "secret.png", Some("image/png"), &png_bytes)
+            .await
+            .unwrap();
+        let stored_b = enc_storage
+            .store(10, "secret2.png", Some("image/png"), &png_bytes)
+            .await
+            .unwrap();
+        assert_eq!(stored_a.sha256_hex, expected_plain_sha);
+        assert_eq!(stored_a.size_bytes, png_bytes.len() as i64);
+
+        let disk_path_a = enc_storage
+            .resolve_attachment_path(&stored_a.storage_key)
+            .unwrap();
+        let disk_path_b = enc_storage
+            .resolve_attachment_path(&stored_b.storage_key)
+            .unwrap();
+        let raw_disk_a = std::fs::read(&disk_path_a).unwrap();
+        let raw_disk_b = std::fs::read(&disk_path_b).unwrap();
+
+        assert!(raw_disk_a.starts_with(ENCRYPTED_EVIDENCE_MAGIC));
+        assert_eq!(
+            raw_disk_a.len(),
+            png_bytes.len() + ENCRYPTED_EVIDENCE_OVERHEAD
+        );
+        assert_ne!(
+            &raw_disk_a[4..16],
+            &raw_disk_b[4..16],
+            "each encryption must use a fresh random 12-byte GCM nonce"
+        );
+        assert!(!raw_disk_a.windows(4).any(|w| w == b"\x89PNG"));
+
+        let decrypted = enc_storage.load(&stored_a.storage_key).await.unwrap();
+        assert_eq!(decrypted, png_bytes);
+        assert_eq!(
+            enc_storage
+                .open_download(&stored_a.storage_key)
+                .await
+                .unwrap(),
+            EvidenceDownloadPayload::Bytes(png_bytes.to_vec())
+        );
+
+        // 3. Wrong key or tampered ciphertext fails AEAD authentication tag check
+        let wrong_key_storage = encrypted_adapter(dir.path(), 1024, [0x99u8; 32]);
+        assert!(wrong_key_storage.load(&stored_a.storage_key).await.is_err());
+
+        let mut corrupted = raw_disk_a.clone();
+        let last = corrupted.len() - 1;
+        corrupted[last] ^= 0x01;
+        std::fs::write(&disk_path_a, corrupted).unwrap();
+        assert!(enc_storage.load(&stored_a.storage_key).await.is_err());
     }
 }

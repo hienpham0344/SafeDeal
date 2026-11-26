@@ -141,6 +141,51 @@ pub struct AuditLogEntry {
     pub created_at: DateTime<Utc>,
 }
 
+pub const AUDIT_GENESIS_HASH: &str = "GENESIS";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChainedAuditLogEntry {
+    pub entry: AuditLogEntry,
+    pub prev_hash: String,
+    pub entry_hash: String,
+}
+
+/// Computes the deterministic SHA-256 hex digest chaining `entry` onto `prev_hash`.
+pub fn compute_audit_entry_hash(prev_hash: &str, entry: &AuditLogEntry) -> String {
+    let payload = format!(
+        "{prev_hash}|{}|{}|{}|{}|{}|{}|{}",
+        entry.action,
+        entry.actor_address.as_deref().unwrap_or(""),
+        entry.resource_type,
+        entry.resource_id,
+        entry.correlation_id.as_deref().unwrap_or(""),
+        entry.details,
+        entry.created_at.timestamp_millis()
+    );
+    hex::encode(Sha256::digest(payload.as_bytes()))
+}
+
+/// Verifies an ordered sequence of hash-chained `audit_logs` records starting from `"GENESIS"`.
+pub fn verify_audit_log_chain(entries: &[ChainedAuditLogEntry]) -> Result<(), DomainError> {
+    let mut expected_prev = AUDIT_GENESIS_HASH;
+    for (idx, item) in entries.iter().enumerate() {
+        if item.prev_hash != expected_prev {
+            return Err(DomainError::internal(format!(
+                "Audit log chain broken at index {idx}: expected prev_hash '{expected_prev}', found '{}'.",
+                item.prev_hash
+            )));
+        }
+        let recomputed = compute_audit_entry_hash(&item.prev_hash, &item.entry);
+        if !recomputed.eq_ignore_ascii_case(&item.entry_hash) {
+            return Err(DomainError::internal(format!(
+                "Audit log tamper detected at index {idx}: entry_hash mismatch."
+            )));
+        }
+        expected_prev = &item.entry_hash;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -169,5 +214,59 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, DomainError::Internal(_)));
         assert!(err.to_string().contains("SHA-256 mismatch"));
+    }
+
+    #[test]
+    fn computes_deterministic_audit_hash_chain_and_detects_tampering_or_deletion() {
+        let ts1 = DateTime::from_timestamp_millis(1_770_000_000_123).unwrap();
+        let ts2 = DateTime::from_timestamp_millis(1_770_000_005_456).unwrap();
+
+        let e1 = AuditLogEntry {
+            id: Some(1),
+            action: "AUTH_LOGIN_VERIFIED".to_string(),
+            actor_address: Some("0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266".to_string()),
+            resource_type: "USER".to_string(),
+            resource_id: "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266".to_string(),
+            correlation_id: Some("corr-1".to_string()),
+            details: "Verified SIWE login on chainId=43113".to_string(),
+            created_at: ts1,
+        };
+        let h1 = compute_audit_entry_hash(AUDIT_GENESIS_HASH, &e1);
+        assert_eq!(h1.len(), 64);
+
+        let e2 = AuditLogEntry {
+            id: Some(2),
+            action: "DEAL_DRAFT_CREATED".to_string(),
+            actor_address: Some("0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266".to_string()),
+            resource_type: "DEAL".to_string(),
+            resource_id: "0x1111".to_string(),
+            correlation_id: None,
+            details: "Prepared draft".to_string(),
+            created_at: ts2,
+        };
+        let h2 = compute_audit_entry_hash(&h1, &e2);
+
+        let chain = vec![
+            ChainedAuditLogEntry {
+                entry: e1.clone(),
+                prev_hash: AUDIT_GENESIS_HASH.to_string(),
+                entry_hash: h1.clone(),
+            },
+            ChainedAuditLogEntry {
+                entry: e2.clone(),
+                prev_hash: h1.clone(),
+                entry_hash: h2.clone(),
+            },
+        ];
+        assert!(verify_audit_log_chain(&chain).is_ok());
+
+        // Tamper with details of entry 0 -> entry_hash mismatch detected
+        let mut tampered_details = chain.clone();
+        tampered_details[0].entry.details = "Forged details".to_string();
+        assert!(verify_audit_log_chain(&tampered_details).is_err());
+
+        // Delete entry 0 -> broken prev_hash link detected at index 0
+        let deleted_first = vec![chain[1].clone()];
+        assert!(verify_audit_log_chain(&deleted_first).is_err());
     }
 }
