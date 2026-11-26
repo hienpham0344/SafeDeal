@@ -8,11 +8,19 @@ import {ISafeDealEscrow} from "../src/interfaces/ISafeDealEscrow.sol";
 
 contract EscrowInvariantHandler is Test {
     SafeDealEscrow public immutable escrow;
+    address public constant OUTSIDER = address(0x9999);
+
+    struct LastProposal {
+        bool exists;
+        uint256 buyerShare;
+        uint256 sellerShare;
+    }
 
     address[] public sellers;
     address[] public buyers;
     address[] public arbiters;
     bytes32[] public tradeIds;
+    mapping(bytes32 => LastProposal) public lastProposals;
 
     uint256 public ghostNonce;
 
@@ -50,6 +58,18 @@ contract EscrowInvariantHandler is Test {
             vm.prank(buyer);
             escrow.fundTrade{value: amount}(tradeId);
         }
+    }
+
+    function fundCreated(uint256 indexSeed, uint256 buyerSeed) external {
+        if (tradeIds.length == 0) return;
+        bytes32 tradeId = tradeIds[indexSeed % tradeIds.length];
+        ISafeDealEscrow.Trade memory t = escrow.getTrade(tradeId);
+        if (t.status != ISafeDealEscrow.TradeStatus.CREATED) return;
+        if (block.timestamp > t.fundingDeadline) return;
+
+        address payer = t.buyer != address(0) ? t.buyer : buyers[buyerSeed % buyers.length];
+        vm.prank(payer);
+        escrow.fundTrade{value: t.amount}(tradeId);
     }
 
     function cancelUnfunded(uint256 indexSeed) external {
@@ -106,7 +126,7 @@ contract EscrowInvariantHandler is Test {
         escrow.refundBySeller(tradeId);
     }
 
-    function disputeAndResolve(uint256 indexSeed, uint256 splitSeed) external {
+    function openDisputeAsBuyer(uint256 indexSeed) external {
         if (tradeIds.length == 0) return;
         bytes32 tradeId = tradeIds[indexSeed % tradeIds.length];
         ISafeDealEscrow.Trade memory t = escrow.getTrade(tradeId);
@@ -117,18 +137,155 @@ contract EscrowInvariantHandler is Test {
 
         vm.prank(t.buyer);
         escrow.openDispute(tradeId);
+    }
 
-        uint256 buyerShare = splitSeed % (t.amount + 1);
-        uint256 sellerShare = t.amount - buyerShare;
+    function openDisputeAsSeller(uint256 indexSeed, bool warpPastInspection) external {
+        if (tradeIds.length == 0) return;
+        bytes32 tradeId = tradeIds[indexSeed % tradeIds.length];
+        ISafeDealEscrow.Trade memory t = escrow.getTrade(tradeId);
+
+        if (t.status == ISafeDealEscrow.TradeStatus.FUNDED) {
+            if (block.timestamp > t.deliveryDeadline) return;
+            vm.prank(t.seller);
+            escrow.openDispute(tradeId);
+        } else if (t.status == ISafeDealEscrow.TradeStatus.DELIVERED) {
+            uint256 unlocksAt = uint256(t.deliveredAt) + uint256(t.inspectionWindow);
+            if (block.timestamp <= unlocksAt) {
+                if (!warpPastInspection) return;
+                vm.warp(unlocksAt + 1);
+            }
+            vm.prank(t.seller);
+            escrow.openDispute(tradeId);
+        }
+    }
+
+    function submitOrOverwriteDisputeVote(
+        uint256 indexSeed,
+        uint8 voterSeed,
+        uint256 splitSeed,
+        bool matchLastProposal
+    ) external {
+        if (tradeIds.length == 0) return;
+        bytes32 tradeId = tradeIds[indexSeed % tradeIds.length];
+        ISafeDealEscrow.Trade memory t = escrow.getTrade(tradeId);
+        if (t.status != ISafeDealEscrow.TradeStatus.DISPUTED) return;
+
+        uint8 role = voterSeed % 3;
+        address voter = role == 0 ? t.buyer : (role == 1 ? t.seller : t.arbiter);
+
+        uint256 buyerShare;
+        uint256 sellerShare;
+        LastProposal memory prev = lastProposals[tradeId];
+        if (matchLastProposal && prev.exists) {
+            buyerShare = prev.buyerShare;
+            sellerShare = prev.sellerShare;
+        } else {
+            buyerShare = splitSeed % (t.amount + 1);
+            sellerShare = t.amount - buyerShare;
+            lastProposals[tradeId] = LastProposal({exists: true, buyerShare: buyerShare, sellerShare: sellerShare});
+        }
+
+        vm.prank(voter);
+        escrow.submitResolutionVote(tradeId, buyerShare, sellerShare);
+    }
+
+    function resolveDisputeByTimeout(uint256 indexSeed, uint8 callerSeed) external {
+        if (tradeIds.length == 0) return;
+        bytes32 tradeId = tradeIds[indexSeed % tradeIds.length];
+        ISafeDealEscrow.Trade memory t = escrow.getTrade(tradeId);
+        if (t.status != ISafeDealEscrow.TradeStatus.DISPUTED) return;
+
+        uint256 timeoutAt = uint256(t.disputedAt) + uint256(escrow.DISPUTE_TIMEOUT());
+        if (block.timestamp <= timeoutAt) {
+            vm.warp(timeoutAt + 1);
+        }
+
+        uint8 callerChoice = callerSeed % 4;
+        address caller = callerChoice == 0
+            ? t.buyer
+            : (callerChoice == 1 ? t.seller : (callerChoice == 2 ? t.arbiter : OUTSIDER));
+
+        vm.prank(caller);
+        escrow.resolveDisputeByTimeout(tradeId);
+    }
+
+    function disputeAndResolve(
+        uint256 indexSeed,
+        uint256 splitSeed,
+        uint256 overwriteSeed,
+        bool sellerInitiates
+    ) external {
+        if (tradeIds.length == 0) return;
+        bytes32 tradeId = tradeIds[indexSeed % tradeIds.length];
+        ISafeDealEscrow.Trade memory t = escrow.getTrade(tradeId);
+
+        if (
+            t.status == ISafeDealEscrow.TradeStatus.FUNDED
+                || t.status == ISafeDealEscrow.TradeStatus.DELIVERED
+        ) {
+            if (sellerInitiates) {
+                if (
+                    t.status == ISafeDealEscrow.TradeStatus.FUNDED
+                        && vm.getBlockTimestamp() <= t.deliveryDeadline
+                ) {
+                    vm.prank(t.seller);
+                    escrow.openDispute(tradeId);
+                } else if (t.status == ISafeDealEscrow.TradeStatus.DELIVERED) {
+                    uint256 unlocksAt = uint256(t.deliveredAt) + uint256(t.inspectionWindow);
+                    if (vm.getBlockTimestamp() <= unlocksAt) {
+                        vm.warp(unlocksAt + 1);
+                    }
+                    vm.prank(t.seller);
+                    escrow.openDispute(tradeId);
+                } else {
+                    vm.prank(t.buyer);
+                    escrow.openDispute(tradeId);
+                }
+            } else {
+                vm.prank(t.buyer);
+                escrow.openDispute(tradeId);
+            }
+            t = escrow.getTrade(tradeId);
+        } else if (t.status != ISafeDealEscrow.TradeStatus.DISPUTED) {
+            return;
+        }
+
+        // Interleaved diverging votes + vote overwrite before consensus or timeout
+        uint256 buyerShareA = splitSeed % (t.amount + 1);
+        uint256 buyerShareB = (buyerShareA + 1) % (t.amount + 1);
+        uint256 buyerShareC = overwriteSeed % (t.amount + 1);
+
+        // Clear/set buyer & seller to two distinct proposals so trade remains DISPUTED
+        vm.prank(t.arbiter);
+        escrow.submitResolutionVote(tradeId, buyerShareA, t.amount - buyerShareA);
+        if (escrow.getTrade(tradeId).status != ISafeDealEscrow.TradeStatus.DISPUTED) return;
+
+        vm.prank(t.seller);
+        escrow.submitResolutionVote(tradeId, buyerShareB, t.amount - buyerShareB);
+        if (escrow.getTrade(tradeId).status != ISafeDealEscrow.TradeStatus.DISPUTED) return;
+
+        // Arbiter overwrites prior vote A -> C
+        vm.prank(t.arbiter);
+        escrow.submitResolutionVote(tradeId, buyerShareC, t.amount - buyerShareC);
+        if (escrow.getTrade(tradeId).status != ISafeDealEscrow.TradeStatus.DISPUTED) return;
+
         if (splitSeed % 3 == 0) {
-            vm.warp(block.timestamp + escrow.DISPUTE_TIMEOUT() + 1);
-            vm.prank(t.buyer);
+            uint256 timeoutAt = uint256(t.disputedAt) + uint256(escrow.DISPUTE_TIMEOUT());
+            if (block.timestamp <= timeoutAt) {
+                vm.warp(timeoutAt + 1);
+            }
+            vm.prank(overwriteSeed % 2 == 0 ? t.seller : OUTSIDER);
             escrow.resolveDisputeByTimeout(tradeId);
         } else {
-            vm.prank(t.arbiter);
-            escrow.submitResolutionVote(tradeId, buyerShare, sellerShare);
-            vm.prank(splitSeed % 2 == 0 ? t.buyer : t.seller);
-            escrow.submitResolutionVote(tradeId, buyerShare, sellerShare);
+            // Buyer casts matching vote C (after first testing a non-matching vote A if A != B && A != C)
+            if (buyerShareA != buyerShareB && buyerShareA != buyerShareC) {
+                vm.prank(t.buyer);
+                escrow.submitResolutionVote(tradeId, buyerShareA, t.amount - buyerShareA);
+                assertEq(uint8(escrow.getTrade(tradeId).status), uint8(ISafeDealEscrow.TradeStatus.DISPUTED));
+            }
+            // Buyer overwrites vote to C to reach 2-of-3 consensus with arbiter
+            vm.prank(t.buyer);
+            escrow.submitResolutionVote(tradeId, buyerShareC, t.amount - buyerShareC);
         }
     }
 
@@ -152,6 +309,7 @@ contract EscrowInvariantHandler is Test {
             total += escrow.claimableBalances(buyers[i]);
             total += escrow.claimableBalances(arbiters[i]);
         }
+        total += escrow.claimableBalances(OUTSIDER);
     }
 
     function sumActiveEscrows() external view returns (uint256 total) {
@@ -191,5 +349,6 @@ contract EscrowInvariantTest is StdInvariant, Test {
         for (uint256 i = 0; i < 3; i++) {
             assertEq(escrow.claimableBalances(handler.arbiters(i)), 0);
         }
+        assertEq(escrow.claimableBalances(handler.OUTSIDER()), 0);
     }
 }
